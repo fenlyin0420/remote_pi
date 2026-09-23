@@ -95,6 +95,7 @@ import {
 } from "./session/global_config.js";
 import { acquireCwdLock, type AcquiredLock } from "./session/cwd_lock.js";
 import { addDaemon, listDaemons, removeDaemon } from "./daemon/registry.js";
+import { daemonIdForCwd } from "./daemon/id.js";
 import { callSupervisor, supervisorOnline, SupervisorOfflineError } from "./daemon/client.js";
 import type { ControlRequest, DaemonInfo } from "./daemon/control_protocol.js";
 import { EXIT_DAEMON_FRESH_SESSION } from "./daemon/rpc_child.js";
@@ -108,12 +109,12 @@ import {
 } from "./session/local_config.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
-import { join, dirname, resolve } from "node:path";
+import { join, isAbsolute, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { spawnSync } from "node:child_process";
-import { hostname, tmpdir } from "node:os";
+import { hostname, homedir, tmpdir } from "node:os";
 import {
   kDefaultRelayUrl,
   resolveRelayUrl,
@@ -4599,6 +4600,15 @@ export function _routeClientMessageFrom(
     case "thinking_set":
       handleThinkingSet(_pi, sender, msg);
       break;
+    // Room management — session-agnostic handlers (no `_pi`/ctx): they drive
+    // the supervisor directly. Catch-all inside, so nothing bubbles into the
+    // WS callback.
+    case "room_create":
+      void _handleRoomCreate(sender, msg);
+      break;
+    case "room_delete":
+      void _handleRoomDelete(sender, msg);
+      break;
     case "list_models":
       handleListModels(
         ((_lastEventCtx ?? _lastCtx) as ActionCtx | null),
@@ -4607,6 +4617,98 @@ export function _routeClientMessageFrom(
         msg,
       );
       break;
+  }
+}
+
+// ── Room management handlers ────────────────────────────────────────────────
+
+/**
+ * Normalizes a user-typed directory for room_create / room_delete.
+ * Same rules as `normalizeCwd` (daemon/registry.ts) — trim, expand
+ * `~`/`~/...`, resolve relative against `process.cwd()` — but WITHOUT
+ * the `realpathSync` step: room_create may target a path that doesn't
+ * exist yet (room_create checks existence itself and only mkdirs when
+ * `create_if_missing` is set), and realpath throws on missing paths.
+ * Symlink canonicalization is left to `daemonIdForCwd` (which realpaths
+ * on its own, falling back to the raw path when the dir is absent).
+ */
+function _normalizeRoomPath(input: string): string {
+  if (!input || !input.trim()) throw new Error("path is required");
+  let p = input.trim();
+  if (p === "~") p = homedir();
+  else if (p.startsWith("~/")) p = join(homedir(), p.slice(2));
+  if (!isAbsolute(p)) p = resolve(process.cwd(), p);
+  return p;
+}
+
+/**
+ * room_create: normalize the path, verify it exists (or create it when
+ * `create_if_missing`), then register + start the supervisor daemon for
+ * that cwd. The new daemon announces its room to the relay on boot, so
+ * the app's room list picks it up automatically.
+ *
+ * The app relies on the EXACT error string `directory_missing` to offer
+ * a "create it anyway?" confirm dialog — don't add text to it.
+ */
+async function _handleRoomCreate(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "room_create" }>,
+): Promise<void> {
+  try {
+    const normalized = _normalizeRoomPath(msg.path);
+    if (!existsSync(normalized)) {
+      if (msg.create_if_missing !== true) {
+        sender.send({
+          type: "action_error",
+          in_reply_to: msg.id,
+          action: "room_create",
+          error: "directory_missing",
+        });
+        return;
+      }
+      mkdirSync(normalized, { recursive: true });
+    }
+    const id = daemonIdForCwd(normalized);
+    await callSupervisor({ op: "register", cwd: normalized });
+    await callSupervisor({ op: "start", id });
+    sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_create" });
+  } catch (err) {
+    const emsg = err instanceof Error ? err.message : String(err);
+    sender.send({
+      type: "action_error",
+      in_reply_to: msg.id,
+      action: "room_create",
+      error: emsg,
+    });
+  }
+}
+
+/**
+ * room_delete: unregister the daemon for the given cwd. The supervisor's
+ * `_opUnregister` stops the child process first (killing the Pi daemon)
+ * and removes the registry entry — so the room disappears from the
+ * monitoring list and the agent process ends.
+ *
+ * Idempotent: `removed: false` (id was never registered) still counts as
+ * `action_ok` — the end state (no room) matches the intent.
+ */
+async function _handleRoomDelete(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "room_delete" }>,
+): Promise<void> {
+  try {
+    const normalized = _normalizeRoomPath(msg.path);
+    const id = daemonIdForCwd(normalized);
+    await callSupervisor({ op: "unregister", id });
+    sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
+  } catch (err) {
+    const emsg = err instanceof Error ? err.message : String(err);
+    sender.send({
+      type: "action_error",
+      in_reply_to: msg.id,
+      action: "room_delete",
+      error: emsg,
+    });
   }
 }
 
