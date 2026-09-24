@@ -321,28 +321,21 @@ class MainActivity : FlutterActivity() {
         result.success(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
     }
 
+    /**
+     * Opens this app's notification settings.
+     *
+     * Two routes because OEM builds drop the per-app screen: the dedicated
+     * notification page first, then the app's own system page (which every ROM
+     * keeps and which links to notifications).
+     */
     private fun openNotificationSettings() {
-        try {
-            startActivity(
-                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                },
-            )
-        } catch (_: Exception) {
-            // OEM builds missing the per-app screen: fall back to the app's
-            // system settings page, which always exists.
-            try {
-                startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.parse("package:$packageName")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    },
-                )
-            } catch (_: Exception) {
-                // Nothing actionable; the Dart side surfaces a generic hint.
-            }
-        }
+        startFirstAvailable(
+            listOf(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName),
+                appDetailsIntent(),
+            ),
+        )
     }
 
     private fun isIgnoringBatteryOptimizations(): Boolean {
@@ -353,28 +346,42 @@ class MainActivity : FlutterActivity() {
     /**
      * Asks the system to exempt this app from battery optimization.
      *
-     * First the per-app dialog (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`),
-     * which is one tap; if the platform or OEM blocks that intent, the user
-     * lands on the optimization list and picks the app themselves.
+     * Three routes, most specific first: the one-tap per-app exemption dialog,
+     * the system's exemption list (some builds drop the dialog), and finally our
+     * own app page — on several Chinese builds the exemption list is hidden
+     * entirely, and "battery → unrestricted" on the app page is the only way in.
+     * Whichever route lands, the row re-reads the real state afterwards.
      */
     private fun openBatteryOptimizationSettings() {
-        try {
-            startActivity(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                },
-            )
-        } catch (_: Exception) {
+        startFirstAvailable(
+            listOf(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:$packageName")),
+                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                appDetailsIntent(),
+            ),
+        )
+    }
+
+    private fun appDetailsIntent(): Intent =
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.parse("package:$packageName"))
+
+    /**
+     * Starts the first of [intents] this device accepts. OEM builds silently
+     * lack settings screens, and an unhandled `ActivityNotFoundException` here
+     * would take the app down over a settings shortcut.
+     */
+    private fun startFirstAvailable(intents: List<Intent>): Boolean {
+        for (intent in intents) {
             try {
-                startActivity(
-                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
+                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return true
             } catch (_: Exception) {
-                // Nothing actionable — the toggle row stays "not exempt".
+                // No activity for this route — try the next one.
             }
         }
+        return false
     }
 
     // -----------------------------------------------------------------------

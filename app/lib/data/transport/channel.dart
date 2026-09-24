@@ -34,17 +34,35 @@ class RoomFrame {
 }
 
 /// A decoded inbound message plus the session it belongs to. Emitted by
-/// [ConnectionManager.roomMessages] for every room — unlike [IChannel.serverMessages],
-/// which carries only the active one.
+/// [ConnectionManager.roomMessages] for every room.
+///
+/// Two consumers read inbound traffic, on purpose, from different streams and
+/// with different jobs:
+///
+///  * the **session writer** ([IChannel.serverMessages], active room only) owns
+///    the chat transcript — anything else in there would bleed into the open
+///    chat;
+///  * the **background notifier** ([ConnectionManager.roomMessages], every room)
+///    only decides whether a banner is warranted.
+///
+/// They are not mirrors of each other and do not reconcile: neither derives
+/// state the other depends on, so a message reaching both is deliberate, not
+/// double handling.
 class RoomMessage {
   final String epk;
   final String roomId;
   final ServerMessage message;
 
+  /// When this device received the frame (local clock). The Pi's own ordering
+  /// is the arrival order at the relay; this is only for the receiver's own
+  /// bookkeeping, e.g. recognising a burst from one room.
+  final DateTime receivedAt;
+
   const RoomMessage({
     required this.epk,
     required this.roomId,
     required this.message,
+    required this.receivedAt,
   });
 }
 

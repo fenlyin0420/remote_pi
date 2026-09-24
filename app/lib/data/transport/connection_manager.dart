@@ -1103,6 +1103,7 @@ class ConnectionManager extends Service {
             epk: peer.remoteEpk,
             roomId: frame.roomId,
             message: decodeServer(utf8.decode(frame.payload)),
+            receivedAt: DateTime.now(),
           ),
         );
       } on UnsupportedTypeException {
