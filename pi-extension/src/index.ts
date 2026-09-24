@@ -2361,16 +2361,19 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // room_meta over the relay (plan/32) below — that's independent of the
   // broker and drives the app's working indicator.
   pi.on("turn_start", (_event, ctx) => {
-    // Late model hydration: if the model was still unknown at connect (resolved
-    // lazily by the SDK), grab it on the first turn and fan it out — so a daemon
-    // whose model only materialises at turn 1 still reports it to the app.
-    if (!_currentModel) {
-      try {
-        const m = (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.();
-        const name = m?.name ?? m?.id;
-        if (name) _setCurrentModel(name);
-      } catch { /* defensive — never block a turn on a model lookup */ }
-    }
+    // (Re-)hydrate the friendly model name from the SDK's resolved model. The
+    // connect-time fallback may have seeded the RAW model id (a .gguf filename)
+    // because the host ModelRegistry wasn't materialised yet at connect: `find()`
+    // then returns undefined and we fall back to the id, and that id is truthy so
+    // an `if (!_currentModel)` guard would never re-check it. The SDK resolves the
+    // real model (with its `name`) by the first turn, so always re-resolve it and
+    // upgrade. Only push a room_meta_update when the value actually changes, so a
+    // static model doesn't emit an update on every turn.
+    try {
+      const m = (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.();
+      const name = m?.name ?? m?.id;
+      if (name && name !== _currentModel) _setCurrentModel(name);
+    } catch { /* defensive — never block a turn on a model lookup */ }
     // Plan/32 Part B: publish working=true as room_meta (raw, no debounce —
     // the debounce lives in the app). Same shape as the model/thinking updates.
     if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, working: true };
