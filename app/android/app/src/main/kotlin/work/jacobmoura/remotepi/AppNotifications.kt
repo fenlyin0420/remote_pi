@@ -7,7 +7,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.RingtoneManager
+import android.os.Handler
+import android.os.Looper
 
 /**
  * Notification channels + posting for background delivery.
@@ -51,6 +54,14 @@ object AppNotifications {
 
     /** Id for the Settings "send a test notification" post. */
     private const val TEST_ID = 2
+
+    /** Id for the delayed half of the test — see [showTest]. */
+    private const val TEST_ID_LATE = 3
+
+    /** Delay before the background-half of the test fires. */
+    private const val TEST_DELAY_MS = 8_000L
+
+    private val testHandler = Handler(Looper.getMainLooper())
 
     /**
      * Buzz pattern for message notifications: wait, buzz, pause, buzz. Written
@@ -195,16 +206,41 @@ object AppNotifications {
      * Posts a sample turn notification, so the user can check sound + vibration
      * in two seconds instead of waiting for the agent to finish something.
      *
-     * Carries no session extras: tapping it just opens the app, because there is
-     * no session behind it to open.
+     * Fires twice: immediately, and again after [TEST_DELAY_MS]. The second one
+     * is the interesting half — a banner is only supposed to pop when the app is
+     * *not* in front of the user, so the delay is the window in which to press
+     * Home and see what a real "agent finished" notification actually does.
+     *
+     * Carries no session extras: tapping either just opens the app, because there
+     * is no session behind them to open.
      */
     fun showTest(ctx: Context) {
+        val appContext = ctx.applicationContext
+        postTest(appContext, TEST_ID, "Test notification — a finished turn looks like this.")
+        testHandler.removeCallbacksAndMessages(null)
+        testHandler.postDelayed(
+            {
+                postTest(
+                    appContext,
+                    TEST_ID_LATE,
+                    "Second test — this one fires with the app in the background.",
+                )
+            },
+            TEST_DELAY_MS,
+        )
+    }
+
+    private fun postTest(
+        ctx: Context,
+        id: Int,
+        text: String,
+    ) {
         ensureChannels(ctx)
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         val tap =
             PendingIntent.getActivity(
                 ctx,
-                TEST_ID,
+                id,
                 Intent(ctx, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 },
@@ -213,16 +249,17 @@ object AppNotifications {
         val detail =
             """
             Test notification. If you saw this but felt nothing, check this app's
-            notification settings: the "Messages" channel must allow sound and
-            vibration, and the phone must not be in Do Not Disturb.
+            notification settings: the "Messages" channel must allow sound,
+            vibration and popups, and the phone must not be in silent mode or Do
+            Not Disturb. Settings -> Background shows what this phone reports.
             """.trimIndent().replace('\n', ' ')
         nm.notify(
-            TEST_ID,
+            id,
             Notification
                 .Builder(ctx, CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_stat_remote_pi)
                 .setContentTitle("Remote Pi")
-                .setContentText("Test notification — a finished turn looks like this.")
+                .setContentText(text)
                 .setStyle(Notification.BigTextStyle().bigText(detail))
                 .setContentIntent(tap)
                 .setAutoCancel(true)
@@ -235,6 +272,47 @@ object AppNotifications {
     fun cancelAll(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         nm.cancelAll()
+    }
+
+    /**
+     * What the OS actually thinks about this app's notifications.
+     *
+     * Exists because every way a notification can be silent lives outside the
+     * app: the channel's importance can be lowered (by the user or a ROM), its
+     * sound or vibration pattern can be missing, the phone can be in silent mode,
+     * or Do Not Disturb can be swallowing the alert. All of those produce the
+     * same symptom — "it never bangs" — and none of them can be read from the
+     * app's own state. Reading them back turns a guessing loop into one look.
+     *
+     * `channelId` doubles as a version check: it names the channel actually in
+     * use, so a device still on the retired one is obvious at a glance.
+     */
+    fun diagnostics(ctx: Context): Map<String, Any?> {
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        val audio = ctx.getSystemService(AudioManager::class.java)
+        val messages = nm?.getNotificationChannel(CHANNEL_MESSAGES)
+        return mapOf(
+            "appNotificationsEnabled" to (nm?.areNotificationsEnabled() ?: false),
+            "channelId" to (messages?.id ?: ""),
+            "channelImportance" to (messages?.importance ?: -1),
+            "channelHasSound" to (messages?.sound != null),
+            "channelVibration" to (messages?.vibrationPattern?.joinToString(",") ?: ""),
+            "ringerMode" to
+                when (audio?.ringerMode) {
+                    AudioManager.RINGER_MODE_SILENT -> "silent"
+                    AudioManager.RINGER_MODE_VIBRATE -> "vibrate"
+                    AudioManager.RINGER_MODE_NORMAL -> "normal"
+                    else -> "unknown"
+                },
+            "interruptionFilter" to
+                when (nm?.currentInterruptionFilter) {
+                    NotificationManager.INTERRUPTION_FILTER_ALL -> "all"
+                    NotificationManager.INTERRUPTION_FILTER_PRIORITY -> "priority"
+                    NotificationManager.INTERRUPTION_FILTER_NONE -> "none"
+                    NotificationManager.INTERRUPTION_FILTER_ALARMS -> "alarms"
+                    else -> "unknown"
+                },
+        )
     }
 
     /** Dismisses one session's notification (see [showMessage] for the id). */

@@ -209,6 +209,18 @@ class _Keeper implements BackgroundConnection {
 
   @override
   Future<void> requestIgnoreBatteryOptimizations() async {}
+
+  @override
+  Future<NotificationDiagnostics> notificationDiagnostics() async =>
+      const NotificationDiagnostics(
+        appNotificationsEnabled: true,
+        channelId: 'messages_v2',
+        channelImportance: 4,
+        channelHasSound: true,
+        channelVibration: '0,250,200,250',
+        ringerMode: 'normal',
+        interruptionFilter: 'all',
+      );
 }
 
 // ---------------------------------------------------------------------------

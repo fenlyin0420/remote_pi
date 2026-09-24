@@ -29,6 +29,11 @@
          row — Doze exempts foreground services, but aggressive OEM battery
          managers do not, and only this list reaches them. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- VIBRATE is what makes the buzz possible at all. Playing any vibration
+         effect — a channel's pattern included — requires it, and without the
+         declaration the platform silently drops the vibration: the notification
+         arrives, silent and still, with nothing in the app pointing at why. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>

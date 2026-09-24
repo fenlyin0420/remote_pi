@@ -63,6 +63,7 @@ class BackgroundDeliveryViewModel extends ViewModel<BackgroundDeliveryState> {
     final running = await _background.isRunning();
     final notifications = await _background.notificationsEnabled();
     final battery = await _background.isIgnoringBatteryOptimizations();
+    final diagnostics = await _background.notificationDiagnostics();
     emit(
       BackgroundDeliveryState(
         enabled: _prefs.backgroundConnection,
@@ -70,6 +71,7 @@ class BackgroundDeliveryViewModel extends ViewModel<BackgroundDeliveryState> {
         running: running,
         notificationsEnabled: notifications,
         batteryExempt: battery,
+        diagnostics: diagnostics,
       ),
     );
   }

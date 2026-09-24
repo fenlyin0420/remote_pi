@@ -60,6 +60,35 @@ class MethodChannelBackgroundConnection implements BackgroundConnection {
   Future<void> requestIgnoreBatteryOptimizations() =>
       _invoke('requestIgnoreBatteryOptimizations');
 
+  @override
+  Future<NotificationDiagnostics> notificationDiagnostics() async {
+    if (!_supported) return _unknownDiagnostics;
+    try {
+      final raw = await _channel.invokeMethod<Map<Object?, Object?>>(
+        'notificationDiagnostics',
+      );
+      if (raw == null) return _unknownDiagnostics;
+      return NotificationDiagnostics.fromMap(raw);
+    } on PlatformException {
+      return _unknownDiagnostics;
+    } on MissingPluginException {
+      return _unknownDiagnostics;
+    }
+  }
+
+  /// Nothing known — used off Android and when the platform call fails, so the
+  /// UI shows "unknown" rather than inventing a healthy-looking setup.
+  static const NotificationDiagnostics _unknownDiagnostics =
+      NotificationDiagnostics(
+        appNotificationsEnabled: false,
+        channelId: '',
+        channelImportance: -1,
+        channelHasSound: false,
+        channelVibration: '',
+        ringerMode: 'unknown',
+        interruptionFilter: 'unknown',
+      );
+
   Future<void> _invoke(String method) async {
     if (!_supported) return;
     try {

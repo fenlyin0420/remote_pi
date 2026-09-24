@@ -45,6 +45,7 @@ class ConnectionKeeperService : Service() {
         @Volatile
         var running: Boolean = false
             private set
+
         fun start(ctx: Context) {
             AppNotifications.ensureChannels(ctx)
             // Already in the foreground: do nothing. This is what makes "swipe

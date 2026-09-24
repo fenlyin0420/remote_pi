@@ -271,6 +271,9 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "notificationDiagnostics" ->
+                    result.success(AppNotifications.diagnostics(this))
+
                 "cancelAll" -> {
                     AppNotifications.cancelAll(this)
                     result.success(null)

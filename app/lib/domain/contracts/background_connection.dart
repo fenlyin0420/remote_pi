@@ -48,4 +48,79 @@ abstract class BackgroundConnection {
 
   /// Asks for that exemption (system dialog), falling back to the settings list.
   Future<void> requestIgnoreBatteryOptimizations();
+
+  /// What the OS reports about this app's notifications right now.
+  ///
+  /// Every way a notification can end up silent lives outside the app — the
+  /// channel's importance can be lowered, its sound or vibration pattern can be
+  /// missing, the phone can be in silent mode, Do Not Disturb can be swallowing
+  /// the alert — and all of them look identical from inside: "it never bangs".
+  /// This is the readback that tells them apart.
+  Future<NotificationDiagnostics> notificationDiagnostics();
+}
+
+/// The OS's own answer about this app's notification setup.
+class NotificationDiagnostics {
+  const NotificationDiagnostics({
+    required this.appNotificationsEnabled,
+    required this.channelId,
+    required this.channelImportance,
+    required this.channelHasSound,
+    required this.channelVibration,
+    required this.ringerMode,
+    required this.interruptionFilter,
+  });
+
+  /// Notifications allowed for the app at all.
+  final bool appNotificationsEnabled;
+
+  /// Id of the channel message notifications actually use. Also a version check:
+  /// a device still on the retired channel is visible here.
+  final String channelId;
+
+  /// 0 = blocked, 2 = low, 3 = default, 4 = high. Heads-up needs 4.
+  final int channelImportance;
+
+  final bool channelHasSound;
+
+  /// Raw vibration pattern, empty when the channel has none (which is what "no
+  /// buzz" looked like from the outside before).
+  final String channelVibration;
+
+  /// `normal` | `vibrate` | `silent` | `unknown` — silent mode kills the buzz
+  /// unless the device is set to always vibrate.
+  final String ringerMode;
+
+  /// `all` | `priority` | `none` | `alarms` | `unknown`. Anything but `all` means
+  /// Do Not Disturb is active, which suppresses the banner and the buzz.
+  final String interruptionFilter;
+
+  static NotificationDiagnostics fromMap(Map<Object?, Object?> raw) {
+    T? read<T>(String key) => raw[key] is T ? raw[key] as T : null;
+    return NotificationDiagnostics(
+      appNotificationsEnabled: read<bool>('appNotificationsEnabled') ?? false,
+      channelId: read<String>('channelId') ?? '',
+      channelImportance: read<int>('channelImportance') ?? -1,
+      channelHasSound: read<bool>('channelHasSound') ?? false,
+      channelVibration: read<String>('channelVibration') ?? '',
+      ringerMode: read<String>('ringerMode') ?? 'unknown',
+      interruptionFilter: read<String>('interruptionFilter') ?? 'unknown',
+    );
+  }
+
+  /// One-line summary for the settings screen — everything a support question
+  /// would otherwise have to ask for.
+  String get summary {
+    final importance = switch (channelImportance) {
+      0 => 'blocked',
+      2 => 'low',
+      3 => 'default',
+      4 => 'high',
+      _ => 'unknown',
+    };
+    return 'channel=$channelId importance=$importance '
+        'sound=${channelHasSound ? 'yes' : 'no'} '
+        'vibrate=${channelVibration.isEmpty ? 'no' : channelVibration} · '
+        'ringer=$ringerMode · dnd=$interruptionFilter';
+  }
 }
