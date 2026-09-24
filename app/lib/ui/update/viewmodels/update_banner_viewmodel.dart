@@ -77,14 +77,25 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
   /// ou não é mais nova). Existe só pra UI nomear a versão ao falar do aviso.
   String? _latestVersion;
 
+  /// Motivo curto da última falha (`HTTP 404`, `not JSON (...)`, `no
+  /// connection`) — é o que transforma "não deu" em algo acionável.
+  String _failureDetail = '';
+
   UpdateCheckStatus get status => _status;
 
   String? get latestVersion => _latestVersion;
 
+  String get failureDetail => _failureDetail;
+
   /// Muda o status e avisa a UI. Não passa por [emit]: o estado do card pode
-  /// continuar `Hidden` enquanto o status muda (em dia → falhou).
-  void _report(UpdateCheckStatus status, {String? latest}) {
+  /// continuar `Hidden` enquanto o status muda (em dia → offline).
+  void _report(
+    UpdateCheckStatus status, {
+    String? latest,
+    String detail = '',
+  }) {
     _latestVersion = latest;
+    _failureDetail = detail;
     if (_status == status) return;
     _status = status;
     notifyListeners();
@@ -121,33 +132,42 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
 
     _report(UpdateCheckStatus.checking);
 
-    final latest = await _checker.fetchLatest();
+    final query = await _checker.fetchLatest();
     if (_disposed) return;
-    if (latest == null) {
-      _report(UpdateCheckStatus.failed);
-      return; // sem rede/manifest/inválido → nada.
-    }
-    if (!isNewerVersion(latest.version, currentVersion)) {
-      _report(UpdateCheckStatus.upToDate);
-      return; // igual/menor → nada.
-    }
 
-    // Um store ilegível **não** é motivo pra esconder a atualização: o único
-    // desfecho que não se aceita aqui é o silencioso. Na dúvida, mostra.
-    var dismissed = false;
-    try {
-      dismissed = await _dismissed.dismissedVersion() == latest.version;
-    } catch (_) {
-      dismissed = false;
-    }
-    if (_disposed) return;
-    if (dismissed) {
-      _report(UpdateCheckStatus.dismissed, latest: latest.version);
-      return; // dispensada → nada.
-    }
+    // Each outcome says which one it is: "no update" is now only ever said by a
+    // manifest that was actually read and understood.
+    switch (query) {
+      case UpdateQueryUnreachable(:final detail):
+        _report(UpdateCheckStatus.unreachable, detail: detail);
+        return; // sem rede/manifest → nada.
+      case UpdateQueryUnreadable(:final detail):
+        _report(UpdateCheckStatus.unreadable, detail: detail);
+        return; // resposta ilegível → nada.
+      case UpdateQueryOk(:final info):
+        if (!isNewerVersion(info.version, currentVersion)) {
+          _report(UpdateCheckStatus.upToDate);
+          return; // igual/menor → nada.
+        }
 
-    _report(UpdateCheckStatus.available, latest: latest.version);
-    emit(UpdateBannerVisible(latest));
+        // Um store ilegível **não** é motivo pra esconder a atualização: o
+        // único desfecho que não se aceita aqui é o silencioso. Na dúvida,
+        // mostra.
+        var dismissed = false;
+        try {
+          dismissed = await _dismissed.dismissedVersion() == info.version;
+        } catch (_) {
+          dismissed = false;
+        }
+        if (_disposed) return;
+        if (dismissed) {
+          _report(UpdateCheckStatus.dismissed, latest: info.version);
+          return; // dispensada → nada.
+        }
+
+        _report(UpdateCheckStatus.available, latest: info.version);
+        emit(UpdateBannerVisible(info));
+    }
   }
 
   /// Fecha o card e persiste a versão como dispensada — não reaparece pra ela

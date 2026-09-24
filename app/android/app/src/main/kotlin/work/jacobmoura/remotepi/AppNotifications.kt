@@ -278,10 +278,17 @@ object AppNotifications {
                 },
             "interruptionFilter" to
                 when (nm?.currentInterruptionFilter) {
-                    NotificationManager.INTERRUPTION_FILTER_ALL -> "all"
-                    NotificationManager.INTERRUPTION_FILTER_PRIORITY -> "priority"
-                    NotificationManager.INTERRUPTION_FILTER_NONE -> "none"
-                    NotificationManager.INTERRUPTION_FILTER_ALARMS -> "alarms"
+                    // Spelled out, not copied from the constants: Android's names
+                    // read backwards. INTERRUPTION_FILTER_ALL means "no
+                    // filtering" (DND off) and INTERRUPTION_FILTER_NONE means
+                    // "suppress everything" (DND fully on), so a readout of
+                    // "all"/"none" tells the user — and whoever they ask — the
+                    // opposite of the truth. The user's device printed
+                    // `dnd=all` while DND was off.
+                    NotificationManager.INTERRUPTION_FILTER_ALL -> "off"
+                    NotificationManager.INTERRUPTION_FILTER_PRIORITY -> "priority-only"
+                    NotificationManager.INTERRUPTION_FILTER_NONE -> "all-blocked"
+                    NotificationManager.INTERRUPTION_FILTER_ALARMS -> "alarms-only"
                     else -> "unknown"
                 },
         )

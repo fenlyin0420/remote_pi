@@ -50,8 +50,12 @@ enum UpdateCheckStatus {
   /// Há versão mais nova, mas o usuário dispensou aquele aviso.
   dismissed,
 
-  /// Manifest inalcançável ou inválido — offline, servidor fora, schema errado.
-  failed,
+  /// Nada respondeu — offline, DNS, conexão recusada, timeout, HTTP não-2xx.
+  unreachable,
+
+  /// Alguém respondeu, mas o corpo não é um manifest que a gente saiba ler
+  /// (portal cativo injetando HTML, release publicada errada, schema mudado).
+  unreadable,
 }
 
 /// Fase do trabalho mostrado em [UpdateBannerWorking].

@@ -4,12 +4,12 @@ import 'package:app/domain/contracts/update_checker.dart';
 import 'package:app/domain/entities/update_info.dart';
 import 'package:dio/dio.dart';
 
-/// Busca o `latest.json` do app via HTTP (Dio — mesmo client já usado pelo
-/// mesh, plano 24). Timeout curto; qualquer falha → `null` (nunca lança), pra
-/// que o aviso seja totalmente silencioso quando offline/indisponível.
+/// Fetches the app's `latest.json` over HTTP (Dio — the same client the mesh
+/// already uses). Short timeout; every failure is reported as a variant of
+/// [UpdateQuery] instead of a bare `null`.
 ///
-/// Espelha o schema do manifest do Cockpit (plano 43/44), com 1 artefato
-/// `android`/`apk`. O parsing/validação fica em [UpdateInfo.fromJson].
+/// Mirrors the schema of the Cockpit manifest, with one `android`/`apk`
+/// artifact. Parsing/validation lives in [UpdateInfo.fromJson].
 class UpdateCheckerImpl implements UpdateChecker {
   UpdateCheckerImpl({
     String? manifestUrl,
@@ -36,27 +36,66 @@ class UpdateCheckerImpl implements UpdateChecker {
         connectTimeout: timeout,
         sendTimeout: timeout,
         receiveTimeout: timeout,
-        // Tratamos status não-2xx manualmente — não deixa o Dio lançar.
+        // We check the status ourselves — don't let Dio throw on 4xx/5xx, so
+        // the reason survives to the settings readout instead of a stack trace.
         validateStatus: (_) => true,
-        // Plain: jsonDecode manual, não deixa o parser do Dio tropeçar num
-        // corpo vazio/não-JSON num 4xx/5xx.
-        responseType: ResponseType.plain,
       ),
     );
   }
 
   @override
-  Future<UpdateInfo?> fetchLatest() async {
+  Future<UpdateQuery> fetchLatest() async {
+    final Response<Object?> response;
     try {
-      final response = await _dio.getUri<Object?>(Uri.parse(manifestUrl));
-      if (response.statusCode != 200) return null;
-      final data = response.data;
-      final body = data is String ? data : null;
-      if (body == null || body.isEmpty) return null;
-      return UpdateInfo.fromJson(jsonDecode(body));
-    } catch (_) {
-      // sem rede / 404 / JSON inválido / schema errado → silencioso.
-      return null;
+      response = await _dio.getUri<Object?>(Uri.parse(manifestUrl));
+    } on DioException catch (e) {
+      return UpdateQueryUnreachable(_describe(e));
+    } catch (e) {
+      return UpdateQueryUnreachable('$e');
     }
+
+    final status = response.statusCode;
+    if (status == null || status < 200 || status >= 300) {
+      return UpdateQueryUnreachable('HTTP $status');
+    }
+
+    // Do not assume the body's shape. `BaseOptions.responseType` does **not**
+    // survive Dio 5's `get`/`getUri`: the per-call options default to
+    // `ResponseType.json` and win over the base options, so a JSON content type
+    // arrives already decoded as a Map while a text/plain one arrives as a
+    // String. Requiring a String here is what made this call answer "no update"
+    // for every request it ever made.
+    final Object? data = response.data;
+    final Object? decoded;
+    if (data is String) {
+      try {
+        decoded = jsonDecode(data);
+      } on FormatException catch (e) {
+        return UpdateQueryUnreadable('not JSON (${e.message})');
+      }
+    } else {
+      decoded = data;
+    }
+
+    try {
+      return UpdateQueryOk(UpdateInfo.fromJson(decoded));
+    } on FormatException catch (e) {
+      return UpdateQueryUnreadable(e.message);
+    }
+  }
+
+  /// Short reason for a failed request, in the words the settings readout uses.
+  String _describe(DioException e) {
+    return switch (e.type) {
+      DioExceptionType.connectionTimeout => 'connection timed out',
+      DioExceptionType.receiveTimeout => 'no response in time',
+      DioExceptionType.sendTimeout => 'request timed out',
+      DioExceptionType.connectionError => 'no connection',
+      DioExceptionType.badCertificate => 'bad certificate',
+      DioExceptionType.cancel => 'request cancelled',
+      DioExceptionType.badResponse =>
+        'HTTP ${e.response?.statusCode ?? '?'}',
+      DioExceptionType.unknown => '${e.error ?? e.message ?? 'unknown'}',
+    };
   }
 }

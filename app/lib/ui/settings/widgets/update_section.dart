@@ -28,6 +28,8 @@ class UpdateSection extends StatelessWidget {
     final colors = context.colors;
     final working = vm.state is UpdateBannerWorking;
     final checking = vm.status == UpdateCheckStatus.checking;
+    final failed = vm.status == UpdateCheckStatus.unreachable ||
+        vm.status == UpdateCheckStatus.unreadable;
     // One button, whose job follows the state: ask, ask again, or undo a
     // dismissal that was not meant to be permanent.
     final (label, action) = switch (vm.status) {
@@ -64,14 +66,25 @@ class UpdateSection extends StatelessWidget {
             _describe(vm),
             key: const Key('update-status'),
             style: context.typo.sansBody.copyWith(
-              color: vm.status == UpdateCheckStatus.failed
-                  ? colors.error
-                  : colors.muted,
+              color: failed ? colors.error : colors.muted,
               fontSize: 12,
               height: 1.4,
             ),
           ),
         ),
+        // The reason, verbatim and short. "Check failed" on its own sends
+        // everyone looking in the wrong place — which is exactly how this line
+        // came to exist: the check reported failure for four releases while
+        // rejecting the perfectly good response it was being sent.
+        if (failed && vm.failureDetail.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 6, 18, 0),
+            child: Text(
+              'Reason: ${_short(vm.failureDetail)}',
+              key: const Key('update-detail'),
+              style: context.typo.monoSmall.copyWith(color: colors.muted2),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
           child: OutlinedButton.icon(
@@ -117,12 +130,20 @@ class UpdateSection extends StatelessWidget {
       UpdateCheckStatus.dismissed =>
         'v${latest ?? '?'} is available; you closed that notice. It stays '
             'closed until the next release unless you ask for it again.',
-      UpdateCheckStatus.failed =>
+      UpdateCheckStatus.unreachable =>
         'Could not reach the update server. The card stays hidden while the '
             'check fails, so an offline phone looks the same as an up-to-date '
             'one.',
+      UpdateCheckStatus.unreadable =>
+        'The update server answered, but its release manifest could not be '
+            'read, so there is nothing to install from it. That is a problem '
+            'on the publishing side, not on this phone.',
     };
   }
+
+  /// Keeps one line of a failure reason from taking over the section.
+  String _short(String detail) =>
+      detail.length <= 90 ? detail : '${detail.substring(0, 89)}…';
 }
 
 class _SectionHeader extends StatelessWidget {

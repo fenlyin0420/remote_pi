@@ -16,11 +16,18 @@ import 'package:provider/provider.dart';
 class _Checker implements UpdateChecker {
   _Checker(this.result);
   UpdateInfo? result;
+
+  /// When set, this is the answer (an unreachable/unreadable variant).
+  UpdateQuery? query;
   int calls = 0;
+
   @override
-  Future<UpdateInfo?> fetchLatest() async {
+  Future<UpdateQuery> fetchLatest() async {
     calls++;
-    return result;
+    final q = query;
+    if (q != null) return q;
+    final r = result;
+    return r == null ? const UpdateQueryUnreachable() : UpdateQueryOk(r);
   }
 }
 
@@ -70,12 +77,14 @@ void main() {
   Future<UpdateBannerViewModel> pump(
     WidgetTester tester, {
     UpdateInfo? latest,
+    UpdateQuery? query,
     _Checker? checker,
     _Store? store,
     bool enabled = true,
   }) async {
+    final c = checker ?? _Checker(latest)..query = query;
     final vm = UpdateBannerViewModel(
-      checker ?? _Checker(latest),
+      c,
       store ?? _Store(),
       _Installer(),
       currentVersion: '1.1.0',
@@ -120,9 +129,32 @@ void main() {
     testWidgets('unreachable manifest → says the check failed, no card', (
       tester,
     ) async {
-      await pump(tester, latest: null);
+      await pump(tester, query: const UpdateQueryUnreachable('no connection'));
 
       expect(statusOf(tester), contains('Could not reach'));
+      expect(find.text('Update available'), findsNothing);
+      // "Could not reach" with no reason is a dead end, which is the whole
+      // point of this line existing.
+      expect(
+        tester.widget<Text>(find.byKey(const Key('update-detail'))).data,
+        contains('no connection'),
+      );
+    });
+
+    testWidgets('a manifest that cannot be read is not called unreachable', (
+      tester,
+    ) async {
+      await pump(
+        tester,
+        query: const UpdateQueryUnreadable('not JSON (Unexpected character)'),
+      );
+
+      expect(statusOf(tester), contains('could not be read'));
+      expect(statusOf(tester), isNot(contains('Could not reach')));
+      expect(
+        tester.widget<Text>(find.byKey(const Key('update-detail'))).data,
+        contains('not JSON'),
+      );
       expect(find.text('Update available'), findsNothing);
     });
 

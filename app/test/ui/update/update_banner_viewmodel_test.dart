@@ -11,13 +11,22 @@ import 'package:flutter_test/flutter_test.dart';
 // ── Hand-written fakes (no mocktail in this repo) ──────────────────────────
 
 class _FakeChecker implements UpdateChecker {
-  _FakeChecker(this.result);
-  UpdateInfo? result;
+  _FakeChecker(this.info, {UpdateQuery? query}) : _query = query;
+
+  /// Manifest version to answer with; `null` = nothing answered.
+  UpdateInfo? info;
+
+  /// Overrides the answer entirely, for the failure variants.
+  final UpdateQuery? _query;
   int calls = 0;
+
   @override
-  Future<UpdateInfo?> fetchLatest() async {
+  Future<UpdateQuery> fetchLatest() async {
     calls++;
-    return result;
+    final q = _query;
+    if (q != null) return q;
+    final i = info;
+    return i == null ? const UpdateQueryUnreachable() : UpdateQueryOk(i);
   }
 }
 
@@ -194,7 +203,7 @@ void main() {
 
       // The release goes out while the app is still open; returning to the
       // foreground must find it without a restart.
-      checker.result = _info('1.2.0');
+      checker.info = _info('1.2.0');
       await vm.check(force: true);
       expect(checker.calls, 2);
       expect(vm.state, isA<UpdateBannerVisible>());
@@ -208,7 +217,7 @@ void main() {
 
       // No network on resume: the user already saw that an update exists, so
       // dropping the card would be worse than leaving a stale offer standing.
-      checker.result = null;
+      checker.info = null;
       await vm.check(force: true);
       expect(vm.state, isA<UpdateBannerVisible>());
     });
@@ -261,10 +270,35 @@ void main() {
       expect(vm.latestVersion, isNull);
     });
 
-    test('manifest unreachable → failed', () async {
+    test('manifest unreachable → unreachable', () async {
       final vm = _vm(_FakeChecker(null));
       await vm.check();
-      expect(vm.status, UpdateCheckStatus.failed);
+      expect(vm.status, UpdateCheckStatus.unreachable);
+    });
+
+    test('the unreachable reason survives to the UI', () async {
+      final vm = _vm(
+        _FakeChecker(null, query: const UpdateQueryUnreachable('HTTP 404')),
+      );
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.unreachable);
+      expect(vm.failureDetail, 'HTTP 404');
+    });
+
+    test('manifest that answers but cannot be read → unreadable', () async {
+      // The failure that hid for four releases: the server answered 200 with a
+      // perfectly good manifest and the app threw it away. Calling that
+      // "unreachable" sends everyone off to check their network.
+      final vm = _vm(
+        _FakeChecker(
+          null,
+          query: const UpdateQueryUnreadable('not JSON (Unexpected character)'),
+        ),
+      );
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.unreadable);
+      expect(vm.failureDetail, contains('not JSON'));
+      expect(vm.state, isA<UpdateBannerHidden>());
     });
 
     test('dismissed → dismissed, still naming the version', () async {
@@ -310,9 +344,9 @@ void main() {
       expect(notifications, greaterThan(0));
 
       final before = notifications;
-      checker.result = null;
+      checker.info = null;
       await vm.check(force: true);
-      expect(vm.status, UpdateCheckStatus.failed);
+      expect(vm.status, UpdateCheckStatus.unreachable);
       expect(vm.state, isA<UpdateBannerHidden>());
       expect(notifications, greaterThan(before));
     });

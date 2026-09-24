@@ -91,8 +91,12 @@ class NotificationDiagnostics {
   /// unless the device is set to always vibrate.
   final String ringerMode;
 
-  /// `all` | `priority` | `none` | `alarms` | `unknown`. Anything but `all` means
-  /// Do Not Disturb is active, which suppresses the banner and the buzz.
+  /// `off` | `priority-only` | `all-blocked` | `alarms-only` | `unknown`.
+  ///
+  /// Spelled out rather than passed through as Android's names, which read
+  /// backwards: `INTERRUPTION_FILTER_ALL` is "no filtering" (DND off) and
+  /// `INTERRUPTION_FILTER_NONE` is "suppress everything". Only `off` leaves the
+  /// banner and the buzz alone.
   final String interruptionFilter;
 
   static NotificationDiagnostics fromMap(Map<Object?, Object?> raw) {
