@@ -4415,6 +4415,20 @@ export function _routeClientMessageFrom(
     _extensionUiBridge?.respond(msg);
     return;
   }
+  // Room management — handled BEFORE the pi-binding guard below. The
+  // handlers drive the supervisor over the UDS and need no `_pi`/ctx, so a
+  // room with no live Pi session must still be able to create/delete
+  // rooms. Behind the guard they were silently dropped, which the app saw
+  // as a 15s action timeout (the desired end state — a NEW room, or the
+  // removal of one — often has no session to bind to).
+  if (msg.type === "room_create") {
+    void _handleRoomCreate(sender, msg);
+    return;
+  }
+  if (msg.type === "room_delete") {
+    void _handleRoomDelete(sender, msg);
+    return;
+  }
   if (!_pi) return;
   switch (msg.type) {
     case "queued_message_set": {
@@ -4599,15 +4613,6 @@ export function _routeClientMessageFrom(
       break;
     case "thinking_set":
       handleThinkingSet(_pi, sender, msg);
-      break;
-    // Room management — session-agnostic handlers (no `_pi`/ctx): they drive
-    // the supervisor directly. Catch-all inside, so nothing bubbles into the
-    // WS callback.
-    case "room_create":
-      void _handleRoomCreate(sender, msg);
-      break;
-    case "room_delete":
-      void _handleRoomDelete(sender, msg);
       break;
     case "list_models":
       handleListModels(
