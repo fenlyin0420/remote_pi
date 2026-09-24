@@ -6,6 +6,7 @@ import 'package:app/ui/settings/states/settings_state.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/settings/widgets/background_section.dart';
 import 'package:app/ui/settings/widgets/identity_backup_section.dart';
+import 'package:app/ui/settings/widgets/update_section.dart';
 import 'package:app/ui/settings/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -83,6 +84,12 @@ class SettingsPage extends StatelessWidget {
           // peers/rooms already exist (PairingViewModel handles the
           // add path the same way as the first pair).
           const _AddPairingButton(),
+          Divider(color: colors.border, height: 1),
+          // About lands last, where "what am I running" belongs. It carries the
+          // update check: the Home card only speaks when there is something to
+          // announce, so this is the only place that can answer "is the notice
+          // even working?" — including for a phone that is simply up to date.
+          const UpdateSection(),
         ],
       ),
     );

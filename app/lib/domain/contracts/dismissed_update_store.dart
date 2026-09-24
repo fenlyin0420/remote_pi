@@ -7,4 +7,8 @@ abstract class DismissedUpdateStore {
 
   /// Marca [version] como dispensada.
   Future<void> dismiss(String version);
+
+  /// Esquece a dispensa — o card volta a poder aparecer. Sem isso, um aviso
+  /// fechado por engano fica inalcançável até a próxima release.
+  Future<void> clear();
 }

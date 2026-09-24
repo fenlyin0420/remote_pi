@@ -385,6 +385,12 @@ GoRouter buildRouter(
             // (notification permission + battery exemption), which the peer
             // list has no business knowing about.
             ViewmodelProvider<BackgroundDeliveryViewModel>(),
+            // About/update check: a second instance of the Home banner's VM,
+            // scoped here so Settings can answer "any update?" on demand.
+            // Each route gets its own instance (`addViewModel` is a factory),
+            // which is what keeps a download started here from being torn down
+            // by anything the Home screen does.
+            ViewmodelProvider<UpdateBannerViewModel>(),
           ],
           child: const SettingsPage(),
         ),

@@ -25,12 +25,33 @@ class _FakeDismissedStore implements DismissedUpdateStore {
   _FakeDismissedStore([this._version]);
   String? _version;
   final List<String> dismissedCalls = [];
+  int clearCalls = 0;
+
+  /// A secured store can fail to *read* (rotated keystore, corrupted entry)
+  /// while the app is otherwise fine. The notice must survive that.
+  bool throwOnRead = false;
+
+  /// And a store can fail to *forget*, in which case the dismissal simply
+  /// outlives the request.
+  bool throwOnClear = false;
+
   @override
-  Future<String?> dismissedVersion() async => _version;
+  Future<String?> dismissedVersion() async {
+    if (throwOnRead) throw StateError('keystore unavailable');
+    return _version;
+  }
+
   @override
   Future<void> dismiss(String version) async {
     dismissedCalls.add(version);
     _version = version;
+  }
+
+  @override
+  Future<void> clear() async {
+    clearCalls++;
+    if (throwOnClear) throw StateError('keystore unavailable');
+    _version = null;
   }
 }
 
@@ -203,6 +224,7 @@ void main() {
       await vm.dismiss();
       expect(vm.state, isA<UpdateBannerHidden>());
       expect(store.dismissedCalls, ['1.2.0']);
+      expect(vm.status, UpdateCheckStatus.dismissed);
     });
 
     test('no-op when nothing is visible', () async {
@@ -211,6 +233,115 @@ void main() {
       await vm.check();
       await vm.dismiss();
       expect(store.dismissedCalls, isEmpty);
+    });
+  });
+
+  // The card state cannot tell "nothing to announce" from "the check is
+  // broken", which is how a working feature ends up reported as a missing one:
+  // a user who never sees a card has no way to know which it is. `status` is
+  // the answer that survives when the card stays hidden.
+  group('UpdateBannerViewModel.status — what the check concluded', () {
+    test('never checked yet', () {
+      final vm = _vm(_FakeChecker(_info('1.2.0')));
+      expect(vm.status, UpdateCheckStatus.never);
+      expect(vm.latestVersion, isNull);
+    });
+
+    test('newer version → available, named', () async {
+      final vm = _vm(_FakeChecker(_info('1.2.0')));
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.available);
+      expect(vm.latestVersion, '1.2.0');
+    });
+
+    test('equal version → upToDate, nothing named', () async {
+      final vm = _vm(_FakeChecker(_info('1.1.0')), current: '1.1.0');
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.upToDate);
+      expect(vm.latestVersion, isNull);
+    });
+
+    test('manifest unreachable → failed', () async {
+      final vm = _vm(_FakeChecker(null));
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.failed);
+    });
+
+    test('dismissed → dismissed, still naming the version', () async {
+      final vm = _vm(
+        _FakeChecker(_info('1.2.0')),
+        store: _FakeDismissedStore('1.2.0'),
+      );
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.dismissed);
+      expect(vm.latestVersion, '1.2.0');
+      expect(vm.state, isA<UpdateBannerHidden>());
+    });
+
+    test('an unreadable dismissed-store still offers the update', () async {
+      // The silent-failure case: a store that throws on read used to take the
+      // whole check down with it (uncaught, card never shown, nothing logged).
+      final store = _FakeDismissedStore('1.2.0')..throwOnRead = true;
+      final vm = _vm(_FakeChecker(_info('1.2.0')), store: store);
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.available);
+      expect(vm.state, isA<UpdateBannerVisible>());
+    });
+
+    test('iOS gate → never, and it never fetches', () async {
+      final checker = _FakeChecker(_info('9.9.9'));
+      final vm = _vm(checker, enabled: false);
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.never);
+      expect(checker.calls, 0);
+    });
+
+    test('a status change notifies the UI even when the card does not', () async {
+      // up to date and offline both leave the card hidden; only the status
+      // differs, so Settings would freeze on stale text without this.
+      final checker = _FakeChecker(_info('1.1.0'));
+      final vm = _vm(checker, current: '1.1.0');
+      var notifications = 0;
+      vm.addListener(() => notifications++);
+
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.upToDate);
+      expect(vm.state, isA<UpdateBannerHidden>());
+      expect(notifications, greaterThan(0));
+
+      final before = notifications;
+      checker.result = null;
+      await vm.check(force: true);
+      expect(vm.status, UpdateCheckStatus.failed);
+      expect(vm.state, isA<UpdateBannerHidden>());
+      expect(notifications, greaterThan(before));
+    });
+  });
+
+  group('UpdateBannerViewModel.clearDismissal', () {
+    test('forgets the dismissal and re-offers the same version', () async {
+      final store = _FakeDismissedStore('1.2.0');
+      final vm = _vm(_FakeChecker(_info('1.2.0')), store: store);
+      await vm.check();
+      expect(vm.state, isA<UpdateBannerHidden>());
+
+      await vm.clearDismissal();
+      expect(store.clearCalls, 1);
+      expect(vm.status, UpdateCheckStatus.available);
+      expect(vm.state, isA<UpdateBannerVisible>());
+    });
+
+    test('survives a store that refuses to forget', () async {
+      // Best-effort: the dismissal outliving the request is the worst case, and
+      // the UI then simply keeps its "show again" button.
+      final store = _FakeDismissedStore('1.2.0')..throwOnClear = true;
+      final vm = _vm(_FakeChecker(_info('1.2.0')), store: store);
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.dismissed);
+
+      await vm.clearDismissal();
+      expect(vm.status, UpdateCheckStatus.dismissed);
+      expect(vm.state, isA<UpdateBannerHidden>());
     });
   });
 

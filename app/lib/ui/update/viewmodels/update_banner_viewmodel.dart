@@ -68,6 +68,28 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
   bool _busy = false;
   bool _disposed = false;
 
+  /// Conclusão da última consulta (ver [UpdateCheckStatus]). Independente do
+  /// estado do card, porque `Hidden` cobre "em dia", "falhou" e "nunca
+  /// consultou" — e é essa ambiguidade que a UI de Settings precisa desfazer.
+  UpdateCheckStatus _status = UpdateCheckStatus.never;
+
+  /// Versão anunciada pelo manifest na última consulta (`null` quando não houve
+  /// ou não é mais nova). Existe só pra UI nomear a versão ao falar do aviso.
+  String? _latestVersion;
+
+  UpdateCheckStatus get status => _status;
+
+  String? get latestVersion => _latestVersion;
+
+  /// Muda o status e avisa a UI. Não passa por [emit]: o estado do card pode
+  /// continuar `Hidden` enquanto o status muda (em dia → falhou).
+  void _report(UpdateCheckStatus status, {String? latest}) {
+    _latestVersion = latest;
+    if (_status == status) return;
+    _status = status;
+    notifyListeners();
+  }
+
   static Dio _defaultDio() {
     return Dio(
       BaseOptions(
@@ -97,17 +119,34 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
     if (_checked && !force) return;
     _checked = true;
 
+    _report(UpdateCheckStatus.checking);
+
     final latest = await _checker.fetchLatest();
     if (_disposed) return;
-    if (latest == null) return; // sem rede/manifest/inválido → nada.
+    if (latest == null) {
+      _report(UpdateCheckStatus.failed);
+      return; // sem rede/manifest/inválido → nada.
+    }
     if (!isNewerVersion(latest.version, currentVersion)) {
+      _report(UpdateCheckStatus.upToDate);
       return; // igual/menor → nada.
     }
 
-    final dismissed = await _dismissed.dismissedVersion();
+    // Um store ilegível **não** é motivo pra esconder a atualização: o único
+    // desfecho que não se aceita aqui é o silencioso. Na dúvida, mostra.
+    var dismissed = false;
+    try {
+      dismissed = await _dismissed.dismissedVersion() == latest.version;
+    } catch (_) {
+      dismissed = false;
+    }
     if (_disposed) return;
-    if (dismissed == latest.version) return; // dispensada → nada.
+    if (dismissed) {
+      _report(UpdateCheckStatus.dismissed, latest: latest.version);
+      return; // dispensada → nada.
+    }
 
+    _report(UpdateCheckStatus.available, latest: latest.version);
     emit(UpdateBannerVisible(latest));
   }
 
@@ -118,7 +157,22 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
     if (current is! UpdateBannerVisible) return;
     final version = current.info.version;
     emit(const UpdateBannerHidden());
+    _report(UpdateCheckStatus.dismissed, latest: version);
     await _dismissed.dismiss(version);
+  }
+
+  /// Esquece a dispensa e consulta de novo, reoferecendo a atualização. Existe
+  /// porque dispensar é irreversível do ponto de vista do usuário: o card fecha
+  /// num toque e, sem isto, só volta na próxima release.
+  Future<void> clearDismissal() async {
+    try {
+      await _dismissed.clear();
+    } catch (_) {
+      // Best-effort: se o storage não apagar, o re-check reporta `dismissed`
+      // outra vez e a UI mantém o botão — nada pior que o estado atual.
+    }
+    if (_disposed) return;
+    await check(force: true);
   }
 
   /// Baixa o APK e abre o instalador do sistema.

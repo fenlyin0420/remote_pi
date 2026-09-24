@@ -28,6 +28,32 @@ final class UpdateBannerVisible extends UpdateBannerState {
   int get hashCode => info.version.hashCode;
 }
 
+/// Conclusão da última consulta ao manifest.
+///
+/// O estado do card não consegue responder isso — [UpdateBannerHidden] cobre
+/// "em dia", "falhou" e "nunca consultou" — e é exatamente essa ambiguidade
+/// que torna uma feature silenciosa indistinguível de uma quebrada: um usuário
+/// que nunca viu o aviso não tem como distinguir "nada a anunciar" de "quebrado".
+enum UpdateCheckStatus {
+  /// Nenhuma consulta ainda nesta instância.
+  never,
+
+  /// Consulta em andamento.
+  checking,
+
+  /// Manifest respondido; nada mais novo que a versão instalada.
+  upToDate,
+
+  /// Há versão mais nova e o card está (ou vai estar) na tela.
+  available,
+
+  /// Há versão mais nova, mas o usuário dispensou aquele aviso.
+  dismissed,
+
+  /// Manifest inalcançável ou inválido — offline, servidor fora, schema errado.
+  failed,
+}
+
 /// Fase do trabalho mostrado em [UpdateBannerWorking].
 enum UpdatePhase {
   /// Baixando o APK. [UpdateBannerWorking.progress] é 0..1 (null = sem

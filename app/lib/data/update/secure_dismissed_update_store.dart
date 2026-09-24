@@ -21,4 +21,7 @@ class SecureDismissedUpdateStore implements DismissedUpdateStore {
   @override
   Future<void> dismiss(String version) =>
       _store.write(key: _key, value: version);
+
+  @override
+  Future<void> clear() => _store.delete(key: _key);
 }
