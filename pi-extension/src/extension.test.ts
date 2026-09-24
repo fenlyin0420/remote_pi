@@ -16,6 +16,17 @@ import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-a
 
 const _convertToPngMock = vi.hoisted(() => vi.fn(async () => null));
 
+// Keep this suite off the live pairing of the checkout it runs in: both
+// variables are set in every shell inside a paired workspace and both outrank
+// the temp cwd these tests build — `REMOTE_PI_DIRECT_CONFIG` fed them the real
+// agent name (`remote_pi`) instead of their fixture, and `REMOTE_PI_DAEMON`
+// (present, even empty) put the extension on its daemon path, so the second
+// same-name agent never reached the name-suffix seek.
+beforeEach(() => {
+  delete process.env["REMOTE_PI_DIRECT_CONFIG"];
+  delete process.env["REMOTE_PI_DAEMON"];
+});
+
 // ── Mock RelayClient ──────────────────────────────────────────────────────────
 
 const relayRef: { current: MockRelay | null } = { current: null };

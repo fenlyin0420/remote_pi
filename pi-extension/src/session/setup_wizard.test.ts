@@ -1,15 +1,25 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSetupWizard, type WizardUI } from "./setup_wizard.js";
 import {
+  DIRECT_CONFIG_ENV,
   defaultAgentName,
   loadLocalConfig,
   localConfigExists,
   saveLocalConfig,
   effectiveAutoStartRelay,
 } from "./local_config.js";
+
+// These tests build their own temp cwd, so they must not inherit the live
+// pairing of whatever checkout they run in: `REMOTE_PI_DIRECT_CONFIG` is set in
+// every shell inside a paired workspace and OUTRANKS the file, which quietly
+// made four of these assertions read the real agent name (`remote_pi`) instead
+// of their fixture.
+beforeEach(() => {
+  delete process.env[DIRECT_CONFIG_ENV];
+});
 
 const YES = "Yes";
 const NO = "No";

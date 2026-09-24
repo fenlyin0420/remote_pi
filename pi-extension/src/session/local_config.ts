@@ -11,7 +11,7 @@ const LOCAL_FILE = "config.json";
  * URL. Takes precedence over the file; an unset/empty/unparseable value falls
  * back to the file (never fatal).
  */
-const DIRECT_CONFIG_ENV = "REMOTE_PI_DIRECT_CONFIG";
+export const DIRECT_CONFIG_ENV = "REMOTE_PI_DIRECT_CONFIG";
 
 export interface LocalConfig {
   agent_name?: string;
