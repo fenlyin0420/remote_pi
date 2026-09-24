@@ -144,6 +144,9 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
       case UpdateQueryUnreadable(:final detail):
         _report(UpdateCheckStatus.unreadable, detail: detail);
         return; // resposta ilegível → nada.
+      case UpdateQueryUnconfigured():
+        _report(UpdateCheckStatus.unconfigured);
+        return; // build sem canal de atualização → nada.
       case UpdateQueryOk(:final info):
         if (!isNewerVersion(info.version, currentVersion)) {
           _report(UpdateCheckStatus.upToDate);

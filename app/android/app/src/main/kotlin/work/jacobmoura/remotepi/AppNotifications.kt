@@ -286,9 +286,13 @@ object AppNotifications {
                     // opposite of the truth. The user's device printed
                     // `dnd=all` while DND was off.
                     NotificationManager.INTERRUPTION_FILTER_ALL -> "off"
+
                     NotificationManager.INTERRUPTION_FILTER_PRIORITY -> "priority-only"
+
                     NotificationManager.INTERRUPTION_FILTER_NONE -> "all-blocked"
+
                     NotificationManager.INTERRUPTION_FILTER_ALARMS -> "alarms-only"
+
                     else -> "unknown"
                 },
         )

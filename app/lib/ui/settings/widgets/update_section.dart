@@ -138,6 +138,9 @@ class UpdateSection extends StatelessWidget {
         'The update server answered, but its release manifest could not be '
             'read, so there is nothing to install from it. That is a problem '
             'on the publishing side, not on this phone.',
+      UpdateCheckStatus.unconfigured =>
+        'This build has no update channel — it was compiled without one, so '
+            'updates only arrive if you install them by hand.',
     };
   }
 

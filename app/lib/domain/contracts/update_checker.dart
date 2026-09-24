@@ -2,11 +2,11 @@ import 'package:app/domain/entities/update_info.dart';
 
 /// Result of one query to the release manifest.
 ///
-/// Three outcomes, not two. "There is no newer version" and "I could not tell"
+/// Four outcomes, not two. "There is no newer version" and "I could not tell"
 /// are different answers, and collapsing both into `null` is precisely how a
 /// query that had **never once worked** shipped through four releases without
 /// anyone — including whoever wrote it — noticing. The caller needs to be able
-/// to say which of the three it got.
+/// to say which of them it got.
 sealed class UpdateQuery {
   const UpdateQuery();
 }
@@ -35,12 +35,20 @@ final class UpdateQueryUnreadable extends UpdateQuery {
   final String detail;
 }
 
+/// This build has no update channel at all — the manifest URL is a build-time
+/// define and this APK was built without it. Worth its own answer: a self-built
+/// binary is not a phone that lost its network, and saying "could not reach the
+/// server" about it sends the reader hunting for a connectivity problem.
+final class UpdateQueryUnconfigured extends UpdateQuery {
+  const UpdateQueryUnconfigured();
+}
+
 /// Fetches the release manifest (`latest.json`). Domain contract; the HTTP
 /// implementation lives in `data/update/`.
 ///
-/// **Best-effort: never throws.** Every failure becomes
-/// [UpdateQueryUnreachable] or [UpdateQueryUnreadable] carrying its reason, so
-/// a silent "no update" is only ever a real "no update".
+/// **Best-effort: never throws.** Every failure becomes one of the failure
+/// variants carrying its reason, so a silent "no update" is only ever a real
+/// "no update".
 abstract class UpdateChecker {
   Future<UpdateQuery> fetchLatest();
 }

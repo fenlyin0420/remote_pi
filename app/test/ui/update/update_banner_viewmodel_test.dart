@@ -285,6 +285,13 @@ void main() {
       expect(vm.failureDetail, 'HTTP 404');
     });
 
+    test('a build with no update channel says so', () async {
+      final vm = _vm(_FakeChecker(null, query: const UpdateQueryUnconfigured()));
+      await vm.check();
+      expect(vm.status, UpdateCheckStatus.unconfigured);
+      expect(vm.state, isA<UpdateBannerHidden>());
+    });
+
     test('manifest that answers but cannot be read → unreadable', () async {
       // The failure that hid for four releases: the server answered 200 with a
       // perfectly good manifest and the app threw it away. Calling that

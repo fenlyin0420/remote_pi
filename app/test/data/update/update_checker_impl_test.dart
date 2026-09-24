@@ -58,10 +58,11 @@ class _StubAdapter implements HttpClientAdapter {
 
 UpdateCheckerImpl _checker(_StubAdapter adapter) {
   // Same BaseOptions the real checker builds: the point of this file is that
-  // the response shape must not depend on them.
+  // the response shape must not depend on them. The URL is passed explicitly
+  // because production takes it from a build-time define.
   final dio = Dio(BaseOptions(validateStatus: (_) => true));
   dio.httpClientAdapter = adapter;
-  return UpdateCheckerImpl(dio: dio);
+  return UpdateCheckerImpl(manifestUrl: 'http://update.test/latest.json', dio: dio);
 }
 
 const String _manifest =
@@ -141,12 +142,14 @@ void main() {
     });
   });
 
-  group('UpdateCheckerImpl defaults', () {
-    test('the shipped manifest URL is the self-hosted one', () {
-      expect(
-        UpdateCheckerImpl.defaultManifestUrl,
-        'http://1.15.13.177:3210/downloads/app/latest.json',
-      );
+  group('UpdateCheckerImpl without a channel', () {
+    test('an empty manifest URL answers "unconfigured"', () async {
+      // The name is a build-time define (`--dart-define=UPDATE_MANIFEST_URL=…`),
+      // so a self-built binary has no channel. That is not the same as a phone
+      // with no network, and must not be reported as one.
+      expect(UpdateCheckerImpl.manifestUrlDefine, 'UPDATE_MANIFEST_URL');
+      expect(await UpdateCheckerImpl(manifestUrl: '').fetchLatest(),
+          isA<UpdateQueryUnconfigured>());
     });
   });
 }

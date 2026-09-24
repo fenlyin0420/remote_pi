@@ -56,6 +56,10 @@ enum UpdateCheckStatus {
   /// Alguém respondeu, mas o corpo não é um manifest que a gente saiba ler
   /// (portal cativo injetando HTML, release publicada errada, schema mudado).
   unreadable,
+
+  /// Este build não tem canal de atualização: a URL do manifest é um define de
+  /// build e este APK saiu sem ele.
+  unconfigured,
 }
 
 /// Fase do trabalho mostrado em [UpdateBannerWorking].

@@ -18,14 +18,21 @@ class UpdateCheckerImpl implements UpdateChecker {
   })  : manifestUrl = manifestUrl ?? defaultManifestUrl,
         _dio = dio ?? _defaultDio(timeout);
 
-  /// Self-hosted manifest (personal VPS, see `rp-s3/selfhost/`).
+  /// Self-hosted manifest, addressed at **build time**:
+  /// `--dart-define=UPDATE_MANIFEST_URL=http://host:port/downloads/app/latest.json`.
   ///
-  /// Plain HTTP on a bare IP: a certificate would need a domain, and the app
-  /// rejects self-signed ones. Cleartext is allowed for exactly this host by
-  /// `res/xml/network_security_config.xml` — everything else still requires
-  /// TLS. The APK URLs inside the manifest point at the same host.
+  /// Deliberately not in the source. This repository is public and the manifest
+  /// lives on a personal server, so the address is a build input like the
+  /// signing key: present in the APK that ships, absent from the code. Cleartext
+  /// for that host is likewise injected — see the generated
+  /// `res/xml/network_security_config.xml` in `app/android/app/build.gradle.kts`.
+  ///
+  /// A build without the define has no update channel and says so, rather than
+  /// looking like a phone with no network.
+  static const String manifestUrlDefine = 'UPDATE_MANIFEST_URL';
+
   static const String defaultManifestUrl =
-      'http://1.15.13.177:3210/downloads/app/latest.json';
+      String.fromEnvironment(manifestUrlDefine);
 
   final String manifestUrl;
   final Dio _dio;
@@ -45,6 +52,8 @@ class UpdateCheckerImpl implements UpdateChecker {
 
   @override
   Future<UpdateQuery> fetchLatest() async {
+    if (manifestUrl.isEmpty) return const UpdateQueryUnconfigured();
+
     final Response<Object?> response;
     try {
       response = await _dio.getUri<Object?>(Uri.parse(manifestUrl));
