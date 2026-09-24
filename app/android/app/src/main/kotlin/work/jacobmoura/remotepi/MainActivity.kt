@@ -176,26 +176,35 @@ class MainActivity : FlutterActivity() {
                         result.success(true)
                     }
 
-                    "isRunning" -> result.success(ConnectionKeeperService.running)
+                    "isRunning" -> {
+                        result.success(ConnectionKeeperService.running)
+                    }
 
-                    "notificationsEnabled" -> result.success(notificationsEnabled())
+                    "notificationsEnabled" -> {
+                        result.success(notificationsEnabled())
+                    }
 
-                    "requestNotificationPermission" -> requestNotificationPermission(result)
+                    "requestNotificationPermission" -> {
+                        requestNotificationPermission(result)
+                    }
 
                     "openNotificationSettings" -> {
                         openNotificationSettings()
                         result.success(null)
                     }
 
-                    "isIgnoringBatteryOptimizations" ->
+                    "isIgnoringBatteryOptimizations" -> {
                         result.success(isIgnoringBatteryOptimizations())
+                    }
 
                     "requestIgnoreBatteryOptimizations" -> {
                         openBatteryOptimizationSettings()
                         result.success(null)
                     }
 
-                    else -> result.notImplemented()
+                    else -> {
+                        result.notImplemented()
+                    }
                 }
             }
     }
@@ -262,7 +271,9 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
-                else -> result.notImplemented()
+                else -> {
+                    result.notImplemented()
+                }
             }
         }
     }
