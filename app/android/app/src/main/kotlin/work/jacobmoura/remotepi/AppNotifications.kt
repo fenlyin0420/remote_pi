@@ -9,8 +9,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
-import android.os.Handler
-import android.os.Looper
+
 
 /**
  * Notification channels + posting for background delivery.
@@ -54,14 +53,6 @@ object AppNotifications {
 
     /** Id for the Settings "send a test notification" post. */
     private const val TEST_ID = 2
-
-    /** Id for the delayed half of the test — see [showTest]. */
-    private const val TEST_ID_LATE = 3
-
-    /** Delay before the background-half of the test fires. */
-    private const val TEST_DELAY_MS = 8_000L
-
-    private val testHandler = Handler(Looper.getMainLooper())
 
     /**
      * Buzz pattern for message notifications: wait, buzz, pause, buzz. Written
@@ -206,41 +197,23 @@ object AppNotifications {
      * Posts a sample turn notification, so the user can check sound + vibration
      * in two seconds instead of waiting for the agent to finish something.
      *
-     * Fires twice: immediately, and again after [TEST_DELAY_MS]. The second one
-     * is the interesting half — a banner is only supposed to pop when the app is
-     * *not* in front of the user, so the delay is the window in which to press
-     * Home and see what a real "agent finished" notification actually does.
+     * One shot, deliberately. It briefly fired twice — immediately and again
+     * after eight seconds, to leave a window for backgrounding the app — and the
+     * second one reliably arrived silent on Android 15+, which "notification
+     * cooldown" answers by damping successive alerts from the same app. A test
+     * whose failure mode is the system doing its job is worse than no test: it
+     * reads as a bug in the app and sends everyone looking for one.
      *
-     * Carries no session extras: tapping either just opens the app, because there
-     * is no session behind them to open.
+     * Carries no session extras: tapping it just opens the app, because there is
+     * no session behind it to open.
      */
     fun showTest(ctx: Context) {
-        val appContext = ctx.applicationContext
-        postTest(appContext, TEST_ID, "Test notification — a finished turn looks like this.")
-        testHandler.removeCallbacksAndMessages(null)
-        testHandler.postDelayed(
-            {
-                postTest(
-                    appContext,
-                    TEST_ID_LATE,
-                    "Second test — this one fires with the app in the background.",
-                )
-            },
-            TEST_DELAY_MS,
-        )
-    }
-
-    private fun postTest(
-        ctx: Context,
-        id: Int,
-        text: String,
-    ) {
         ensureChannels(ctx)
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         val tap =
             PendingIntent.getActivity(
                 ctx,
-                id,
+                TEST_ID,
                 Intent(ctx, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 },
@@ -254,12 +227,12 @@ object AppNotifications {
             Not Disturb. Settings -> Background shows what this phone reports.
             """.trimIndent().replace('\n', ' ')
         nm.notify(
-            id,
+            TEST_ID,
             Notification
                 .Builder(ctx, CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_stat_remote_pi)
                 .setContentTitle("Remote Pi")
-                .setContentText(text)
+                .setContentText("Test notification — a finished turn looks like this.")
                 .setStyle(Notification.BigTextStyle().bigText(detail))
                 .setContentIntent(tap)
                 .setAutoCancel(true)
