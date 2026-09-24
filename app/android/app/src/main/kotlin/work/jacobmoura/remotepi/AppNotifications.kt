@@ -116,10 +116,14 @@ object AppNotifications {
     /**
      * The foreground-service notice.
      *
-     * Deliberately terse ("Connected") and silent: Android requires *a*
-     * notification for any foreground service, so this one is built to be the
-     * least intrusive thing that satisfies that. On Android 13+ the user can
-     * swipe it away — the service keeps running, and
+     * Deliberately terse ("Remote Pi" + "Running in the background") and
+     * silent: Android requires *a* notification for any foreground service, so
+     * this one is built to be the least intrusive thing that satisfies that.
+     * The line says what is running instead of "Connected", which read as a
+     * claim about the link: the keeper knows nothing about the link, and the
+     * connection can be down while this notice is up (it is the Dart side's
+     * reconnect backoff that recovers, not the keeper). On Android 13+ the user
+     * can swipe it away — the service keeps running, and
      * [ConnectionKeeperService.start] refuses to re-post it for as long as the
      * keeper lives.
      */
@@ -137,7 +141,7 @@ object AppNotifications {
             .Builder(ctx, CHANNEL_CONNECTION)
             .setSmallIcon(R.drawable.ic_stat_remote_pi)
             .setContentTitle("Remote Pi")
-            .setContentText("Connected")
+            .setContentText("Running in the background")
             .setContentIntent(tap)
             .setOngoing(true)
             .setShowWhen(false)
