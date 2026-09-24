@@ -18,8 +18,14 @@ class UpdateCheckerImpl implements UpdateChecker {
   })  : manifestUrl = manifestUrl ?? defaultManifestUrl,
         _dio = dio ?? _defaultDio(timeout);
 
+  /// Self-hosted manifest (personal VPS, see `rp-s3/selfhost/`).
+  ///
+  /// Plain HTTP on a bare IP: a certificate would need a domain, and the app
+  /// rejects self-signed ones. Cleartext is allowed for exactly this host by
+  /// `res/xml/network_security_config.xml` — everything else still requires
+  /// TLS. The APK URLs inside the manifest point at the same host.
   static const String defaultManifestUrl =
-      'https://rp-s3.jacobmoura.work/downloads/app/latest.json';
+      'http://1.15.13.177:3210/downloads/app/latest.json';
 
   final String manifestUrl;
   final Dio _dio;

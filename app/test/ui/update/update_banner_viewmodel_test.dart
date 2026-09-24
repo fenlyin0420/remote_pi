@@ -1,6 +1,8 @@
+import 'dart:io';
+
+import 'package:app/domain/contracts/apk_installer.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/update_checker.dart';
-import 'package:app/domain/contracts/url_opener.dart';
 import 'package:app/domain/entities/update_info.dart';
 import 'package:app/ui/update/states/update_banner_state.dart';
 import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
@@ -32,13 +34,36 @@ class _FakeDismissedStore implements DismissedUpdateStore {
   }
 }
 
-class _FakeOpener implements UrlOpener {
-  final List<String> opened = [];
-  bool result = true;
+/// Records what the app asked the platform installer to do.
+class _FakeInstaller implements ApkInstaller {
+  String dir = '/tmp/rp-updates';
+  bool allowed = true;
+
+  final List<String> installed = [];
+  int canInstallCalls = 0;
+  int settingsCalls = 0;
+
+  /// When set, [install] throws this instead of recording.
+  ApkInstallException? installError;
+
   @override
-  Future<bool> open(String url) async {
-    opened.add(url);
-    return result;
+  Future<String> updateDownloadsDir() async => dir;
+
+  @override
+  Future<bool> canInstall() async {
+    canInstallCalls++;
+    return allowed;
+  }
+
+  @override
+  Future<void> install(String path) async {
+    if (installError != null) throw installError!;
+    installed.add(path);
+  }
+
+  @override
+  Future<void> openInstallSettings() async {
+    settingsCalls++;
   }
 }
 
@@ -68,12 +93,12 @@ UpdateBannerViewModel _vm(
   bool enabled = true,
   String current = '1.1.0',
   _FakeDismissedStore? store,
-  _FakeOpener? opener,
+  _FakeInstaller? installer,
 }) =>
     UpdateBannerViewModel(
       checker,
       store ?? _FakeDismissedStore(),
-      opener ?? _FakeOpener(),
+      installer ?? _FakeInstaller(),
       currentVersion: current,
       enabled: enabled,
     );
@@ -161,17 +186,15 @@ void main() {
     });
   });
 
-  group('UpdateBannerViewModel.download', () {
-    test('opens the android/apk artifact url', () async {
-      final opener = _FakeOpener();
-      final vm = _vm(_FakeChecker(_info('1.2.0')), opener: opener);
-      await vm.check();
-      await vm.download();
-      expect(opener.opened, ['https://example.com/RemotePi.apk']);
-    });
+  group('UpdateBannerViewModel.downloadAndInstall — failure handling', () {
+    // The happy path downloads a real APK over HTTP and then launches the
+    // system installer, so it is exercised on-device rather than here. These
+    // cover the decisions the app makes around it: no artifact for this
+    // platform, and a denied install permission.
 
-    test('falls back to the download page when no apk artifact', () async {
-      final opener = _FakeOpener();
+    test('no apk artifact for the platform → error, card stays visible',
+        () async {
+      final installer = _FakeInstaller();
       final info = _info(
         '1.2.0',
         artifacts: const [
@@ -185,10 +208,113 @@ void main() {
           ),
         ],
       );
-      final vm = _vm(_FakeChecker(info), opener: opener);
+      final vm = _vm(_FakeChecker(info), installer: installer);
       await vm.check();
-      await vm.download();
-      expect(opener.opened, ['https://remote-pi.jacobmoura.work/download']);
+      final errors = <String>[];
+      vm.errors.listen(errors.add);
+
+      await vm.downloadAndInstall();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(vm.state, isA<UpdateBannerVisible>(),
+          reason: 'failure must not lose the update offer');
+      expect(installer.installed, isEmpty);
+      expect(errors, hasLength(1));
+      expect(errors.single, contains('no APK'));
+    });
+
+    test('permission denied → opens settings, no install, offer restored',
+        () async {
+      // Serves the APK from a loopback server so the real download path runs
+      // (Dio → cache dir → permission gate).
+      final bytes = List<int>.filled(64, 7);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((req) {
+        req.response
+          ..statusCode = 200
+          ..headers.contentLength = bytes.length
+          ..add(bytes);
+        req.response.close();
+      });
+
+      final dir = Directory.systemTemp.createTempSync('rp-update-test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final installer = _FakeInstaller()
+        ..dir = dir.path
+        ..allowed = false;
+      final info = _info(
+        '1.2.0',
+        artifacts: [
+          UpdateArtifact(
+            platform: 'android',
+            arch: 'universal',
+            format: 'apk',
+            url: 'http://127.0.0.1:${server.port}/RemotePi.apk',
+            sha256: '',
+            size: bytes.length,
+          ),
+        ],
+      );
+      final vm = _vm(_FakeChecker(info), installer: installer);
+      await vm.check();
+      final errors = <String>[];
+      vm.errors.listen(errors.add);
+
+      await vm.downloadAndInstall();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(installer.canInstallCalls, 1);
+      expect(installer.installed, isEmpty, reason: 'permission was denied');
+      expect(installer.settingsCalls, 1,
+          reason: 'user is sent to the unknown-sources toggle');
+      expect(vm.state, isA<UpdateBannerVisible>(),
+          reason: 'offer stays so one more tap installs');
+      expect(errors.single, contains('install unknown apps'));
+    });
+
+    test('truncated download → rejected before the installer sees it',
+        () async {
+      // Advertises 4096 bytes but sends 64 — the size check must catch it and
+      // never hand a corrupt APK to the system installer.
+      final bytes = List<int>.filled(64, 7);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((req) {
+        req.response
+          ..statusCode = 200
+          ..add(bytes);
+        req.response.close();
+      });
+
+      final dir = Directory.systemTemp.createTempSync('rp-update-test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final installer = _FakeInstaller()..dir = dir.path;
+      final info = _info(
+        '1.2.0',
+        artifacts: [
+          UpdateArtifact(
+            platform: 'android',
+            arch: 'universal',
+            format: 'apk',
+            url: 'http://127.0.0.1:${server.port}/RemotePi.apk',
+            sha256: '',
+            size: 4096,
+          ),
+        ],
+      );
+      final vm = _vm(_FakeChecker(info), installer: installer);
+      await vm.check();
+
+      await vm.downloadAndInstall();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(installer.installed, isEmpty);
+      expect(installer.canInstallCalls, 0,
+          reason: 'the corrupt file must not reach the permission gate');
+      expect(vm.state, isA<UpdateBannerVisible>());
     });
   });
 }

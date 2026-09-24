@@ -1,8 +1,8 @@
 import 'package:app/domain/entities/update_info.dart';
 
-/// Estado do aviso de atualização in-app (plano 44). Só dois casos: escondido
-/// (nada a mostrar — iOS, sem update, dispensado, manifest indisponível) ou
-/// visível com o [UpdateInfo] a anunciar.
+/// Estado do aviso de atualização in-app (plano 44). O card tem três formas:
+/// escondido (nada a mostrar), oferecendo o update, ou trabalhando (baixando /
+/// instalando) com progresso.
 sealed class UpdateBannerState {
   const UpdateBannerState();
 }
@@ -26,4 +26,41 @@ final class UpdateBannerVisible extends UpdateBannerState {
 
   @override
   int get hashCode => info.version.hashCode;
+}
+
+/// Fase do trabalho mostrado em [UpdateBannerWorking].
+enum UpdatePhase {
+  /// Baixando o APK. [UpdateBannerWorking.progress] é 0..1 (null = sem
+  /// Content-Length, então a UI mostra um spinner indeterminado).
+  downloading,
+
+  /// Arquivo em disco; o instalador do sistema foi aberto (ou está sendo).
+  installing,
+}
+
+/// Download/instalação em andamento — o card vira uma barra de progresso.
+final class UpdateBannerWorking extends UpdateBannerState {
+  const UpdateBannerWorking({
+    required this.info,
+    required this.phase,
+    this.progress,
+  });
+
+  final UpdateInfo info;
+  final UpdatePhase phase;
+
+  /// 0..1 durante [UpdatePhase.downloading]; null quando o servidor não mandou
+  /// Content-Length. Ignorado em [UpdatePhase.installing].
+  final double? progress;
+
+  // Ignora oscilações de progresso: só re-emite quando muda a fase (o
+  // rebuild a cada % seria ruído à toa na lista da Home).
+  @override
+  bool operator ==(Object other) =>
+      other is UpdateBannerWorking &&
+      other.info.version == info.version &&
+      other.phase == phase;
+
+  @override
+  int get hashCode => Object.hash(info.version, phase);
 }

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths the update FileProvider may expose.
+
+  Only the `updates/` subdirectory of the app's cache is shared — the
+  downloaded APK lives there and nowhere else, so a content:// URI handed to
+  the installer cannot be used to read other app files.
+
+  `cache-path` maps to Context#getCacheDir() (not the external one), which
+  needs no storage permission and is wiped by the system under pressure —
+  fine, since the APK is re-downloaded on demand.
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

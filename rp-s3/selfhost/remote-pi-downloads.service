@@ -1,0 +1,35 @@
+[Unit]
+Description=Remote Pi downloads (APK + update manifest)
+Documentation=https://github.com/fenlyin0420/remote_pi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/remote-pi-downloads.py
+Environment=REMOTE_PI_DOWNLOADS_PORT=3210
+Environment=REMOTE_PI_DOWNLOADS_DIR=/var/lib/remote-pi-downloads
+Restart=always
+RestartSec=3s
+User=remote-pi-downloads
+Group=remote-pi-downloads
+StateDirectory=remote-pi-downloads
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/remote-pi-downloads
+
+[Install]
+WantedBy=multi-user.target

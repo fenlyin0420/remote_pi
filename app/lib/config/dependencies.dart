@@ -16,10 +16,12 @@ import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
+import 'package:app/data/update/method_channel_apk_installer.dart';
 import 'package:app/data/update/secure_dismissed_update_store.dart';
 import 'package:app/data/update/update_checker_impl.dart';
 import 'package:app/data/update/url_launcher_opener.dart';
 import 'package:app/data/voice/speech_service.dart';
+import 'package:app/domain/contracts/apk_installer.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/update_checker.dart';
 import 'package:app/domain/contracts/url_opener.dart';
@@ -202,11 +204,14 @@ Future<void> setupDependencies() async {
   _injector.addOther<UpdateChecker>(() => UpdateCheckerImpl());
   _injector.addOther<DismissedUpdateStore>(() => SecureDismissedUpdateStore());
   _injector.addOther<UrlOpener>(() => const UrlLauncherOpener());
+  // In-app update: downloads the APK and hands it to the system installer
+  // through the native channel (no browser round-trip).
+  _injector.addOther<ApkInstaller>(() => MethodChannelApkInstaller());
   _injector.addViewModel<UpdateBannerViewModel>(
     () => UpdateBannerViewModel(
       _injector.get<UpdateChecker>(),
       _injector.get<DismissedUpdateStore>(),
-      _injector.get<UrlOpener>(),
+      _injector.get<ApkInstaller>(),
       currentVersion: appVersion,
       enabled: Platform.isAndroid,
     ),

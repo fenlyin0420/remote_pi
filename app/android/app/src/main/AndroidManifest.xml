@@ -13,9 +13,16 @@
     <!-- Plan 30 — image attachments. CAMERA covers the photo-capture path;
          the gallery uses the Android Photo Picker (no storage permission). -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- In-app update (plan 44): the app downloads the release APK and hands
+         it to the system installer. Android requires this permission to
+         launch that installer; it grants no silent-install ability (the OS
+         still shows its own confirmation), and the user must additionally
+         allow "install unknown apps" for this app the first time. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
         android:label="Remote Pi"
         android:name="${applicationName}"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -39,6 +46,20 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- In-app update: exposes the downloaded APK to the system installer.
+             Android refuses a file:// URI across apps, so the installer gets
+             a content:// URI via this provider backed by the app's own cache
+             dir. `grantUriPermissions` lets the installer read exactly that
+             one file; nothing else under cache/ is reachable. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
