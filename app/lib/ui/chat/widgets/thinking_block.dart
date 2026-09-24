@@ -63,8 +63,19 @@ class ThinkingBlock extends StatefulWidget {
 
 class _ThinkingBlockState extends State<ThinkingBlock> {
   bool _expanded = false;
+  bool _restored = false;
   Timer? _ticker;
   Duration? _elapsed;
+
+  /// Content-addressed expansion state, kept in the route's [PageStorage].
+  ///
+  /// The widget's own State does not survive everything this block goes
+  /// through: scrolling it out of view unmounts it, a re-sync re-writes the
+  /// row under a new id, and the live block folds into a different (persisted)
+  /// row. The reasoning text is the one thing that stays put across all three,
+  /// so it identifies the state.
+  Object get _storageId =>
+      'thinking-expanded:${widget.text.hashCode}:${widget.text.length}';
 
   @override
   void initState() {
@@ -73,9 +84,22 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
   }
 
   @override
-  void didUpdateWidget(ThinkingBlock old) {
-    super.didUpdateWidget(old);
-    if (old.live != widget.live || old.startedAt != widget.startedAt) {
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_restored) return;
+    _restored = true;
+    final stored = PageStorage.maybeOf(
+      context,
+    )?.readState(context, identifier: _storageId);
+    // Only the user ever writes this, so anything unreadable means collapsed.
+    if (stored is bool) _expanded = stored;
+  }
+
+  @override
+  void didUpdateWidget(ThinkingBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.live != widget.live ||
+        oldWidget.startedAt != widget.startedAt) {
       _syncTicker();
     }
   }
@@ -102,6 +126,13 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
     });
   }
 
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    PageStorage.maybeOf(
+      context,
+    )?.writeState(context, _expanded, identifier: _storageId);
+  }
+
   String _label() {
     if (widget.live) {
       final elapsed = _elapsed;
@@ -118,7 +149,6 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final body = context.typo.sansBody.copyWith(fontSize: 13, height: 1.45);
     final hasText = widget.text.trim().isNotEmpty;
     return Container(
       width: double.infinity,
@@ -134,9 +164,7 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
           GestureDetector(
             key: const Key('thinking-header'),
             behavior: HitTestBehavior.opaque,
-            onTap: hasText
-                ? () => setState(() => _expanded = !_expanded)
-                : null,
+            onTap: hasText ? _toggle : null,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               child: Row(
@@ -178,7 +206,9 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
                 children: [
                   SelectableText(
                     widget.text,
-                    style: body.copyWith(color: colors.muted2),
+                    // Same face/metrics as the assistant answer (mono), a step
+                    // greyer so reasoning reads as secondary to the reply.
+                    style: context.typo.mono.copyWith(color: colors.muted2),
                   ),
                   if (widget.live && widget.cursor != null)
                     Padding(

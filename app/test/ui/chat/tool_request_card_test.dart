@@ -81,6 +81,27 @@ void main() {
       expect(find.textContaining('command failed: exit 1'), findsOneWidget);
     });
 
+    testWidgets('an opened card stays open when the row is rebuilt', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(const ToolRequestCard(key: ValueKey('row-1'), tool: _bashTool)),
+      );
+      await tester.tap(find.byKey(const Key('tool-header')));
+      await tester.pump();
+      expect(find.text('ls -la'), findsOneWidget);
+
+      // Same tool call, new identity: a scroll-away/back or a re-sync.
+      await tester.pumpWidget(
+        _wrap(const ToolRequestCard(key: ValueKey('row-2'), tool: _bashTool)),
+      );
+      expect(
+        find.text('ls -la'),
+        findsOneWidget,
+        reason: 'the user opened it — a rebuild must not fold it back',
+      );
+    });
+
     testWidgets('edit renders rich hunks with context lines', (tester) async {
       await tester.pumpWidget(
         _wrap(const ToolRequestCard(tool: _editToolWithHunk)),

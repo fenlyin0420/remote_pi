@@ -35,8 +35,33 @@ class ToolRequestCard extends StatefulWidget {
 
 class _ToolRequestCardState extends State<ToolRequestCard> {
   bool _expanded = false;
+  bool _restored = false;
 
   ToolEvent get tool => widget.tool;
+
+  /// Expansion kept in the route's [PageStorage] under the tool call id (which
+  /// the wire gives us and history replays identically), so scrolling a card
+  /// out of view — or a re-sync re-writing the row — does not fold the card the
+  /// user opened.
+  Object get _storageId => 'tool-expanded:${tool.toolCallId}';
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_restored) return;
+    _restored = true;
+    final stored = PageStorage.maybeOf(
+      context,
+    )?.readState(context, identifier: _storageId);
+    if (stored is bool) _expanded = stored;
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    PageStorage.maybeOf(
+      context,
+    )?.writeState(context, _expanded, identifier: _storageId);
+  }
 
   /// Plan/32 — one color drives the whole card so the outcome is unmistakable:
   /// running → blue, done → green, failed → red, denied/expired → grey.
@@ -106,7 +131,7 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
       behavior: HitTestBehavior.opaque,
       // Also the scroll-safe way to reveal the details: the row is a full-width
       // tap target, and a plain tap during a scroll is not delivered here.
-      onTap: () => setState(() => _expanded = !_expanded),
+      onTap: _toggle,
       child: Row(
         children: [
           CustomPaint(

@@ -12,10 +12,7 @@ import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/widgets/attach_sheet.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
-import 'package:app/ui/chat/widgets/message_bubble.dart';
-import 'package:app/ui/chat/widgets/streaming_bubble.dart';
-import 'package:app/ui/chat/widgets/thinking_block.dart';
-import 'package:app/ui/chat/widgets/tool_request_card.dart';
+import 'package:app/ui/chat/widgets/message_list.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
@@ -403,7 +400,7 @@ class ChatPage extends StatelessWidget {
             message: 'Nothing here',
           );
         }
-        return _MessageList(
+        return MessageList(
           messages: visible,
           streaming: streaming,
           onDecide: (id, decision) => vm.approveTool(id, decision),
@@ -566,60 +563,6 @@ class ChatPage extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-
-class _MessageList extends StatelessWidget {
-  final List<ChatMessage> messages;
-  final StreamingMessage? streaming;
-  final void Function(String, ApproveDecision) onDecide;
-
-  const _MessageList({
-    required this.messages,
-    required this.streaming,
-    required this.onDecide,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final itemCount = messages.length + (streaming != null ? 1 : 0);
-
-    // `reverse: true` anchors the viewport to the bottom (offset 0 = newest)
-    // and keeps it there as content arrives — no manual scroll-to-bottom is
-    // needed. The previous animateTo-on-every-rebuild fought this and caused
-    // overlapping animations (flicker / runaway scroll) during streaming.
-    return ListView.separated(
-      reverse: true,
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
-      itemCount: itemCount,
-      separatorBuilder: (context, idx) => const SizedBox(height: 14),
-      itemBuilder: (_, i) {
-        // Index 0 = bottom = newest. Stable keys are REQUIRED here: when the
-        // streaming bubble appears/disappears at index 0 every other item's
-        // index shifts by 1, and without keys Flutter re-matches elements by
-        // position — briefly painting the wrong message at a slot (the
-        // momentary C/B/A → B/C/A reorder). Keying by message id makes it
-        // match by identity instead.
-        if (streaming != null && i == 0) {
-          return KeyedSubtree(
-            key: const ValueKey('streaming'),
-            child: StreamingBubble(streaming!),
-          );
-        }
-        final msgIdx = messages.length - 1 - (i - (streaming != null ? 1 : 0));
-        final msg = messages[msgIdx];
-        return KeyedSubtree(
-          key: ValueKey(msg.id),
-          child: switch (msg) {
-            UserMsg() => UserBubble(msg),
-            AssistantMsg() => AssistantBubble(msg),
-            ThinkingMsg() => ThinkingBubble(msg),
-            ToolEvent() => ToolRequestCard(tool: msg, onDecide: onDecide),
-            CompactionMsg() => CompactionBubble(msg),
-          },
-        );
-      },
-    );
-  }
-}
 
 class _EmptyState extends StatelessWidget {
   final IconData icon;

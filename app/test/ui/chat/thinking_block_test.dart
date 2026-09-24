@@ -6,6 +6,7 @@
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/thinking_block.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -71,6 +72,52 @@ void main() {
     now = now.add(const Duration(seconds: 1));
     await tester.pump(const Duration(seconds: 1));
     expect(find.text('Thinking… 8s'), findsOneWidget);
+  });
+
+  testWidgets('reasoning renders in the answer font, a step greyer', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      const ThinkingBubble(ThinkingMsg(id: 't1', text: 'reasoning')),
+    );
+    await tester.tap(find.byKey(const Key('thinking-header')));
+    await tester.pump();
+
+    final style = tester
+        .widget<SelectableText>(find.byType(SelectableText))
+        .style!;
+    // Same face + metrics as the assistant's answer…
+    expect(style.fontFamily, AppTypography.dark.mono.fontFamily);
+    expect(style.fontSize, AppTypography.dark.mono.fontSize);
+    expect(style.height, AppTypography.dark.mono.height);
+    // …but a step greyer than it.
+    expect(style.color, AppColors.dark.muted2);
+    expect(style.color, isNot(AppTypography.dark.mono.color));
+  });
+
+  testWidgets('an opened block stays open when the row is rebuilt', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      const ThinkingBlock(key: ValueKey('row-1'), text: 'secret reasoning'),
+    );
+    await tester.tap(find.byKey(const Key('thinking-header')));
+    await tester.pump();
+    expect(find.text('secret reasoning'), findsOneWidget);
+
+    // A new identity is what a scroll-away/back, a re-sync (the row id is
+    // rewritten) or the live block folding into its persisted row does.
+    await pump(
+      tester,
+      const ThinkingBlock(key: ValueKey('row-2'), text: 'secret reasoning'),
+    );
+    expect(
+      find.text('secret reasoning'),
+      findsOneWidget,
+      reason: 'the user opened it — a rebuild must not fold it back',
+    );
   });
 
   testWidgets('collapsed by default — reasoning is not rendered', (
