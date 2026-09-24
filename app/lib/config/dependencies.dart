@@ -3,6 +3,9 @@ import 'dart:io' show Platform;
 
 import 'package:app/config/utils/injector.dart';
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/background/background_delivery.dart';
+import 'package:app/data/background/method_channel_background_connection.dart';
+import 'package:app/data/background/method_channel_notifier.dart';
 import 'package:app/data/mesh/mesh_client.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/local/boxes.dart';
@@ -24,6 +27,8 @@ import 'package:app/data/update/update_checker_impl.dart';
 import 'package:app/data/update/url_launcher_opener.dart';
 import 'package:app/data/voice/speech_service.dart';
 import 'package:app/domain/contracts/apk_installer.dart';
+import 'package:app/domain/contracts/background_connection.dart';
+import 'package:app/domain/contracts/message_notifier.dart';
 import 'package:app/domain/contracts/identity_transfer.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/update_checker.dart';
@@ -33,6 +38,7 @@ import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/qr_scanner.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
@@ -41,6 +47,7 @@ import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
+import 'package:app/ui/settings/viewmodels/background_delivery_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/identity_backup_viewmodel.dart';
 import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
@@ -142,6 +149,7 @@ Future<void> setupDependencies() async {
       _injector.get<ConnectionManager>(),
       _injector.get<Preferences>(),
       _injector.get<PairingStorage>(),
+      _injector.get<VisibleSession>(),
     ),
   );
   _injector.addViewModel<HomeViewModel>(
@@ -199,6 +207,26 @@ Future<void> setupDependencies() async {
   // the adaptive shell drops the split when there's nothing to list.
   _injector.addInstance<ShellLayout>(ShellLayout());
 
+  // Background delivery — keeps the connection alive while the app is
+  // backgrounded and notifies when the agent finishes a turn in ANY room.
+  // `VisibleSession` is the one bit it needs from the UI (is this chat on
+  // screen?), fed by ChatViewModel (mount/unmount) and main.dart (lifecycle).
+  _injector.addInstance<VisibleSession>(VisibleSession());
+  _injector.addOther<BackgroundConnection>(
+    () => MethodChannelBackgroundConnection(),
+  );
+  _injector.addOther<MessageNotifier>(() => MethodChannelNotifier());
+  _injector.addService<BackgroundDelivery>(
+    () => BackgroundDelivery(
+      connection: _injector.get<ConnectionManager>(),
+      notifier: _injector.get<MessageNotifier>(),
+      background: _injector.get<BackgroundConnection>(),
+      storage: _injector.get<PairingStorage>(),
+      preferences: _injector.get<Preferences>(),
+      visibleSession: _injector.get<VisibleSession>(),
+    ),
+  );
+
   // Plan 44 — Android-only in-app update notice. The running version comes
   // from package_info; the manifest fetch + gating live in the ViewModel
   // (silent on iOS via `enabled` and on any fetch failure). Stateless
@@ -227,6 +255,13 @@ Future<void> setupDependencies() async {
   );
   _injector.addViewModel<IdentityBackupViewModel>(
     () => IdentityBackupViewModel(_injector.get<IdentityTransferService>()),
+  );
+  _injector.addViewModel<BackgroundDeliveryViewModel>(
+    () => BackgroundDeliveryViewModel(
+      _injector.get<Preferences>(),
+      _injector.get<BackgroundConnection>(),
+      _injector.get<BackgroundDelivery>(),
+    ),
   );
   _injector.addViewModel<UpdateBannerViewModel>(
     () => UpdateBannerViewModel(

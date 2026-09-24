@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/session/session_targeting.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
@@ -186,22 +187,19 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// `ConnectionManager._connect` falls back to room `'main'` → Pi
   /// never sees the frame → ChatViewModel sits on Connecting/offline
   /// even though the WS is alive.
+  ///
+  /// The three side effects live in [retargetSession], shared with the
+  /// notification tap handler so a session opened from a banner ends up bound
+  /// exactly like one opened by hand.
   Future<void> openSession(String epk, {String? roomId}) async {
-    final peers = await _storage.listPeers();
     if (_disposed) return;
-    final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
-    if (match.isEmpty) return;
-    final peer = match.first!;
-    final effectiveRoom = (roomId == null || roomId.isEmpty) ? 'main' : roomId;
-    await _prefs.setSelectedRoom(epk: epk, roomId: effectiveRoom);
-    if (peer.roomId != effectiveRoom) {
-      // ignore: unawaited_futures
-      _storage.savePeer(peer.copyWith(roomId: effectiveRoom));
-    }
-    // Tell the manager which Pi-side room to address. Safe to call
-    // even if the manager is mid-connect (room is applied on the next
-    // send and any active StatusOnline channel).
-    _conn.switchRoom(effectiveRoom);
+    await retargetSession(
+      storage: _storage,
+      prefs: _prefs,
+      conn: _conn,
+      epk: epk,
+      roomId: roomId,
+    );
   }
 
   /// Helper for widgets: pass a peer's url-safe epk → returns standard

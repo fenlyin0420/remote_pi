@@ -20,6 +20,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
+import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:flutter/material.dart';
@@ -97,7 +98,7 @@ void main() {
       final read = SessionReadRepository(boxes);
       final prefs = Preferences(_FakeSecureStorage()); // no selected peer
       final actions = ActionsRepository(conn);
-      final vm = ChatViewModel(read, sync, conn, prefs, _FakeStorage());
+      final vm = ChatViewModel(read, sync, conn, prefs, _FakeStorage(), VisibleSession());
       final voice = VoiceInputViewModel(_FakeSpeech());
       final attach = AttachmentViewModel(_FakePicker(), actions);
       final sel = SessionSelection();

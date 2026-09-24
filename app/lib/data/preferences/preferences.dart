@@ -24,6 +24,7 @@ class Preferences extends ChangeNotifier {
   bool _onboardingCompleted = false;
   ThemeMode _themeMode = ThemeMode.system;
   AppFontScale _fontScale = AppFontScale.standard;
+  bool _backgroundConnection = true;
 
   Preferences([FlutterSecureStorage? store])
       : _store = store ?? const FlutterSecureStorage();
@@ -35,6 +36,7 @@ class Preferences extends ChangeNotifier {
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
   static const _kThemeModeKey = 'prefs.theme_mode';
   static const _kFontScaleKey = 'prefs.font_scale';
+  static const _kBackgroundConnectionKey = 'prefs.background_connection';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -109,6 +111,15 @@ class Preferences extends ChangeNotifier {
   /// `copyWith(fontSize: …)` overrides that a typography-only change would miss.
   AppFontScale get fontScale => _fontScale;
 
+  /// Keep the connection alive while the app is in the background, so agent
+  /// replies arrive as notifications instead of waiting for the next open.
+  ///
+  /// Default **true**: the feature is the reason the app has a background
+  /// footprint at all, and "off" is one switch away in Settings. Nothing is
+  /// started while there is no paired peer — see `BackgroundDelivery`, which
+  /// also re-evaluates on peer changes rather than trusting this flag alone.
+  bool get backgroundConnection => _backgroundConnection;
+
   /// Hydrate from secure storage. Safe to call multiple times.
   Future<void> load() async {
     var changed = false;
@@ -151,6 +162,14 @@ class Preferences extends ChangeNotifier {
     final scale = AppFontScale.fromName(await _store.read(key: _kFontScaleKey));
     if (scale != _fontScale) {
       _fontScale = scale;
+      changed = true;
+    }
+
+    // Unset (fresh install / pre-feature) reads as ON, matching the default.
+    final backgroundRaw = await _store.read(key: _kBackgroundConnectionKey);
+    final background = backgroundRaw != 'false';
+    if (background != _backgroundConnection) {
+      _backgroundConnection = background;
       changed = true;
     }
 
@@ -243,6 +262,15 @@ class Preferences extends ChangeNotifier {
     if (_fontScale == value) return;
     _fontScale = value;
     await _store.write(key: _kFontScaleKey, value: value.name);
+    notifyListeners();
+  }
+
+  /// Persist the background-connection switch. Notifies so `BackgroundDelivery`
+  /// can start/stop the platform keeper without the UI having to call it.
+  Future<void> setBackgroundConnection(bool value) async {
+    if (_backgroundConnection == value) return;
+    _backgroundConnection = value;
+    await _store.write(key: _kBackgroundConnectionKey, value: value.toString());
     notifyListeners();
   }
 

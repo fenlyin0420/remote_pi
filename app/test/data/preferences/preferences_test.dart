@@ -203,6 +203,40 @@ void main() {
       expect(calls, 1);
     });
 
+    // Background delivery — the switch that keeps the connection (and therefore
+    // the notifications) alive while the app is backgrounded.
+    test('backgroundConnection defaults to on, including for stored state that predates it', () async {
+      final store = _FakeSecureStorage();
+      final fresh = Preferences(store);
+      await fresh.load();
+      expect(fresh.backgroundConnection, isTrue);
+
+      // An install that already has OTHER preferences but no value for this one
+      // (every install upgrading into this feature) must read as on, not off.
+      await store.write(key: 'prefs.font_scale', value: 'large');
+      final upgraded = Preferences(store);
+      await upgraded.load();
+      expect(upgraded.backgroundConnection, isTrue);
+    });
+
+    test('backgroundConnection round-trips and notifies once', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      await p.load();
+      var calls = 0;
+      p.addListener(() => calls++);
+
+      await p.setBackgroundConnection(false);
+      expect(p.backgroundConnection, isFalse);
+      expect(calls, 1);
+      await p.setBackgroundConnection(false);
+      expect(calls, 1);
+
+      final reloaded = Preferences(store);
+      await reloaded.load();
+      expect(reloaded.backgroundConnection, isFalse);
+    });
+
     test('setSelectedRoom with null epk clears the selection', () async {
       final store = _FakeSecureStorage();
       final p = Preferences(store);

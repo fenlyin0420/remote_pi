@@ -30,11 +30,13 @@
 //     to retrying without a leaky-bucket race.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/pairing/storage.dart';
+import 'package:app/protocol/codec.dart';
 import 'package:app/protocol/protocol.dart';
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,11 @@ class ConnectionManager extends Service {
   final Map<String, Set<String>> _liveRoomIds = <String, Set<String>>{};
   final _roomsController =
       StreamController<Map<String, List<RoomInfo>>>.broadcast();
+  // Every inbound frame tagged with the room that sent it — including rooms
+  // other than `_activeRoomId`, which the session writer never sees. Consumed
+  // by BackgroundDelivery to notify about background activity in any
+  // workspace. See [RoomMessage].
+  final _roomMessagesController = StreamController<RoomMessage>.broadcast();
   bool _roomsRestored = false;
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
@@ -137,6 +144,7 @@ class ConnectionManager extends Service {
   CancelToken? _connectCancel;
   StreamSubscription<ServerMessage>? _channelSub;
   StreamSubscription<ControlInbound>? _controlSub;
+  StreamSubscription<RoomFrame>? _roomFramesSub;
   // List currently subscribed for presence (so reconnect can replay it).
   List<String> _subscribedEpks = const [];
   int _missedPings = 0;
@@ -221,6 +229,12 @@ class ConnectionManager extends Service {
   /// list of rooms per peer (standard-base64 keys).
   Stream<Map<String, List<RoomInfo>>> get roomsStream =>
       _roomsController.stream;
+
+  /// Every decoded inbound frame with the room that produced it, across ALL
+  /// rooms of the paired peer — unlike [IChannel.serverMessages], which carries
+  /// only the room the app is currently addressing. This is the feed behind
+  /// background notifications for workspaces the user is not looking at.
+  Stream<RoomMessage> get roomMessages => _roomMessagesController.stream;
 
   Map<String, List<RoomInfo>> get roomsSnapshot => _roomsSnapshot();
 
@@ -404,6 +418,8 @@ class ConnectionManager extends Service {
     _channelSub = null;
     _controlSub?.cancel();
     _controlSub = null;
+    _roomFramesSub?.cancel();
+    _roomFramesSub = null;
     if (_status is StatusOnline) {
       final old = (_status as StatusOnline).channel;
       // ignore: unawaited_futures
@@ -439,6 +455,8 @@ class ConnectionManager extends Service {
     _channelSub = null;
     _controlSub?.cancel();
     _controlSub = null;
+    _roomFramesSub?.cancel();
+    _roomFramesSub = null;
     if (_status is StatusOnline) {
       await (_status as StatusOnline).channel.close();
     }
@@ -465,8 +483,11 @@ class ConnectionManager extends Service {
     _channelSub = null;
     _controlSub?.cancel();
     _controlSub = null;
+    _roomFramesSub?.cancel();
+    _roomFramesSub = null;
     _statusController.close();
     _presenceController.close();
+    _roomMessagesController.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -479,6 +500,8 @@ class ConnectionManager extends Service {
     _channelSub = null;
     _controlSub?.cancel();
     _controlSub = null;
+    _roomFramesSub?.cancel();
+    _roomFramesSub = null;
 
     final token = CancelToken();
     _connectCancel = token;
@@ -1063,6 +1086,32 @@ class ConnectionManager extends Service {
       onError: (_) => _onChannelLost(peer, ch),
       onDone: () => _onChannelLost(peer, ch),
     );
+
+    // Room-tagged side channel — the same inbound frames plus the ones
+    // addressed to OTHER rooms, which the serverMessages stream above drops for
+    // the active-session path. Decoding here (not in the transport) keeps the
+    // codec in one place; a malformed frame is simply not surfaced.
+    _roomFramesSub?.cancel();
+    final frames = ch is IRoomFrameLink
+        ? (ch as IRoomFrameLink).roomFrames
+        : const Stream<RoomFrame>.empty();
+    _roomFramesSub = frames.listen((frame) {
+      if (_roomMessagesController.isClosed) return;
+      try {
+        _roomMessagesController.add(
+          RoomMessage(
+            epk: peer.remoteEpk,
+            roomId: frame.roomId,
+            message: decodeServer(utf8.decode(frame.payload)),
+          ),
+        );
+      } on UnsupportedTypeException {
+        // Forward-compat: a newer Pi type this build doesn't know — nothing
+        // to notify about, and the active-room path surfaces it as an error.
+      } catch (_) {
+        // Malformed payload — ignore.
+      }
+    });
   }
 
   void _onChannelLost(PeerRecord peer, IChannel ch) {

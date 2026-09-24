@@ -2,6 +2,7 @@ import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart' show StatusOnline;
 import 'package:app/data/transport/epk_encoding.dart';
+import 'package:app/domain/value_objects/session_label.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo;
 import 'package:app/routing/adaptive.dart';
@@ -838,35 +839,17 @@ class HomePage extends StatelessWidget {
     }
   }
 
-  /// Plan/32g — the paired-device label for the Chat AppBar's line 2
-  /// (nickname → sessionName → epk prefix). Mirrors [ChatPage]'s own peer
-  /// resolution so there's no change when the PeerRecord finishes loading.
-  static String _deviceFor(PeerRecord peer) =>
-      (peer.nickname?.isNotEmpty ?? false)
-      ? peer.nickname!
-      : peer.sessionName.isNotEmpty
-      ? peer.sessionName
-      : peer.remoteEpk.substring(0, 8);
+  /// Plan/32g — the paired-device label for the Chat AppBar's line 2. Shared
+  /// with the chat screen and background notifications through [deviceLabel],
+  /// so one session cannot end up with two names.
+  static String _deviceFor(PeerRecord peer) => deviceLabel(peer);
 
   /// Plan/24-fix-title: the peer/room label we already know here, so the
   /// Chat AppBar doesn't show '—' / 'Remote Pi' until the ChatViewModel
   /// loads the PeerRecord + the first room_meta_updated arrives. Prefers
   /// room.name (per-cwd title) → cwd tail → nickname → sessionName.
-  static String _titleFor(PeerRecord peer, RoomInfo room) {
-    final roomCwdTail = room.cwd
-        ?.split('/')
-        .where((s) => s.isNotEmpty)
-        .lastOrNull;
-    return (room.name?.isNotEmpty ?? false)
-        ? room.name!
-        : (roomCwdTail != null && roomCwdTail.isNotEmpty)
-        ? roomCwdTail
-        : (peer.nickname?.isNotEmpty ?? false)
-        ? peer.nickname!
-        : peer.sessionName.isNotEmpty
-        ? peer.sessionName
-        : peer.remoteEpk.substring(0, 8);
-  }
+  static String _titleFor(PeerRecord peer, RoomInfo room) =>
+      roomLabel(room) ?? deviceLabel(peer);
 }
 
 /// Plan-17 follow-up — soft empty state for paired-but-no-rooms.

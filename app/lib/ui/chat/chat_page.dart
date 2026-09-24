@@ -1,5 +1,6 @@
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/value_objects/session_label.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -329,12 +330,8 @@ class ChatPage extends StatelessWidget {
     String? initialTitle,
   ) {
     if (room != null) {
-      if (room.name != null && room.name!.isNotEmpty) return room.name!;
-      final cwd = room.cwd;
-      if (cwd != null && cwd.isNotEmpty) {
-        final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
-        if (segs.isNotEmpty) return segs.last;
-      }
+      final label = roomLabel(room);
+      if (label != null) return label;
     }
     if (state is ChatReady && state.messages.isNotEmpty) {
       return _inferSessionName(state.messages);
@@ -359,7 +356,7 @@ class ChatPage extends StatelessWidget {
       return peer.nickname!;
     }
     if (peer.sessionName.isNotEmpty) return peer.sessionName;
-    return peer.remoteEpk.substring(0, 8);
+    return deviceLabel(peer);
   }
 
   static String _truncate(String s, int max) =>

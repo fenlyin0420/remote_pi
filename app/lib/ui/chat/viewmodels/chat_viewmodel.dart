@@ -10,6 +10,7 @@ import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 
@@ -26,6 +27,13 @@ class ChatViewModel extends ViewModel<ChatState> {
   final ConnectionManager _conn;
   final Preferences _prefs;
   final PairingStorage _storage;
+
+  /// Reported as "the user is looking at this chat", which is what keeps
+  /// background notifications quiet for the session already on screen. This VM
+  /// is the honest place for it: one instance per chat screen, alive exactly
+  /// while that screen is mounted (the tablet swaps VMs per session, the phone
+  /// disposes on back).
+  final VisibleSession _visibleSession;
 
   StreamSubscription<List<MessageRecord>>? _msgsSub;
   StreamSubscription<RuntimeRecord>? _runtimeSub;
@@ -57,8 +65,14 @@ class ChatViewModel extends ViewModel<ChatState> {
   String? _peerOfflineReason;
   ConnectionStatus? _lastStatus;
 
-  ChatViewModel(this._read, this._sync, this._conn, this._prefs, this._storage)
-    : super(const ChatReady(messages: [])) {
+  ChatViewModel(
+    this._read,
+    this._sync,
+    this._conn,
+    this._prefs,
+    this._storage,
+    this._visibleSession,
+  ) : super(const ChatReady(messages: [])) {
     // Plan/32f — do NOT seed _streaming/_working from the shared SyncService
     // here: it may still be bound to the PREVIOUS chat (this VM is recreated
     // on session switch, before _bootstrap rebinds via activate). Seeding now
@@ -176,6 +190,8 @@ class ChatViewModel extends ViewModel<ChatState> {
     // Bind the writer + watch the DB for this (peer, room).
     await _sync.activate(epk, roomId);
     if (_disposed) return;
+    // Past the point of no return: this chat is the one on screen now.
+    _visibleSession.enterChat(epk, roomId);
     // Plan/32f — now that the writer owns THIS session (activate reset the
     // turn state on a switch, or kept it when re-entering the same session),
     // seed the in-memory streaming/working from it. Doing this here instead of
@@ -374,6 +390,11 @@ class ChatViewModel extends ViewModel<ChatState> {
   @override
   void dispose() {
     _disposed = true;
+    // Only clears the marker if it is still ours — see [VisibleSession.leaveChat].
+    final peer = _activePeer;
+    if (peer != null && !_bootstrapping) {
+      _visibleSession.leaveChat(peer.remoteEpk, _activeRoomId);
+    }
     _msgsSub?.cancel();
     _runtimeSub?.cancel();
     _streamingSub?.cancel();

@@ -33,11 +33,35 @@ class WsTransportError implements Exception {
   String toString() => 'WsTransportError: $message';
 }
 
-class WsTransport implements PeerTransport, IControlLink {
+/// Where one inbound envelope goes.
+///
+/// Extracted from the socket listener so the routing rule — the part that
+/// decides whether the user's open chat sees a message — is testable without a
+/// live socket.
+///
+/// [forSession] is true when the frame was sent by the room the app is
+/// addressing: only those may reach the session writer, or a chat the user just
+/// left would bleed into the one they are reading. Every frame is surfaced in
+/// [frame] regardless, because background notifications watch all rooms.
+///
+/// A null [senderRoom] is a legacy Pi that does not stamp the room; it routes
+/// unconditionally (there is nothing to compare against).
+@visibleForTesting
+({RoomFrame frame, bool forSession}) classifyInboundFrame({
+  required String? senderRoom,
+  required String activeRoom,
+  required Uint8List payload,
+}) => (
+  frame: RoomFrame(roomId: senderRoom ?? activeRoom, payload: payload),
+  forSession: senderRoom == null || senderRoom == activeRoom,
+);
+
+class WsTransport implements PeerTransport, IControlLink, IRoomFrameLink {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
   final _controlController =
       StreamController<ControlInbound>.broadcast();
+  final _roomFrameController = StreamController<RoomFrame>.broadcast();
 
   WsTransport._(this._ws);
 
@@ -92,24 +116,24 @@ class WsTransport implements PeerTransport, IControlLink {
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
             final bytes = _b64Decode(frame['ct'] as String);
             final senderRoom = frame['room'] as String?;
-            // Plan-18 follow-up — DEMUX inbound by sender room.
-            // SessionRepository is singleton; without this guard,
-            // AgentChunks for a chat the user just left bleed into
-            // the chat they're now viewing. When senderRoom doesn't
-            // match the currently-addressed Pi cwd, drop the payload.
-            // Legacy Pis without `room` route unconditionally.
-            if (senderRoom != null && senderRoom != transport._activeRoom) {
-              debugPrint(
-                '[ws-in] bytes=${rawStr.length} kind=envelope '
-                'sender_room=$senderRoom DROPPED (room-mismatch)',
-              );
-              return;
+            final routed = classifyInboundFrame(
+              senderRoom: senderRoom,
+              activeRoom: transport._activeRoom,
+              payload: bytes,
+            );
+            // Only the addressed room reaches the session writer. Frames from
+            // any other room are not discarded anymore — they go to
+            // `roomFrames`, which is what lets the app notify about a workspace
+            // other than the one on screen (see BackgroundDelivery).
+            if (routed.forSession) transport._queue.add(bytes);
+            if (!transport._roomFrameController.isClosed) {
+              transport._roomFrameController.add(routed.frame);
             }
             debugPrint(
               '[ws-in] bytes=${rawStr.length} kind=envelope '
-              'ct.bytes=${bytes.length}',
+              'ct.bytes=${bytes.length} room=${routed.frame.roomId} '
+              '${routed.forSession ? 'active' : 'foreign'}',
             );
-            transport._queue.add(bytes);
             return;
           }
           // Control: top-level `type` only → presence stream.
@@ -141,6 +165,9 @@ class WsTransport implements PeerTransport, IControlLink {
         transport._queue.close();
         if (!transport._controlController.isClosed) {
           transport._controlController.close();
+        }
+        if (!transport._roomFrameController.isClosed) {
+          transport._roomFrameController.close();
         }
       },
     );
@@ -222,6 +249,13 @@ class WsTransport implements PeerTransport, IControlLink {
     _ws.sink.add(jsonEncode(json));
   }
 
+  // ---- IRoomFrameLink ------------------------------------------------------
+
+  /// Every inbound envelope with the room that sent it, including rooms other
+  /// than [setActiveRoom]'s. Closes with the socket.
+  @override
+  Stream<RoomFrame> get roomFrames => _roomFrameController.stream;
+
   // -------------------------------------------------------------------------
 
   @override
@@ -230,6 +264,7 @@ class WsTransport implements PeerTransport, IControlLink {
     await _ws.sink.close();
     _queue.close();
     if (!_controlController.isClosed) await _controlController.close();
+    if (!_roomFrameController.isClosed) await _roomFrameController.close();
   }
 }
 

@@ -18,6 +18,7 @@ import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/pairing_page.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/settings_page.dart';
+import 'package:app/ui/settings/viewmodels/background_delivery_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/identity_backup_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/sync_required/sync_required_page.dart';
@@ -380,6 +381,10 @@ GoRouter buildRouter(
             // long-lived (the system file picker can stay open
             // indefinitely), so its errors must not disturb the peer list.
             ViewmodelProvider<IdentityBackupViewModel>(),
+            // Background delivery likewise: its state comes from the OS
+            // (notification permission + battery exemption), which the peer
+            // list has no business knowing about.
+            ViewmodelProvider<BackgroundDeliveryViewModel>(),
           ],
           child: const SettingsPage(),
         ),

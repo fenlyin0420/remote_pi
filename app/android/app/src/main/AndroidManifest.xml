@@ -19,6 +19,19 @@
          still shows its own confirmation), and the user must additionally
          allow "install unknown apps" for this app the first time. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Background delivery. The app keeps one WebSocket to the relay alive
+         while backgrounded, which Android only tolerates for a foreground
+         service — hence FOREGROUND_SERVICE plus the SPECIAL_USE type (see
+         ConnectionKeeperService for why not dataSync). POST_NOTIFICATIONS is
+         the Android 13+ runtime prompt for the "turn finished" notices;
+         without it the service still runs, it just cannot show them.
+         REQUEST_IGNORE_BATTERY_OPTIMIZATIONS backs the "battery: unrestricted"
+         row — Doze exempts foreground services, but aggressive OEM battery
+         managers do not, and only this list reaches them. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="Remote Pi"
         android:name="${applicationName}"
@@ -46,6 +59,22 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Background connection — holds the process in the foreground so the
+             Dart isolate's relay WebSocket survives backgrounding. `specialUse`
+             (not dataSync, capped at 6h/day from Android 15) needs the subtype
+             property below to state the purpose. stopWithTask=false is the
+             default but stated explicitly: pressing Home must not tear the
+             connection down. Swiping the app out of recents does, on purpose
+             (see ConnectionKeeperService.onTaskRemoved). -->
+        <service
+            android:name=".ConnectionKeeperService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="persistent_messaging_connection" />
+        </service>
         <!-- In-app update: exposes the downloaded APK to the system installer.
              Android refuses a file:// URI across apps, so the installer gets
              a content:// URI via this provider backed by the app's own cache

@@ -14,6 +14,7 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
+import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -133,7 +134,7 @@ void main() {
     conn.adopt(ch, _peer);
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    final vm = ChatViewModel(read, sync, conn, prefs, storage);
+    final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     // The Pi rebroadcasts a user message → SyncService writes a row →
@@ -184,7 +185,7 @@ void main() {
 
       conn.adopt(ch, _peer);
       await Future<void>.delayed(const Duration(milliseconds: 30));
-      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       ch.push(UserInput(id: 'cancel-u1', text: 'please stop'));
@@ -235,7 +236,7 @@ void main() {
 
       conn.adopt(ch, _peer);
       await Future<void>.delayed(const Duration(milliseconds: 30));
-      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       ch.push(UserInput(id: 'u1', text: 'primary'));
@@ -275,7 +276,7 @@ void main() {
 
     conn.adopt(ch, _peer);
     await Future<void>.delayed(const Duration(milliseconds: 30));
-    final vm = ChatViewModel(read, sync, conn, prefs, storage);
+    final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     ch.push(
@@ -344,7 +345,7 @@ void main() {
 
       conn.adopt(ch, _peer);
       await Future<void>.delayed(const Duration(milliseconds: 30));
-      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       final state = vm.state;
@@ -379,7 +380,7 @@ void main() {
 
     conn.adopt(ch, _peer);
     await Future<void>.delayed(const Duration(milliseconds: 30));
-    final vm = ChatViewModel(read, sync, conn, prefs, storage);
+    final vm = ChatViewModel(read, sync, conn, prefs, storage, VisibleSession());
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     // Room comes online idle (no local turn started in THIS chat).

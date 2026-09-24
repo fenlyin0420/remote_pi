@@ -1,9 +1,13 @@
 package work.jacobmoura.remotepi
 
+import android.Manifest
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -26,6 +30,13 @@ import java.io.File
  *
  * The APK path is confined to the app's own cache dir before use, so a bad
  * argument cannot turn this into "install a file from anywhere".
+ *
+ * It also hosts the two channels behind background delivery:
+ *  - `background` — start/stop the foreground keeper ([ConnectionKeeperService]),
+ *    report notification + battery-optimization state, and ask for the
+ *    Android 13+ notification permission.
+ *  - `notifications` — post a "turn finished" notification and hand a tapped
+ *    one back to Dart with the session it belongs to.
  */
 class MainActivity : FlutterActivity() {
     companion object {
@@ -33,6 +44,10 @@ class MainActivity : FlutterActivity() {
 
         /** Identity backup/restore — see [setUpIdentityTransferChannel]. */
         private const val IDENTITY_CHANNEL = "work.jacobmoura.remotepi/identity"
+
+        /** Background keeper + notification plumbing. */
+        private const val BACKGROUND_CHANNEL = "work.jacobmoura.remotepi/background"
+        private const val NOTIFICATIONS_CHANNEL = "work.jacobmoura.remotepi/notifications"
 
         /** FileProvider authority declared in AndroidManifest.xml. */
         private val AUTHORITY_SUFFIX = ".fileprovider"
@@ -43,6 +58,19 @@ class MainActivity : FlutterActivity() {
         /** Request codes for the SAF pickers; must not collide. */
         private const val REQ_EXPORT = 4701
         private const val REQ_IMPORT = 4702
+        private const val REQ_NOTIFICATIONS = 4703
+
+        /**
+         * True while this process owns a live [FlutterEngine].
+         *
+         * [ConnectionKeeperService] reads it to refuse a `START_STICKY`
+         * restart with nothing behind it: after a low-memory kill the system
+         * would otherwise resurrect the foreground notice with no Dart isolate
+         * and no connection, which reads as "connected" while nothing is.
+         */
+        @Volatile
+        var engineAttached: Boolean = false
+            private set
     }
 
     /**
@@ -60,6 +88,20 @@ class MainActivity : FlutterActivity() {
     private var pendingExport: PendingExport? = null
     private var pendingImport: MethodChannel.Result? = null
 
+    /** In-flight `requestNotificationPermission` call (see [onRequestPermissionsResult]). */
+    private var pendingNotificationPermission: MethodChannel.Result? = null
+
+    /**
+     * Session carried by the notification the user tapped, waiting for the Dart
+     * side to pull it via `pendingTap`. Kept in memory deliberately: a tap is
+     * only meaningful for the launch it caused, and the pull happens within
+     * milliseconds of the channel being ready.
+     */
+    private var pendingNotificationTap: Map<String, String>? = null
+
+    /** Set while the notifications channel exists, so a warm tap can poke Dart. */
+    private var notificationsChannel: MethodChannel? = null
+
     private data class PendingExport(
         val json: String,
         val fileName: String,
@@ -68,9 +110,271 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        engineAttached = true
 
         setUpUpdateChannel(flutterEngine)
         setUpIdentityTransferChannel(flutterEngine)
+        setUpBackgroundChannel(flutterEngine)
+        setUpNotificationsChannel(flutterEngine)
+    }
+
+    override fun onDestroy() {
+        // `isFinishing` (not a config change): the engine dies with us, so any
+        // sticky restart of the keeper has nothing to keep alive.
+        if (isFinishing) {
+            engineAttached = false
+            notificationsChannel = null
+        }
+        super.onDestroy()
+    }
+
+    /**
+     * A tapped message notification re-enters the (singleTop) activity instead
+     * of creating a second one.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (captureNotificationTap(intent)) {
+            // Signal only: Dart pulls the payload through `pendingTap`, so a tap
+            // that lands before the router exists is never dropped.
+            notificationsChannel?.invokeMethod("onNotificationTap", null)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Background connection + notifications
+    // -----------------------------------------------------------------------
+
+    /**
+     * Backs the "keep connected in the background" switch.
+     *
+     *  - `start` / `stop` / `isRunning` — the foreground keeper. `isRunning`
+     *    asks the service instead of caching a flag: the system can stop it
+     *    behind our back, and a stale "on" would leave the UI lying.
+     *  - `notificationsEnabled` — whether message notifications can be shown
+     *    at all (permission granted AND not disabled per-app).
+     *  - `requestNotificationPermission` — Android 13+ runtime prompt; resolves
+     *    with whether it is granted now.
+     *  - `openNotificationSettings` — system screen for the "blocked" case,
+     *    where asking again is a no-op.
+     *  - `isIgnoringBatteryOptimizations` / `requestIgnoreBatteryOptimizations`
+     *    — Doze is not the main threat (a foreground service is exempt), but
+     *    aggressive OEM battery managers are, and they only listen to this list.
+     */
+    private fun setUpBackgroundChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BACKGROUND_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        ConnectionKeeperService.start(this)
+                        result.success(true)
+                    }
+
+                    "stop" -> {
+                        ConnectionKeeperService.stop(this)
+                        result.success(true)
+                    }
+
+                    "isRunning" -> result.success(ConnectionKeeperService.running)
+
+                    "notificationsEnabled" -> result.success(notificationsEnabled())
+
+                    "requestNotificationPermission" -> requestNotificationPermission(result)
+
+                    "openNotificationSettings" -> {
+                        openNotificationSettings()
+                        result.success(null)
+                    }
+
+                    "isIgnoringBatteryOptimizations" ->
+                        result.success(isIgnoringBatteryOptimizations())
+
+                    "requestIgnoreBatteryOptimizations" -> {
+                        openBatteryOptimizationSettings()
+                        result.success(null)
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    /**
+     * Backs message notifications.
+     *
+     *  - `show` — post/replace one room's notification (id derived from the
+     *    session, so a busy room collapses onto a single entry).
+     *  - `pendingTap` — consume the session of a tapped notification.
+     *  - `cancelAll` — used when the user turns notifications off.
+     *
+     * Native → Dart: `onNotificationTap` is a bare wake-up; the payload always
+     * comes from `pendingTap`, which keeps cold-start and warm taps on one path.
+     */
+    private fun setUpNotificationsChannel(flutterEngine: FlutterEngine) {
+        // Cold start: the launch intent already carries the tapped session.
+        captureNotificationTap(intent)
+
+        val channel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, NOTIFICATIONS_CHANNEL)
+        notificationsChannel = channel
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "show" -> {
+                    val title = call.argument<String>("title")
+                    val body = call.argument<String>("body")
+                    val epk = call.argument<String>("epk")
+                    val room = call.argument<String>("room")
+                    if (title == null || body == null || epk == null || room == null) {
+                        result.error("bad_args", "title, body, epk and room are required", null)
+                        return@setMethodCallHandler
+                    }
+                    AppNotifications.showMessage(
+                        this,
+                        title = title,
+                        body = body,
+                        device = call.argument<String>("device") ?: "",
+                        epk = epk,
+                        room = room,
+                    )
+                    result.success(null)
+                }
+
+                "pendingTap" -> {
+                    val tap = pendingNotificationTap
+                    pendingNotificationTap = null
+                    result.success(tap)
+                }
+
+                "cancel" -> {
+                    val epk = call.argument<String>("epk")
+                    val room = call.argument<String>("room")
+                    if (epk == null || room == null) {
+                        result.error("bad_args", "epk and room are required", null)
+                        return@setMethodCallHandler
+                    }
+                    AppNotifications.cancel(this, epk, room)
+                    result.success(null)
+                }
+
+                "cancelAll" -> {
+                    AppNotifications.cancelAll(this)
+                    result.success(null)
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    /**
+     * Parks the session id carried by [intent] when it came from a notification.
+     * Returns true when there was one. The extras are consumed so a recreated
+     * activity does not replay the same tap.
+     */
+    private fun captureNotificationTap(intent: Intent?): Boolean {
+        val epk = intent?.getStringExtra(AppNotifications.EXTRA_EPK) ?: return false
+        val room = intent.getStringExtra(AppNotifications.EXTRA_ROOM) ?: return false
+        pendingNotificationTap = mapOf("epk" to epk, "room" to room)
+        intent.removeExtra(AppNotifications.EXTRA_EPK)
+        intent.removeExtra(AppNotifications.EXTRA_ROOM)
+        return true
+    }
+
+    private fun notificationsEnabled(): Boolean {
+        val nm = getSystemService(NotificationManager::class.java) ?: return false
+        return nm.areNotificationsEnabled()
+    }
+
+    private fun requestNotificationPermission(result: MethodChannel.Result) {
+        // Pre-33 has no such permission, and a granted one can still be blocked
+        // per-app — that case is `notificationsEnabled` + the settings link, not
+        // a re-prompt (which Android ignores anyway).
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            result.success(true)
+            return
+        }
+        val granted =
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            result.success(true)
+            return
+        }
+        if (pendingNotificationPermission != null) {
+            result.error("busy", "A permission request is already open", null)
+            return
+        }
+        pendingNotificationPermission = result
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_NOTIFICATIONS) return
+        val result = pendingNotificationPermission ?: return
+        pendingNotificationPermission = null
+        result.success(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+    }
+
+    private fun openNotificationSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+        } catch (_: Exception) {
+            // OEM builds missing the per-app screen: fall back to the app's
+            // system settings page, which always exists.
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+            } catch (_: Exception) {
+                // Nothing actionable; the Dart side surfaces a generic hint.
+            }
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(PowerManager::class.java) ?: return false
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /**
+     * Asks the system to exempt this app from battery optimization.
+     *
+     * First the per-app dialog (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`),
+     * which is one tap; if the platform or OEM blocks that intent, the user
+     * lands on the optimization list and picks the app themselves.
+     */
+    private fun openBatteryOptimizationSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+            )
+        } catch (_: Exception) {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: Exception) {
+                // Nothing actionable — the toggle row stays "not exempt".
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

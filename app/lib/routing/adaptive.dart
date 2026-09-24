@@ -26,6 +26,16 @@ const double kTabletBreakpoint = 600.0;
 bool isWideLayout(BuildContext context) =>
     MediaQuery.sizeOf(context).shortestSide >= kTabletBreakpoint;
 
+/// Mesma classificação que [isWideLayout], para quem não tem [BuildContext] —
+/// deep links e toques em notificação precisam decidir entre empurrar um chat
+/// full-screen ou deixar o painel detail do tablet assumir. Mede a janela da
+/// plataforma direto, então funciona antes do primeiro frame.
+bool isWideWindow() {
+  final view = WidgetsBinding.instance.platformDispatcher.views.first;
+  final size = view.physicalSize / view.devicePixelRatio;
+  return size.shortestSide >= kTabletBreakpoint;
+}
+
 /// Largura máxima de conteúdo de coluna única (onboarding, empty states).
 /// Acima disso o conteúdo é centralizado em vez de esticar borda-a-borda —
 /// evita o efeito "UI de celular gigante" no tablet.

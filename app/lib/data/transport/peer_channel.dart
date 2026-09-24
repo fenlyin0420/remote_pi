@@ -24,7 +24,7 @@ class PeerChannelError implements Exception {
   String toString() => 'PeerChannelError: $message';
 }
 
-class PlainPeerChannel implements IChannel, IControlLink {
+class PlainPeerChannel implements IChannel, IControlLink, IRoomFrameLink {
   final PeerTransport _transport;
 
   final _controller = StreamController<ServerMessage>.broadcast();
@@ -48,6 +48,16 @@ class PlainPeerChannel implements IChannel, IControlLink {
   void sendControl(Map<String, dynamic> json) {
     final t = _transport;
     if (t is IControlLink) (t as IControlLink).sendControl(json);
+  }
+
+  // ---- IRoomFrameLink — same forwarding shape as IControlLink: the room
+  //      tagging only exists in the WS transport (it is what parses the outer
+  //      envelope), so this is an empty stream for every other transport.
+  @override
+  Stream<RoomFrame> get roomFrames {
+    final t = _transport;
+    if (t is IRoomFrameLink) return (t as IRoomFrameLink).roomFrames;
+    return const Stream.empty();
   }
 
   /// Plan 17 — propagate the active Pi-side room to the underlying
