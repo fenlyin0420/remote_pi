@@ -6,6 +6,30 @@ import 'package:flutter_test/flutter_test.dart';
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
+/// Open the card's folded details (the header is the fold control).
+Future<void> _expand(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('tool-header')));
+  await tester.pump();
+}
+
+const _failedTool = ToolEvent(
+  id: 'tc1',
+  toolCallId: 'tc1',
+  tool: 'Bash',
+  args: {'command': 'exit 1'},
+  status: ToolEventStatus.failed,
+  error: 'command failed: exit 1',
+);
+
+const _doneTool = ToolEvent(
+  id: 'tc1',
+  toolCallId: 'tc1',
+  tool: 'Bash',
+  args: {'command': 'ls'},
+  status: ToolEventStatus.completed,
+  result: 'file-a\nfile-b',
+);
+
 const _bashTool = ToolEvent(
   id: 'tc1',
   toolCallId: 'tc1',
@@ -37,47 +61,73 @@ void main() {
     testWidgets('shows tool name and command', (tester) async {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       expect(find.text('BASH'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('tool-header')));
-      await tester.pump();
+      await _expand(tester);
       expect(find.text('ls -la'), findsOneWidget);
     });
 
-    testWidgets('details are folded by default — header and outcome stay', (
+    testWidgets('details are folded by default — only the header shows', (
       tester,
     ) async {
-      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _doneTool)));
+      // The header carries the timeline: which tool, and how it ended.
       expect(find.text('BASH'), findsOneWidget);
-      expect(find.text('RUNNING'), findsOneWidget);
-      expect(find.text('⏳ Running…'), findsOneWidget);
-      expect(find.text('ls -la'), findsNothing, reason: 'command is folded');
+      expect(find.text('DONE'), findsOneWidget);
+      // Everything long stays folded.
+      expect(find.text('ls'), findsNothing, reason: 'command is folded');
+      expect(find.text('file-a\nfile-b'), findsNothing, reason: 'output too');
+      expect(find.text('✓ Done'), findsNothing, reason: 'status line too');
     });
 
     testWidgets('tapping the header reveals the command and re-folds it', (
       tester,
     ) async {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
-      await tester.tap(find.byKey(const Key('tool-header')));
-      await tester.pump();
+      await _expand(tester);
       expect(find.text('ls -la'), findsOneWidget);
 
-      await tester.tap(find.byKey(const Key('tool-header')));
-      await tester.pump();
+      await _expand(tester);
       expect(find.text('ls -la'), findsNothing);
     });
 
-    testWidgets('a failure explains itself without being expanded', (
+    testWidgets('the returned output is folded away with the details', (
       tester,
     ) async {
-      const failed = ToolEvent(
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _doneTool)));
+      expect(find.textContaining('file-a'), findsNothing);
+
+      await _expand(tester);
+      expect(find.textContaining('file-a\nfile-b'), findsOneWidget);
+    });
+
+    testWidgets('a huge result is bounded, with what was left out declared', (
+      tester,
+    ) async {
+      final huge = ToolEvent(
         id: 'tc1',
         toolCallId: 'tc1',
         tool: 'Bash',
-        args: {'command': 'exit 1'},
-        status: ToolEventStatus.failed,
-        error: 'command failed: exit 1',
+        args: {'command': 'cat big'},
+        status: ToolEventStatus.completed,
+        result: 'x' * 20000,
       );
-      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: failed)));
+      await tester.pumpWidget(_wrap(ToolRequestCard(tool: huge)));
+      await _expand(tester);
+
+      final rendered = tester
+          .widget<SelectableText>(find.byType(SelectableText))
+          .data!;
+      expect(rendered.length, 12000);
+      expect(find.textContaining('8000 more characters'), findsOneWidget);
+    });
+
+    testWidgets('a failure folds its output too, keeping the FAILED header', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _failedTool)));
       expect(find.text('FAILED'), findsOneWidget);
+      expect(find.textContaining('command failed: exit 1'), findsNothing);
+
+      await _expand(tester);
       expect(find.textContaining('command failed: exit 1'), findsOneWidget);
     });
 
@@ -87,8 +137,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(const ToolRequestCard(key: ValueKey('row-1'), tool: _bashTool)),
       );
-      await tester.tap(find.byKey(const Key('tool-header')));
-      await tester.pump();
+      await _expand(tester);
       expect(find.text('ls -la'), findsOneWidget);
 
       // Same tool call, new identity: a scroll-away/back or a re-sync.
@@ -106,8 +155,7 @@ void main() {
       await tester.pumpWidget(
         _wrap(const ToolRequestCard(tool: _editToolWithHunk)),
       );
-      await tester.tap(find.byKey(const Key('tool-header')));
-      await tester.pump();
+      await _expand(tester);
 
       expect(
         find.textContaining('   16 args: {', findRichText: true),
@@ -139,15 +187,9 @@ void main() {
     });
 
     testWidgets('completed state shows DONE', (tester) async {
-      const done = ToolEvent(
-        id: 'tc1',
-        toolCallId: 'tc1',
-        tool: 'Bash',
-        args: {'command': 'ls'},
-        status: ToolEventStatus.completed,
-      );
-      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _doneTool)));
       expect(find.text('DONE'), findsOneWidget);
+      await _expand(tester);
       expect(find.textContaining('Done'), findsAny);
     });
 
@@ -186,37 +228,25 @@ void main() {
         tester.widget<Text>(find.text(text)).style?.color;
 
     testWidgets('completed → green "✓ Done"', (tester) async {
-      const done = ToolEvent(
-        id: 'tc1',
-        toolCallId: 'tc1',
-        tool: 'Bash',
-        args: {'command': 'ls'},
-        status: ToolEventStatus.completed,
-      );
-      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: done)));
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _doneTool)));
+      await _expand(tester);
       expect(outcomeColor(tester, '✓ Done'), AppColors.dark.success);
     });
 
-    testWidgets('failed → red "✗ {error}" + FAILED label', (tester) async {
-      const failed = ToolEvent(
-        id: 'tc1',
-        toolCallId: 'tc1',
-        tool: 'Bash',
-        args: {'command': 'exit 1'},
-        status: ToolEventStatus.failed,
-        error: 'command failed: exit 1',
-      );
-      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: failed)));
+    testWidgets('failed → red "✗ Failed" + the error in the folded output', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _failedTool)));
       expect(find.text('FAILED'), findsOneWidget);
-      expect(
-        outcomeColor(tester, '✗ command failed: exit 1'),
-        AppColors.dark.error,
-      );
+      await _expand(tester);
+      expect(outcomeColor(tester, '✗ Failed'), AppColors.dark.error);
+      expect(find.textContaining('command failed: exit 1'), findsOneWidget);
     });
 
     testWidgets('running → blue "⏳ Running…"', (tester) async {
       // pending defaults
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
+      await _expand(tester);
       expect(outcomeColor(tester, '⏳ Running…'), AppColors.dark.accent);
     });
   });

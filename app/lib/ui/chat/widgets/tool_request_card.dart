@@ -15,10 +15,11 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 // gating. The card is now purely informational.
 //
 // The details are FOLDED BY DEFAULT: the header always says which tool ran and
-// how it ended (colour + RUNNING/DONE/FAILED), and the outcome line always says
-// the same in words — including the error, so a failure is never hidden behind
-// a tap. What folds away is the command / diff, which is the part that repeats
-// across a long turn.
+// how it ended (colour + RUNNING/DONE/FAILED/DENIED), and that is all the
+// collapsed row shows. What folds away is everything long — the command / diff
+// AND the tool's returned output (which for a failed call is the error text,
+// and can be hundreds of KB): expanded, the output scrolls inside a bounded box
+// instead of stretching the transcript.
 //
 // `onDecide` is kept on the API for forward compat — when the Pi adds a
 // real approval pause we can re-enable the controls. Today it is unused.
@@ -108,10 +109,80 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
             if (_expanded) ...[
               const SizedBox(height: 10),
               _buildCodeBlock(context),
+              if (_toolOutput.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _buildOutput(context),
+              ],
               const SizedBox(height: 8),
+              _buildOutcome(color),
             ],
-            _buildOutcome(color),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// How much tool output gets rendered. A `cat big-file` can return hundreds
+  /// of KB: laying that out would stall the frame, and nobody reads it on a
+  /// phone — the tail is one tap away from the tool row's copy affordances on
+  /// desktop. The marker says how much was left out rather than pretending.
+  static const int _maxOutputChars = 12000;
+
+  /// Long output scrolls inside this box instead of stretching the transcript.
+  static const double _outputMaxHeight = 240;
+
+  /// What the tool returned: its output for a completed call, its error for a
+  /// failed one (`tool_result` carries the text in `error` in that case). Empty
+  /// while it is still running.
+  String get _toolOutput {
+    final result = tool.result;
+    final text = switch (tool.status) {
+      ToolEventStatus.failed || ToolEventStatus.denied =>
+        tool.error ?? result?.toString() ?? '',
+      _ => result?.toString() ?? '',
+    };
+    return text.trim();
+  }
+
+  /// The returned text — folded away with the rest of the details, because it
+  /// is the longest part of a tool row by far.
+  Widget _buildOutput(BuildContext context) {
+    final colors = context.colors;
+    final typo = context.typo;
+    final full = _toolOutput;
+    final shown = full.length > _maxOutputChars
+        ? full.substring(0, _maxOutputChars)
+        : full;
+    final hidden = full.length - shown.length;
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: colors.codeBg,
+        border: Border.all(color: colors.border),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: _outputMaxHeight),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SelectableText(
+                shown,
+                style: typo.mono.copyWith(color: colors.muted2),
+              ),
+              if (hidden > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '… $hidden more characters',
+                    style: typo.monoSmall.copyWith(color: colors.muted),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -216,11 +287,13 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   }
 
   Widget _buildOutcome(Color color) {
+    // Label only: the failure's text is the tool's returned output and lives in
+    // the folded output block with the rest of the details.
     final text = switch (tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => '⏳ Running…',
       ToolEventStatus.completed => '✓ Done',
-      ToolEventStatus.failed => '✗ ${tool.error ?? "Failed"}',
-      ToolEventStatus.denied => '✗ ${tool.error ?? "Denied"}',
+      ToolEventStatus.failed => '✗ Failed',
+      ToolEventStatus.denied => '✗ Denied',
       ToolEventStatus.expired => '✗ Expired',
     };
     return Text(
