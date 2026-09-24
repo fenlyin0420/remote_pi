@@ -6,10 +6,35 @@ import 'package:flutter_test/flutter_test.dart';
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
+/// Same, but the card is as tall as it wants — a long diff overflows a plain
+/// Scaffold body, while in the chat it lives in a scrolling list.
+Widget _wrapScrolling(Widget child) => MaterialApp(
+  home: Scaffold(body: SingleChildScrollView(child: child)),
+);
+
 /// Open the card's folded details (the header is the fold control).
 Future<void> _expand(WidgetTester tester) async {
   await tester.tap(find.byKey(const Key('tool-header')));
   await tester.pump();
+}
+
+/// The card's code block as `(text, colour)` pairs — the command line plus one
+/// entry per diff line. Read from the rich text so a line's colour can be
+/// asserted, not just its presence.
+List<(String, Color?)> _codeBlockSpans(WidgetTester tester) {
+  final rich = tester
+      .widgetList<Text>(
+        find.byWidgetPredicate((w) => w is Text && w.textSpan != null),
+      )
+      .single;
+  final out = <(String, Color?)>[];
+  rich.textSpan!.visitChildren((span) {
+    if (span is TextSpan && span.text != null) {
+      out.add((span.text!, span.style?.color));
+    }
+    return true;
+  });
+  return out;
 }
 
 const _failedTool = ToolEvent(
@@ -173,6 +198,125 @@ void main() {
         find.textContaining('   18 },', findRichText: true),
         findsOneWidget,
       );
+    });
+
+    // The args preview above is a guess the daemon makes before the edit runs.
+    // What the Pi reports having changed wins — and being real tool output it is
+    // also what survives a re-sync, where the preview is gone.
+    testWidgets('edit\'s own diff replaces the args preview, in mono', (
+      tester,
+    ) async {
+      const edit = ToolEvent(
+        id: 'tc9',
+        toolCallId: 'tc9',
+        tool: 'edit',
+        args: {
+          'path': 'lib/a.dart',
+          'hunks': [
+            {
+              'lines': [
+                {'kind': 'remove', 'oldLine': 99, 'text': 'stale preview'},
+              ],
+            },
+          ],
+        },
+        status: ToolEventStatus.completed,
+        result: 'Successfully replaced 1 block(s) in lib/a.dart.',
+        diff: '  12 const a = 1;\n- 13 const b = 2;\n+ 13 const b = 3;',
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: edit)));
+      await _expand(tester);
+
+      final spans = _codeBlockSpans(tester);
+      expect(spans.first.$1, 'edit lib/a.dart');
+      expect(
+        spans.map((s) => s.$1),
+        containsAll(<String>['  12 const a = 1;', '- 13 const b = 2;', '+ 13 const b = 3;']),
+      );
+      expect(
+        spans.firstWhere((s) => s.$1.contains('- 13')).$2,
+        AppColors.dark.error,
+        reason: 'a removed line is red',
+      );
+      expect(
+        spans.firstWhere((s) => s.$1.contains('+ 13')).$2,
+        AppColors.dark.success,
+        reason: 'an added line is green',
+      );
+      // Same font as the rest of the code block: monospace, as code should be.
+      expect(
+        tester
+            .widgetList<Text>(
+              find.byWidgetPredicate((w) => w is Text && w.textSpan != null),
+            )
+            .single
+            .textSpan!
+            .style!
+            .fontFamily,
+        kMonoFamily,
+      );
+      expect(
+        find.textContaining('stale preview', findRichText: true),
+        findsNothing,
+        reason: 'the diff that actually happened replaces the preview',
+      );
+      expect(
+        find.textContaining('Successfully replaced', findRichText: true),
+        findsNothing,
+        reason: 'the diff is the result — its sentence would only repeat the path',
+      );
+    });
+
+    testWidgets('an edit re-synced from history still shows its diff', (
+      tester,
+    ) async {
+      // History replays the args verbatim (no hunks: the daemon cannot rebuild
+      // a preview from a file that has already changed) and the tool's own diff.
+      const edit = ToolEvent(
+        id: 'tc8',
+        toolCallId: 'tc8',
+        tool: 'edit',
+        args: {
+          'path': 'lib/a.dart',
+          'edits': [
+            {'oldText': 'b = 2', 'newText': 'b = 3'},
+          ],
+        },
+        status: ToolEventStatus.completed,
+        result: 'Successfully replaced 1 block(s) in lib/a.dart.',
+        diff: '- 13 const b = 2;\n+ 13 const b = 3;',
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: edit)));
+      await _expand(tester);
+
+      expect(
+        find.textContaining('+ 13 const b = 3;', findRichText: true),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a whole-file rewrite is bounded, with the rest declared', (
+      tester,
+    ) async {
+      final edit = ToolEvent(
+        id: 'tc7',
+        toolCallId: 'tc7',
+        tool: 'edit',
+        args: const {'path': 'lib/a.dart'},
+        status: ToolEventStatus.completed,
+        diff: List.generate(500, (i) => '+ ${i + 1} line $i').join('\n'),
+      );
+      await tester.pumpWidget(_wrapScrolling(ToolRequestCard(tool: edit)));
+      await _expand(tester);
+
+      final spans = _codeBlockSpans(tester);
+      expect(
+        spans.where((s) => s.$1.startsWith('+ ')).length,
+        400,
+        reason: '400 diff lines render, the rest is declared',
+      );
+      expect(spans.last.$1, '… 100 more lines');
+      expect(spans.last.$2, AppColors.dark.muted);
     });
 
     testWidgets('pending state shows RUNNING and no Allow/Deny buttons', (

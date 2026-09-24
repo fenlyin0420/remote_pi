@@ -2331,9 +2331,15 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // a content-array/object into "[object Object]" and the success branch sent
     // the object unstringified — both diverging from re-sync.
     const text = _stringifyToolResult(event.result);
+    const diff = _toolResultDiff(event.result);
     const msg: ServerMessage = event.isError
       ? { type: "tool_result", tool_call_id: event.toolCallId, error: text }
-      : { type: "tool_result", tool_call_id: event.toolCallId, result: text };
+      : {
+          type: "tool_result",
+          tool_call_id: event.toolCallId,
+          result: text,
+          ...(diff === undefined ? {} : { diff }),
+        };
     _broadcastToActive(msg);
   });
 
@@ -5171,6 +5177,30 @@ function _stringifyToolResult(value: unknown): string {
 }
 
 /**
+ * The diff a tool attached to its result, when it reports one.
+ *
+ * `edit` is the tool that does: it returns `details = { diff, patch,
+ * firstChangedLine }`, and its `diff` is already in the same `+<line> text` /
+ * `-<line> text` shape this extension builds for the app's args preview (the
+ * Pi renders both with one formatter), so the app feeds it to the same
+ * renderer. Forwarding it is what lets the card show the change that ACTUALLY
+ * happened — and, unlike the args preview, it is real tool output, so a
+ * `session_history` replay keeps it after the file has moved on.
+ *
+ * Both call sites hand us an object carrying `details`: live it is the
+ * `{content, details}` wrapper of `tool_execution_end`, on re-sync it is the
+ * SDK's own toolResult message. Anything else (a string result, a content
+ * array) simply has no diff.
+ */
+function _toolResultDiff(value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const details = (value as { details?: unknown }).details;
+  if (details === null || typeof details !== "object") return undefined;
+  const diff = (details as { diff?: unknown }).diff;
+  return typeof diff === "string" && diff.length > 0 ? diff : undefined;
+}
+
+/**
  * Plan/30: extract `ImageContent` blocks ({type:"image", data, mimeType}) from
  * an SDK message's content and map them to the wire shape (`mimeType` → `mime`).
  * Used by the history mapper so a re-synced image bubble keeps its bytes —
@@ -5291,13 +5321,20 @@ export function _mapAgentMessagesToEvents(
         }
       }
     } else if (m.role === "toolResult") {
-      // Same helper as the live `tool_execution_end` broadcast → live == re-sync.
+      // Same helpers as the live `tool_execution_end` broadcast → live == re-sync.
       const text = _stringifyToolResult(m.content);
+      const diff = _toolResultDiff(m);
       const tcid = String(m.toolCallId ?? "");
       events.push(
         m.isError
           ? { ts, type: "tool_result", tool_call_id: tcid, error: text }
-          : { ts, type: "tool_result", tool_call_id: tcid, result: text },
+          : {
+              ts,
+              type: "tool_result",
+              tool_call_id: tcid,
+              result: text,
+              ...(diff === undefined ? {} : { diff }),
+            },
       );
     }
   }

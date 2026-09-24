@@ -298,6 +298,27 @@ são enviados. O `text` replayado é truncado por bloco (16 KiB) pra preservar o
 orçamento de bytes do mirror; o streaming ao vivo não tem limite. Modelos sem
 superfície de reasoning não são afetados: nenhum frame novo é emitido.
 
+### Resultado de tool com diff (`edit`)
+
+`tool_result` ganhou um campo opcional `diff` (aditivo; clientes antigos
+ignoram). Ele é o diff que a **própria tool** reporta ter aplicado — hoje só
+`edit` tem um (`details.diff`), e já vem no formato de exibição do Pi
+(`+ 12 texto` / `- 12 texto`), o mesmo que a extensão gera pro preview em
+`args.hunks`:
+
+```jsonc
+{ "type": "tool_result", "tool_call_id": "tc-1", "result": "Successfully replaced 1 block(s)…", "diff": "- 13 const b = 2;\n+ 13 const b = 3;" }
+```
+
+O app renderiza esse diff no cartão da tool (colorido por linha, fonte
+mono) em vez do preview dos args, e **não repete** o texto do resultado quando
+há diff — o `edit` só reafirma o caminho que já está na linha de comando.
+O motivo de existir: o preview é um palpite que o daemon calcula lendo o
+arquivo **antes** da edição e que `session_history` **não** replaya; o diff da
+tool é o que de fato aconteceu e sobrevive a um re-sync. Sem `details.diff`
+(qualquer outra tool) o campo simplesmente não vai — o shape antigo fica
+idêntico.
+
 ### Side-effects
 
 Os replies (`action_ok` / `models_list`) só confirmam dispatch. Efeitos visíveis chegam pelos canais normais:

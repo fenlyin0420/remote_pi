@@ -599,7 +599,7 @@ class SyncService extends Service {
               ),
         );
 
-      case ToolResult(:final toolCallId, :final result, :final error):
+      case ToolResult(:final toolCallId, :final result, :final error, :final diff):
         // ignore: discarded_futures
         _upsert(MsgRole.tool, toolCallId, (seq, existing) {
           final base =
@@ -619,6 +619,7 @@ class SyncService extends Service {
                       : ToolEventStatus.completed,
                   result: result,
                   error: error,
+                  diff: diff,
                 ),
               );
         });
@@ -846,7 +847,7 @@ class SyncService extends Service {
               ),
             ),
           );
-        case ToolResultEvt(:final toolCallId, :final result, :final error):
+        case ToolResultEvt(:final toolCallId, :final result, :final error, :final diff):
           final idx = out.lastIndexWhere(
             (m) => m.role == MsgRole.tool && m.tool?.toolCallId == toolCallId,
           );
@@ -859,6 +860,7 @@ class SyncService extends Service {
                 status: status,
                 result: result,
                 error: error,
+                diff: diff,
               ),
             );
           } else {
@@ -874,6 +876,7 @@ class SyncService extends Service {
                   status: status,
                   result: result,
                   error: error,
+                  diff: diff,
                 ),
               ),
             );

@@ -252,6 +252,8 @@ export type SessionHistoryEvent =
       tool_call_id: string;
       result?: unknown;
       error?: string;
+      /** The change the tool made, when it reports one (see `tool_result`). */
+      diff?: string;
     }
   | {
       ts: number;
@@ -325,7 +327,17 @@ export type ServerMessage =
   // re-sync). `tokens_before` is the pre-compaction token count.
   | { type: "compaction"; summary: string; tokens_before: number; ts?: number }
   | { type: "tool_request"; tool_call_id: string; tool: string; args: Record<string, unknown> }
-  | { type: "tool_result"; tool_call_id: string; result?: unknown; error?: string }
+  // `diff` is the tool's own diff of what it changed (`edit` returns one in
+  // `details.diff`), forwarded so the app can render the change that actually
+  // happened — and keep it across a re-sync, which the app's own args preview
+  // (computed by this daemon from the file before the edit) does not survive.
+  | {
+      type: "tool_result";
+      tool_call_id: string;
+      result?: unknown;
+      error?: string;
+      diff?: string;
+    }
   | { type: "error"; in_reply_to?: string; code: ErrorCode; message: string }
   | { type: "cancelled"; in_reply_to: string; target_id: string }
   | { type: "pong"; in_reply_to: string }

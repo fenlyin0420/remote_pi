@@ -899,12 +899,19 @@ class ToolResult extends ServerMessage {
   final String toolCallId;
   final dynamic result;
   final String? error;
-  ToolResult({required this.toolCallId, this.result, this.error});
+
+  /// The change the tool made, when it reports one. `edit` does: the Pi returns
+  /// its own diff (`details.diff`) and the daemon forwards it. It is already in
+  /// the `+<line> text` shape the tool card renders.
+  final String? diff;
+
+  ToolResult({required this.toolCallId, this.result, this.error, this.diff});
 
   factory ToolResult.fromJson(Map<String, dynamic> j) => ToolResult(
     toolCallId: j['tool_call_id'] as String,
     result: j['result'],
     error: j['error'] as String?,
+    diff: j['diff'] as String?,
   );
 }
 
@@ -1234,6 +1241,7 @@ sealed class SessionHistoryEvent {
         toolCallId: j['tool_call_id'] as String,
         result: j['result'],
         error: j['error'] as String?,
+        diff: j['diff'] as String?,
       ),
       'agent_message' => AgentMessageEvt(
         ts: ts,
@@ -1293,11 +1301,18 @@ class ToolResultEvt extends SessionHistoryEvent {
   final String toolCallId;
   final dynamic result;
   final String? error;
+
+  /// The tool's own diff of what it changed (see [ToolResult.diff]). Present in
+  /// re-synced history too, where the args preview is gone for good: it is the
+  /// Pi's recorded output, not something this daemon recomputed.
+  final String? diff;
+
   const ToolResultEvt({
     required super.ts,
     required this.toolCallId,
     this.result,
     this.error,
+    this.diff,
   });
 }
 

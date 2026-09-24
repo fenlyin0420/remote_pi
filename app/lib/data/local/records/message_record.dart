@@ -142,6 +142,7 @@ class MessageRecord {
           status: t?.status ?? ToolEventStatus.pending,
           result: t?.result,
           error: t?.error,
+          diff: t?.diff,
         );
       case MsgRole.compaction:
         return CompactionMsg(id: id, summary: text, tokensBefore: tokensBefore);
@@ -158,6 +159,10 @@ class ToolEventData {
   final dynamic result;
   final String? error;
 
+  /// The tool's own diff of what it changed (see [ToolEvent.diff]). Persisted
+  /// so reopening the app keeps showing the same diff a live call showed.
+  final String? diff;
+
   const ToolEventData({
     required this.toolCallId,
     required this.tool,
@@ -165,12 +170,14 @@ class ToolEventData {
     this.status = ToolEventStatus.pending,
     this.result,
     this.error,
+    this.diff,
   });
 
   ToolEventData copyWith({
     ToolEventStatus? status,
     dynamic result,
     String? error,
+    String? diff,
   }) => ToolEventData(
     toolCallId: toolCallId,
     tool: tool,
@@ -178,6 +185,7 @@ class ToolEventData {
     status: status ?? this.status,
     result: result ?? this.result,
     error: error ?? this.error,
+    diff: diff ?? this.diff,
   );
 
   Map<String, dynamic> toJson() => {
@@ -187,6 +195,7 @@ class ToolEventData {
     'status': status.name,
     'result': result,
     'error': error,
+    'diff': diff,
   };
 
   factory ToolEventData.fromJson(Map<String, dynamic> j) => ToolEventData(
@@ -199,5 +208,6 @@ class ToolEventData {
     ),
     result: j['result'],
     error: j['error'] as String?,
+    diff: j['diff'] as String?,
   );
 }

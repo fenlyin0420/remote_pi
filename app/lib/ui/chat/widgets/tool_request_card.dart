@@ -21,6 +21,11 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 // and can be hundreds of KB): expanded, the output scrolls inside a bounded box
 // instead of stretching the transcript.
 //
+// A tool that reports the change it made (`edit`, via `details.diff`) gets that
+// diff rendered in the code block, coloured line by line like the args preview
+// it replaces — and then the plain result text is not repeated, because for an
+// `edit` it only restates the path above it.
+//
 // `onDecide` is kept on the API for forward compat — when the Pi adds a
 // real approval pause we can re-enable the controls. Today it is unused.
 
@@ -79,6 +84,8 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(context);
+    // The tool's own diff, when it has one — see [_resultDiffLines].
+    final resultDiff = _resultDiffLines();
     // Dim only the inert states (denied/expired); keep done/failed at full
     // opacity so their green/red read clearly.
     final dimmed =
@@ -108,8 +115,12 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
             _buildHeader(context, color),
             if (_expanded) ...[
               const SizedBox(height: 10),
-              _buildCodeBlock(context),
-              if (_toolOutput.isNotEmpty) ...[
+              _buildCodeBlock(context, resultDiff),
+              // When the result IS a diff, its text is not repeated: for an
+              // `edit` it only restates the path already on the command line
+              // (the Pi's own renderer drops it the same way). A failure has no
+              // diff, so its error still lands here.
+              if (resultDiff == null && _toolOutput.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 _buildOutput(context),
               ],
@@ -142,6 +153,40 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
       _ => result?.toString() ?? '',
     };
     return text.trim();
+  }
+
+  /// The change the tool reports having made, ready to render — null until the
+  /// result arrives, and for every tool that reports none.
+  ///
+  /// `edit` is the tool that reports one (the Pi returns `details.diff`, which
+  /// the daemon forwards): it is the change that actually happened, and the
+  /// only diff that survives a re-sync — the args preview below is built by the
+  /// daemon from the file *before* the edit ran and is not replayed by history.
+  /// The Pi already formats the line number into each line (`+ 12 text`), the
+  /// same shape [_formatEditDisplay] composes from that preview, so both can
+  /// share one renderer.
+  List<_DiffLine>? _resultDiffLines() {
+    final diff = tool.diff;
+    if (diff == null) return null;
+    final lines = [
+      for (final raw in diff.split('\n'))
+        if (raw.isNotEmpty) _DiffLine.raw(raw),
+    ];
+    return lines.isEmpty ? null : lines;
+  }
+
+  /// A whole-file rewrite diffs every one of its lines, and a phone cannot lay
+  /// out thousands of them. Bound what gets rendered and declare the rest,
+  /// rather than silently pretending the diff ended there.
+  static const int _maxDiffLines = 400;
+
+  static List<_DiffLine> _boundedDiff(List<_DiffLine> lines) {
+    if (lines.length <= _maxDiffLines) return lines;
+    final hidden = lines.length - _maxDiffLines;
+    return [
+      ...lines.take(_maxDiffLines),
+      _DiffLine.marker('… $hidden more lines'),
+    ];
   }
 
   /// The returned text — folded away with the rest of the details, because it
@@ -240,10 +285,10 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     );
   }
 
-  Widget _buildCodeBlock(BuildContext context) {
+  Widget _buildCodeBlock(BuildContext context, List<_DiffLine>? resultDiff) {
     final colors = context.colors;
     final typo = context.typo;
-    final content = _buildToolSummary(context);
+    final content = _buildToolSummary(context, resultDiff);
     return Container(
       decoration: BoxDecoration(
         color: colors.codeBg,
@@ -261,20 +306,20 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     );
   }
 
-  Widget _buildToolSummary(BuildContext context) {
+  Widget _buildToolSummary(BuildContext context, List<_DiffLine>? resultDiff) {
     final colors = context.colors;
     final typo = context.typo;
     final display = _formatToolDisplay(tool.tool, tool.args);
-    if (display == null) {
-      return Text(_formatArgs(tool.tool, tool.args), style: typo.mono);
-    }
-
+    // The tool's own diff wins over the preview of its args.
+    final lines = _boundedDiff(
+      resultDiff ?? display?.lines ?? const <_DiffLine>[],
+    );
     return Text.rich(
       TextSpan(
         style: typo.mono,
         children: [
-          TextSpan(text: display.command),
-          for (final line in display.lines) ...[
+          TextSpan(text: display?.command ?? _formatArgs(tool.tool, tool.args)),
+          for (final line in lines) ...[
             const TextSpan(text: '\n'),
             TextSpan(
               text: line.text,
@@ -394,6 +439,22 @@ class _DiffLine {
 
   factory _DiffLine.context(String text) =>
       _DiffLine._(text, (colors) => colors.text);
+
+  /// A line of the tool's own diff, taken verbatim: the Pi pads the line number
+  /// into the line itself, so only the leading sign has to be read to colour
+  /// it. A `@@` header (a full patch, not this diff) falls through to context.
+  factory _DiffLine.raw(String text) => _DiffLine._(
+    text,
+    switch (text.isEmpty ? ' ' : text[0]) {
+      '+' => (AppColors colors) => colors.success,
+      '-' => (AppColors colors) => colors.error,
+      _ => (AppColors colors) => colors.text,
+    },
+  );
+
+  /// A "there is more" marker: muted, like the output block's own marker.
+  factory _DiffLine.marker(String text) =>
+      _DiffLine._(text, (colors) => colors.muted);
 }
 
 // Minimal terminal icon (rectangle + > and —)

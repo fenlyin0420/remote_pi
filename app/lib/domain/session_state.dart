@@ -153,6 +153,13 @@ class ToolEvent extends ChatMessage {
   final dynamic result;
   final String? error;
 
+  /// The tool's own diff of what it changed — `edit` reports one, every other
+  /// tool leaves it null. Once it is here the card renders it in place of the
+  /// args preview: this is what actually happened, and it is also the only diff
+  /// that survives a re-sync (the preview is built by the daemon from the file
+  /// before the edit ran, and history does not replay it).
+  final String? diff;
+
   const ToolEvent({
     required super.id,
     required this.toolCallId,
@@ -161,12 +168,14 @@ class ToolEvent extends ChatMessage {
     this.status = ToolEventStatus.pending,
     this.result,
     this.error,
+    this.diff,
   });
 
   ToolEvent copyWith({
     ToolEventStatus? status,
     dynamic result,
     String? error,
+    String? diff,
   }) => ToolEvent(
     id: id,
     toolCallId: toolCallId,
@@ -175,6 +184,7 @@ class ToolEvent extends ChatMessage {
     status: status ?? this.status,
     result: result ?? this.result,
     error: error ?? this.error,
+    diff: diff ?? this.diff,
   );
 
   @override

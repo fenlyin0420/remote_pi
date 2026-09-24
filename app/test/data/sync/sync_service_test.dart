@@ -818,6 +818,59 @@ void main() {
     },
   );
 
+  test(
+    'a tool\'s own diff is stored live, and replayed by a re-sync',
+    () async {
+      final s = await setup();
+      const diff = "- 13 const b = 2;\n+ 13 const b = 3;";
+      s.ch.push(ToolRequest(toolCallId: 'tc1', tool: 'edit', args: {}));
+      await _settle();
+      s.ch.push(ToolResult(toolCallId: 'tc1', result: 'done', diff: diff));
+      await _settle();
+
+      expect(messages(s.epk).single.tool?.diff, diff);
+      // The chat row the card renders carries it too.
+      final evt = messages(s.epk).single.toChatMessage() as ToolEvent;
+      expect(evt.diff, diff);
+
+      // A tool that reports no diff stays null — nothing is invented.
+      s.ch.push(ToolRequest(toolCallId: 'tc2', tool: 'Read', args: {}));
+      await _settle();
+      s.ch.push(ToolResult(toolCallId: 'tc2', result: 'file'));
+      await _settle();
+      expect(
+        messages(
+          s.epk,
+        ).firstWhere((r) => r.tool?.toolCallId == 'tc2').tool?.diff,
+        isNull,
+      );
+
+      // Re-synced history: the args preview is never replayed, so this is the
+      // only diff a reopened room gets.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 0,
+          events: const [
+            ToolRequestEvt(ts: 1, toolCallId: 'h1', tool: 'edit', args: null),
+            ToolResultEvt(ts: 2, toolCallId: 'h1', result: 'done', diff: diff),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(
+          s.epk,
+        ).firstWhere((r) => r.tool?.toolCallId == 'h1').tool?.diff,
+        diff,
+      );
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
   test('re-applying an IDENTICAL SessionHistory is idempotent — no box churn, '
       'so the relay re-sending history on every reconnect no longer tears the '
       'list down and rebuilds it (plan/32 flicker fix)', () async {

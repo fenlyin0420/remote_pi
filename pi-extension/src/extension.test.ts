@@ -2794,6 +2794,47 @@ describe("tool visibility", () => {
     ])[0] as { error?: string };
     expect(hist.error).toBe(w?.inner.error);
   });
+
+  test("a tool's own diff rides along, live and on re-sync", async () => {
+    await _pairForTest("peer-diff");
+    const onToolEnd = captureEventHandler("tool_execution_end");
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    // `edit` returns `details.diff` in its own display shape (`+ 12 text`)
+    // alongside the human sentence in `content` — the app renders that diff
+    // instead of its args preview (which history does not replay).
+    const diff = "  12 const a = 1;\n- 13 const b = 2;\n+ 13 const b = 3;";
+    const done = "Successfully replaced 1 block(s) in a.ts.";
+    onToolEnd({
+      type: "tool_execution_end", toolCallId: "tc_edit", toolName: "edit",
+      result: { content: [{ type: "text", text: done }], details: { diff, patch: "--- a\n+++ b" } },
+      isError: false,
+    });
+    // A tool with no diff in its details must keep sending the old shape.
+    onToolEnd({
+      type: "tool_execution_end", toolCallId: "tc_read", toolName: "Read",
+      result: { content: [{ type: "text", text: "file contents" }], details: {} },
+      isError: false,
+    });
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .filter((d) => d.inner.type === "tool_result");
+    const edit = sent.find((d) => d.inner.tool_call_id === "tc_edit");
+    const read = sent.find((d) => d.inner.tool_call_id === "tc_read");
+
+    expect(edit?.inner.diff).toBe(diff);
+    expect(edit?.inner.result).toBe(done);
+    expect("diff" in (read?.inner ?? {})).toBe(false);
+
+    // live == re-sync: the SDK's toolResult message carries the same `details`,
+    // so a replay keeps the diff even though the file has moved on since.
+    const hist = _mapAgentMessagesToEvents([
+      { role: "toolResult", toolCallId: "tc_edit", content: [{ type: "text", text: done }], details: { diff }, timestamp: 1 },
+    ])[0] as { diff?: string; result?: string };
+    expect(hist.diff).toBe(diff);
+    expect(hist.result).toBe(edit?.inner.result);
+  });
 });
 
 // ── /remote-pi set-relay + /remote-pi config ──────────────────────────────────

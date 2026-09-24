@@ -50,6 +50,7 @@ void main() {
           args: {'cmd': 'ls'},
           status: ToolEventStatus.completed,
           result: {'exit': 0},
+          diff: '- 1 old\n+ 1 new',
         ),
       );
       final back = MessageRecord.fromJson(r.toJson());
@@ -58,6 +59,11 @@ void main() {
       final evt = back.toChatMessage() as ToolEvent;
       expect(evt.toolCallId, 'tc1');
       expect(evt.status, ToolEventStatus.completed);
+      expect(
+        evt.diff,
+        '- 1 old\n+ 1 new',
+        reason: 'a reopened chat shows the same diff the live card did',
+      );
     });
 
     test('SessionIndexRecord survives roundtrip', () {
