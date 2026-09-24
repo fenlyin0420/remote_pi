@@ -191,13 +191,16 @@ class BackgroundDelivery extends Service {
 
     if (_armed && !_foreground) {
       await _background.start();
-    } else {
+    } else if (!_armed) {
       await _background.stop();
       // Banners belong to a feature that was switched off or unpaired — not to
       // the app simply coming back to the front, which must leave the user's
       // unread notices alone.
-      if (!_armed) await _notifier.cancelAll();
+      await _notifier.cancelAll();
     }
+    // Armed, in front, keeper already up: leave it up. Stopping here would only
+    // make Android post its notice again on the next trip to the background, and
+    // the user who swiped that notice away expects it to stay gone.
   }
 
   // ---------------------------------------------------------------------------

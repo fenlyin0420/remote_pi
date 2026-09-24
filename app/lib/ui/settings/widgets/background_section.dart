@@ -70,9 +70,11 @@ class BackgroundSection extends StatelessWidget {
             icon: LucideIcons.info,
             text:
                 'Android requires a small "Remote Pi" notice while this keeps '
-                'the connection alive in the background — it appears when you '
-                'leave the app, not while it is open. Swiping the app away from '
-                'Recents stops the connection; pressing Home is fine.',
+                'the connection alive in the background, and it cannot be turned '
+                'off — the alternative is not being reachable at all. It appears '
+                'the first time you leave the app; swipe it away and it stays '
+                'away. Swiping the app itself out of Recents stops the '
+                'connection; pressing Home is fine.',
           ),
           _StatusRow(
             key: const Key('background-notifications-row'),

@@ -401,11 +401,14 @@ void main() {
     expect(h.keeper.starts, 1);
     expect(h.keeper.running, isTrue);
 
-    // …and coming back stops it, without touching the user's banners.
+    // …and coming back leaves it up: the notice the user swiped away must not
+    // come back either, and the service is doing no harm while the app is open.
     final banners = h.notifier.cancelAllCount;
+    final starts = h.keeper.starts;
     await h.delivery.setForeground(true);
     await pump();
-    expect(h.keeper.running, isFalse);
+    expect(h.keeper.running, isTrue);
+    expect(h.keeper.starts, starts, reason: 'nothing re-posts the notice');
     expect(h.notifier.cancelAllCount, banners,
         reason: 'the feature is still armed; coming back is not a switch-off');
 
