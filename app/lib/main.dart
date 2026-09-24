@@ -139,11 +139,13 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final meshSync = injector.get<MeshSyncService>();
-    // Background delivery needs the same lifecycle signal: "do not notify about
-    // a chat the user is reading" only works if the app knows it is in front.
-    injector
-        .get<VisibleSession>()
-        .setForeground(state == AppLifecycleState.resumed);
+    final resumed = state == AppLifecycleState.resumed;
+    // Background delivery needs the same lifecycle signal twice over: "do not
+    // notify about a chat the user is reading" only works if the app knows it
+    // is in front, and the keeper itself only runs while it is NOT.
+    injector.get<VisibleSession>().setForeground(resumed);
+    // ignore: unawaited_futures
+    _delivery.setForeground(resumed);
     switch (state) {
       case AppLifecycleState.resumed:
         meshSync.startPolling();

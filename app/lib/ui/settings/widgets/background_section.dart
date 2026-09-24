@@ -61,15 +61,18 @@ class BackgroundSection extends StatelessWidget {
           ),
         ),
         if (state.enabled) ...[
-          // Android shows this by force, not by choice — say so up front so a
-          // notice the user cannot dismiss does not read as a bug.
+          // Android forces a notice while a foreground service runs, but the
+          // keeper only runs while the app is *out of sight* — so say both
+          // halves, or a notice that never appears while the app is open looks
+          // like a switch that does nothing.
           _Note(
             key: const Key('background-notice-note'),
             icon: LucideIcons.info,
             text:
-                'Android shows a small "Remote Pi" notice while this is on, '
-                'and stops the connection if you swipe the app away from '
-                'Recents. Pressing Home is fine.',
+                'Android requires a small "Remote Pi" notice while this keeps '
+                'the connection alive in the background — it appears when you '
+                'leave the app, not while it is open. Swiping the app away from '
+                'Recents stops the connection; pressing Home is fine.',
           ),
           _StatusRow(
             key: const Key('background-notifications-row'),
@@ -87,13 +90,22 @@ class BackgroundSection extends StatelessWidget {
           // the answer can go back to "Stopped" without the app being told why,
           // and "notifications stopped and I don't know why" is the worst state
           // to debug blind.
+          //
+          // "Waiting for background" is not a fault to fix — it is the keeper
+          // doing the right thing while the app is in front.
           _StatusRow(
             key: const Key('background-service-row'),
             icon: LucideIcons.activity,
-            ok: state.running,
+            ok: state.running || state.waitingForBackground,
             label: 'Service',
-            state: state.running ? 'Running' : 'Stopped',
-            action: state.running ? null : 'Restart',
+            state: state.running
+                ? 'Running'
+                : state.waitingForBackground
+                ? 'Starts when you leave the app'
+                : 'Stopped',
+            action: state.running || state.waitingForBackground
+                ? null
+                : 'Restart',
             actionKey: const Key('background-service-restart'),
             onAction: vm.restartKeeper,
           ),

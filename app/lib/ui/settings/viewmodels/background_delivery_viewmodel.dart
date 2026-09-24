@@ -72,6 +72,10 @@ class BackgroundDeliveryViewModel extends ViewModel<BackgroundDeliveryState> {
         notificationsEnabled: notifications,
         batteryExempt: battery,
         diagnostics: diagnostics,
+        // "Off because the app is open" is a deliberate state, not a failure:
+        // the keeper exists for the app being out of sight.
+        waitingForBackground:
+            _delivery.armed && _delivery.foreground && !running,
       ),
     );
   }

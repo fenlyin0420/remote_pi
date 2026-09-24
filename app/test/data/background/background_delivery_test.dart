@@ -382,13 +382,42 @@ void main() {
     h.dispose();
   });
 
-  test('keeper starts with a paired peer and stops when unpaired', () async {
+  test('the keeper waits for the background, then runs with a peer', () async {
     final h = _Harness(rooms: {'room-a': 'remote_pi'});
     await h.connect();
     await h.delivery.start();
     await pump();
 
+    // Armed, but the app is in front: the connection is alive anyway and
+    // Android's mandatory notice would only be noise (it used to appear on
+    // every launch, which is what the user reported).
+    expect(h.delivery.armed, isTrue);
+    expect(h.keeper.starts, 0);
+    expect(h.keeper.running, isFalse);
+
+    // Leaving the app is what turns the keeper on.
+    await h.delivery.setForeground(false);
+    await pump();
     expect(h.keeper.starts, 1);
+    expect(h.keeper.running, isTrue);
+
+    // …and coming back stops it, without touching the user's banners.
+    final banners = h.notifier.cancelAllCount;
+    await h.delivery.setForeground(true);
+    await pump();
+    expect(h.keeper.running, isFalse);
+    expect(h.notifier.cancelAllCount, banners,
+        reason: 'the feature is still armed; coming back is not a switch-off');
+
+    h.dispose();
+  });
+
+  test('revoking the last peer stops the keeper and drops its banners', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi'});
+    await h.connect();
+    await h.delivery.start();
+    await h.delivery.setForeground(false);
+    await pump();
     expect(h.keeper.running, isTrue);
 
     // Revoke the last peer: nothing to stay connected to.
@@ -396,6 +425,7 @@ void main() {
     h.prefs.notifyListeners();
     await pump();
 
+    expect(h.delivery.armed, isFalse);
     expect(h.keeper.running, isFalse);
     expect(h.notifier.cancelAllCount, greaterThan(0));
     h.dispose();
@@ -405,7 +435,9 @@ void main() {
     final h = _Harness(rooms: {'room-a': 'remote_pi'});
     await h.connect();
     await h.delivery.start();
+    await h.delivery.setForeground(false);
     await pump();
+    expect(h.keeper.running, isTrue);
 
     await h.prefs.setBackgroundConnection(false);
     await pump();

@@ -69,6 +69,18 @@ class BackgroundDelivery extends Service {
   bool _started = false;
   bool _disposed = false;
 
+  /// Whether the app is in front. The keeper only runs when it is **not**: in
+  /// front, the app's own connection is alive and Android's mandatory notice on
+  /// the foreground service is pure noise — it was the "Connected" notice the
+  /// user saw on every launch. Backgrounded, the notice is the price of keeping
+  /// the process alive at all, and it appears only then.
+  bool _foreground = true;
+
+  /// Whether the feature is armed: switch on, and something paired to reach.
+  /// Cached from the last [syncKeeper] so Settings can describe the keeper
+  /// accurately without re-reading storage itself.
+  bool _armed = false;
+
   /// The notification prompt is asked at most once per app run. Android stops
   /// showing it after a couple of denials anyway; asking on every storage change
   /// would just be noise on the way to that.
@@ -76,6 +88,19 @@ class BackgroundDelivery extends Service {
 
   /// Sessions the user tapped, for the router to open.
   Stream<NotificationTap> get taps => _taps.stream;
+
+  /// See [_armed]. True means "there is something to keep alive".
+  bool get armed => _armed;
+
+  /// See [_foreground].
+  bool get foreground => _foreground;
+
+  /// Told by the app shell whenever the lifecycle changes. Idempotent.
+  Future<void> setForeground(bool value) async {
+    if (_foreground == value) return;
+    _foreground = value;
+    await syncKeeper();
+  }
 
   /// Wires up the streams and applies the current switch state. Idempotent;
   /// call once from bootstrap so nothing is missed while the app boots.
@@ -143,22 +168,35 @@ class BackgroundDelivery extends Service {
     // notice from appearing on a fresh install or after a revoke.
     final peers = await _storage.listPeers();
     if (_disposed) return;
-    final wanted = _preferences.backgroundConnection && peers.isNotEmpty;
-    if (wanted) {
-      await _background.start();
-      // Ask for the notification permission the moment the feature turns on —
-      // which is boot with a peer, or right after the first pairing. A prompt
-      // with no context is the one users deny by reflex, and without it the
-      // keeper would run invisibly: notifications simply never appear.
-      if (!_askedForNotifications) {
-        _askedForNotifications = true;
-        if (!await _background.notificationsEnabled()) {
-          await _background.requestNotificationPermission();
-        }
+
+    // Two separate questions, previously one. *Armed* is the user's intent: the
+    // switch is on and there is a peer to reach. *Wanted* is whether the
+    // platform should be running the keeper right now — which is only while the
+    // app is out of sight, since that is the only situation the keeper improves.
+    _armed = _preferences.backgroundConnection && peers.isNotEmpty;
+
+    if (_armed && !_askedForNotifications) {
+      // Ask for the notification permission when the feature is armed, not when
+      // the keeper happens to start: this is the one moment the request has
+      // obvious context, and it is always in front — Android cannot show this
+      // dialog from the background, which is when the keeper starts now. A
+      // prompt with no context is the one users deny by reflex, and without the
+      // permission the keeper would run invisibly.
+      _askedForNotifications = true;
+      if (!await _background.notificationsEnabled()) {
+        await _background.requestNotificationPermission();
       }
+      if (_disposed) return;
+    }
+
+    if (_armed && !_foreground) {
+      await _background.start();
     } else {
       await _background.stop();
-      await _notifier.cancelAll();
+      // Banners belong to a feature that was switched off or unpaired — not to
+      // the app simply coming back to the front, which must leave the user's
+      // unread notices alone.
+      if (!_armed) await _notifier.cancelAll();
     }
   }
 

@@ -15,6 +15,7 @@ class BackgroundDeliveryState {
     required this.batteryExempt,
     this.diagnostics,
     this.busy = false,
+    this.waitingForBackground = false,
   });
 
   /// The user's switch ([Preferences.backgroundConnection]).
@@ -40,6 +41,11 @@ class BackgroundDeliveryState {
   /// A permission prompt or settings hop is in flight.
   final bool busy;
 
+  /// The keeper is deliberately not running because the app is in front. Not a
+  /// problem to fix — the connection is alive in front anyway — so the section
+  /// must not dress it up as "Stopped" and offer a pointless restart.
+  final bool waitingForBackground;
+
   BackgroundDeliveryState copyWith({
     bool? enabled,
     bool? supported,
@@ -48,6 +54,7 @@ class BackgroundDeliveryState {
     bool? batteryExempt,
     NotificationDiagnostics? diagnostics,
     bool? busy,
+    bool? waitingForBackground,
   }) => BackgroundDeliveryState(
     enabled: enabled ?? this.enabled,
     supported: supported ?? this.supported,
@@ -56,6 +63,7 @@ class BackgroundDeliveryState {
     batteryExempt: batteryExempt ?? this.batteryExempt,
     diagnostics: diagnostics ?? this.diagnostics,
     busy: busy ?? this.busy,
+    waitingForBackground: waitingForBackground ?? this.waitingForBackground,
   );
 
   @override
@@ -67,7 +75,8 @@ class BackgroundDeliveryState {
       other.notificationsEnabled == notificationsEnabled &&
       other.batteryExempt == batteryExempt &&
       other.diagnostics == diagnostics &&
-      other.busy == busy;
+      other.busy == busy &&
+      other.waitingForBackground == waitingForBackground;
 
   @override
   int get hashCode => Object.hash(
@@ -78,5 +87,6 @@ class BackgroundDeliveryState {
     batteryExempt,
     diagnostics,
     busy,
+    waitingForBackground,
   );
 }
