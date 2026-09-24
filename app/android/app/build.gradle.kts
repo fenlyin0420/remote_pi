@@ -1,5 +1,5 @@
-import java.util.Properties
 import java.io.FileInputStream
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -13,12 +13,13 @@ plugins {
 // work), release builds fall back to the debug keys so `flutter run
 // --release` still works locally without forcing every contributor to
 // configure signing.
-val keystoreProperties = Properties().apply {
-    val f = rootProject.file("key.properties")
-    if (f.exists()) {
-        load(FileInputStream(f))
+val keystoreProperties =
+    Properties().apply {
+        val f = rootProject.file("key.properties")
+        if (f.exists()) {
+            load(FileInputStream(f))
+        }
     }
-}
 val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
@@ -60,11 +61,12 @@ android {
 
     buildTypes {
         release {
-            signingConfig = if (hasReleaseKeystore) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            signingConfig =
+                if (hasReleaseKeystore) {
+                    signingConfigs.getByName("release")
+                } else {
+                    signingConfigs.getByName("debug")
+                }
         }
     }
 
