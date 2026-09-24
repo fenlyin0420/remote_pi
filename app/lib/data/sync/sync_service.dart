@@ -55,6 +55,9 @@ class SyncService extends Service {
   String _chunkReplyTo = '';
   final StringBuffer _thinkingBuffer = StringBuffer();
   String _thinkingReplyTo = '';
+  // When the live reasoning segment started — the row it folds into carries the
+  // elapsed time, and the streaming block ticks it (StreamingMessage.startedAt).
+  DateTime? _thinkingStartedAt;
   Timer? _flushTimer;
   StreamingMessage? _streaming;
   final StreamController<StreamingMessage?> _streamingController =
@@ -172,6 +175,7 @@ class SyncService extends Service {
     // land as a row in the NEXT chat (the buffers are keyed by nothing).
     _thinkingBuffer.clear();
     _thinkingReplyTo = '';
+    _thinkingStartedAt = null;
     _workingReplyTo = null;
     _sawRemoteWorking = false;
     _setQueuedMessages(const []);
@@ -478,6 +482,7 @@ class SyncService extends Service {
       case AgentThinking(:final inReplyTo, :final delta):
         // Mirror image: a reasoning block after text closes the text segment.
         _finalizeTextSegment();
+        _thinkingStartedAt ??= DateTime.now();
         _thinkingBuffer.write(delta);
         _thinkingReplyTo = inReplyTo;
         _flushTimer?.cancel();
@@ -811,7 +816,7 @@ class SyncService extends Service {
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
             ),
           );
-        case AgentThinkingEvt(:final text):
+        case AgentThinkingEvt(:final text, :final durationMs):
           // Reasoning replayed ahead of the answer of the same message (content
           // order is preserved by the mapper). Id is stable per (ts, index) so
           // a re-sent identical history rewrites nothing.
@@ -823,6 +828,7 @@ class SyncService extends Service {
                 role: MsgRole.thinking,
                 text: text,
                 ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+                thinkingMs: durationMs,
               ),
             );
           }
@@ -1134,6 +1140,7 @@ class SyncService extends Service {
                 inReplyTo: _thinkingReplyTo,
                 buffer: delta,
                 thinking: true,
+                startedAt: _thinkingStartedAt,
               ),
       );
     }
@@ -1211,9 +1218,14 @@ class SyncService extends Service {
               inReplyTo: _thinkingReplyTo,
               buffer: delta,
               thinking: true,
+              startedAt: _thinkingStartedAt,
             );
     }
     final text = _streaming?.buffer ?? '';
+    // The block is over: freeze how long it took. Measured here (not in the UI)
+    // so the persisted row and the live counter are the same number.
+    final startedAt = _thinkingStartedAt;
+    final elapsed = startedAt == null ? null : DateTime.now().difference(startedAt);
     if (text.isNotEmpty) {
       final id = 'thinking_${uuid7()}';
       // ignore: discarded_futures
@@ -1226,10 +1238,12 @@ class SyncService extends Service {
           role: MsgRole.thinking,
           text: text,
           ts: DateTime.now(),
+          thinkingMs: elapsed?.inMilliseconds,
         ),
       );
     }
     _thinkingReplyTo = '';
+    _thinkingStartedAt = null;
     _emitStreaming(null);
     return text;
   }
@@ -1241,6 +1255,7 @@ class SyncService extends Service {
     _chunkReplyTo = '';
     _thinkingBuffer.clear();
     _thinkingReplyTo = '';
+    _thinkingStartedAt = null;
     _emitStreaming(null);
   }
 

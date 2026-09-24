@@ -37,13 +37,56 @@ void main() {
     testWidgets('shows tool name and command', (tester) async {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       expect(find.text('BASH'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('tool-header')));
+      await tester.pump();
       expect(find.text('ls -la'), findsOneWidget);
+    });
+
+    testWidgets('details are folded by default — header and outcome stay', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
+      expect(find.text('BASH'), findsOneWidget);
+      expect(find.text('RUNNING'), findsOneWidget);
+      expect(find.text('⏳ Running…'), findsOneWidget);
+      expect(find.text('ls -la'), findsNothing, reason: 'command is folded');
+    });
+
+    testWidgets('tapping the header reveals the command and re-folds it', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
+      await tester.tap(find.byKey(const Key('tool-header')));
+      await tester.pump();
+      expect(find.text('ls -la'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('tool-header')));
+      await tester.pump();
+      expect(find.text('ls -la'), findsNothing);
+    });
+
+    testWidgets('a failure explains itself without being expanded', (
+      tester,
+    ) async {
+      const failed = ToolEvent(
+        id: 'tc1',
+        toolCallId: 'tc1',
+        tool: 'Bash',
+        args: {'command': 'exit 1'},
+        status: ToolEventStatus.failed,
+        error: 'command failed: exit 1',
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: failed)));
+      expect(find.text('FAILED'), findsOneWidget);
+      expect(find.textContaining('command failed: exit 1'), findsOneWidget);
     });
 
     testWidgets('edit renders rich hunks with context lines', (tester) async {
       await tester.pumpWidget(
         _wrap(const ToolRequestCard(tool: _editToolWithHunk)),
       );
+      await tester.tap(find.byKey(const Key('tool-header')));
+      await tester.pump();
 
       expect(
         find.textContaining('   16 args: {', findRichText: true),
@@ -70,8 +113,8 @@ void main() {
       expect(find.text('RUNNING'), findsOneWidget);
       expect(find.text('Allow'), findsNothing);
       expect(find.text('Deny'), findsNothing);
-      expect(find.textContaining('s'), findsAny); // no '60s' countdown
-      expect(find.textContaining('60s'), findsNothing);
+      // No leftover approval countdown (the pre-auto-approval UI had "60s").
+      expect(find.textContaining(RegExp(r'\d+s')), findsNothing);
     });
 
     testWidgets('completed state shows DONE', (tester) async {

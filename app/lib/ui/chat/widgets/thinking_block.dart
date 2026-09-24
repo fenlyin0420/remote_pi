@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
@@ -8,16 +10,33 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 // actual reply off the screen. The header is the only thing visible until the
 // user taps it; expansion is local state, so a rebuild (a new streamed delta,
 // or a re-sync re-writing the row) keeps whatever the user chose.
+//
+// The header also carries the elapsed time: it ticks while the model is still
+// reasoning ("Thinking… 12s") and freezes into the row ("Thought for 12s") once
+// the block closes.
+
+/// Human-readable duration for a reasoning block. Sub-second blocks read as
+/// "<1s" rather than a meaningless millisecond count.
+String formatThinkingDuration(Duration d) {
+  if (d.inSeconds < 1) return '<1s';
+  if (d.inSeconds < 60) return '${d.inSeconds}s';
+  final minutes = d.inMinutes;
+  final seconds = d.inSeconds % 60;
+  return seconds == 0 ? '${minutes}m' : '${minutes}m ${seconds}s';
+}
 
 class ThinkingBlock extends StatefulWidget {
   /// Live reasoning still arriving from the Pi (`live: true`) or a finalized
   /// row from the box/history. Both render identically apart from the
-  /// streaming label + cursor.
+  /// streaming label, cursor and ticking timer.
   const ThinkingBlock({
     super.key,
     required this.text,
     this.live = false,
     this.cursor,
+    this.duration,
+    this.startedAt,
+    this.now = DateTime.now,
   });
 
   final String text;
@@ -27,12 +46,74 @@ class ThinkingBlock extends StatefulWidget {
   /// beside the label when collapsed and under the text when expanded.
   final Widget? cursor;
 
+  /// How long the block took, for a finalized row. Null → no timer (history
+  /// replayed by a Pi that could not time it).
+  final Duration? duration;
+
+  /// When the live block started, so the header can tick while it streams.
+  final DateTime? startedAt;
+
+  /// Clock seam: production reads the wall clock, tests advance theirs so the
+  /// tick can be asserted without sleeping.
+  final DateTime Function() now;
+
   @override
   State<ThinkingBlock> createState() => _ThinkingBlockState();
 }
 
 class _ThinkingBlockState extends State<ThinkingBlock> {
   bool _expanded = false;
+  Timer? _ticker;
+  Duration? _elapsed;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(ThinkingBlock old) {
+    super.didUpdateWidget(old);
+    if (old.live != widget.live || old.startedAt != widget.startedAt) {
+      _syncTicker();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  /// Runs a 1s ticker exactly while there is a live segment with a known start.
+  void _syncTicker() {
+    final start = widget.startedAt;
+    if (!widget.live || start == null) {
+      _ticker?.cancel();
+      _ticker = null;
+      _elapsed = null;
+      return;
+    }
+    _elapsed = widget.now().difference(start);
+    _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _elapsed = widget.now().difference(start));
+    });
+  }
+
+  String _label() {
+    if (widget.live) {
+      final elapsed = _elapsed;
+      return elapsed == null
+          ? 'Thinking…'
+          : 'Thinking… ${formatThinkingDuration(elapsed)}';
+    }
+    final duration = widget.duration;
+    return duration == null
+        ? 'Thinking'
+        : 'Thought for ${formatThinkingDuration(duration)}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -63,7 +144,7 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
                   Icon(LucideIcons.brain, size: 13, color: colors.muted),
                   const SizedBox(width: 6),
                   Text(
-                    widget.live ? 'Thinking…' : 'Thinking',
+                    _label(),
                     style: TextStyle(
                       fontFamily: kMonoFamily,
                       fontSize: 11.5,
@@ -95,7 +176,10 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SelectableText(widget.text, style: body.copyWith(color: colors.muted2)),
+                  SelectableText(
+                    widget.text,
+                    style: body.copyWith(color: colors.muted2),
+                  ),
                   if (widget.live && widget.cursor != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
@@ -117,5 +201,6 @@ class ThinkingBubble extends StatelessWidget {
   const ThinkingBubble(this.message, {super.key});
 
   @override
-  Widget build(BuildContext context) => ThinkingBlock(text: message.text);
+  Widget build(BuildContext context) =>
+      ThinkingBlock(text: message.text, duration: message.duration);
 }

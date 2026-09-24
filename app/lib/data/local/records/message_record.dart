@@ -30,6 +30,10 @@ class MessageRecord {
   /// Plan/32 — tokens reclaimed by a compaction (compaction rows only).
   final int? tokensBefore;
 
+  /// Thinking rows only — how long the model spent on that block, when it was
+  /// timed (measured live by the app, or replayed from the Pi's history event).
+  final int? thinkingMs;
+
   const MessageRecord({
     required this.id,
     required this.seq,
@@ -41,6 +45,7 @@ class MessageRecord {
     this.pending = false,
     this.steering = false,
     this.tokensBefore,
+    this.thinkingMs,
   });
 
   MessageRecord copyWith({
@@ -61,6 +66,7 @@ class MessageRecord {
     pending: pending ?? this.pending,
     steering: steering ?? this.steering,
     tokensBefore: tokensBefore,
+    thinkingMs: thinkingMs,
   );
 
   Map<String, dynamic> toJson() => {
@@ -74,6 +80,7 @@ class MessageRecord {
     'pending': pending,
     if (steering) 'steering': true,
     if (tokensBefore != null) 'tokens_before': tokensBefore,
+    if (thinkingMs != null) 'thinking_ms': thinkingMs,
   };
 
   factory MessageRecord.fromJson(Map<String, dynamic> j) {
@@ -100,6 +107,7 @@ class MessageRecord {
       pending: (j['pending'] as bool?) ?? false,
       steering: (j['steering'] as bool?) ?? false,
       tokensBefore: (j['tokens_before'] as num?)?.toInt(),
+      thinkingMs: (j['thinking_ms'] as num?)?.toInt(),
     );
   }
 
@@ -117,7 +125,13 @@ class MessageRecord {
       case MsgRole.assistant:
         return AssistantMsg(id: id, text: text);
       case MsgRole.thinking:
-        return ThinkingMsg(id: id, text: text);
+        return ThinkingMsg(
+          id: id,
+          text: text,
+          duration: thinkingMs == null
+              ? null
+              : Duration(milliseconds: thinkingMs!),
+        );
       case MsgRole.tool:
         final t = tool;
         return ToolEvent(

@@ -280,8 +280,15 @@ No histórico (`session_history`) o bloco inteiro viaja como evento próprio, na
 ordem do content array do SDK (thinking antes do texto da mesma mensagem):
 
 ```jsonc
-{ "ts": 1730000000000, "type": "agent_thinking", "in_reply_to": "sync_…", "text": "…" }
+{ "ts": 1730000000000, "type": "agent_thinking", "in_reply_to": "sync_…", "text": "…", "duration_ms": 12400 }
 ```
+
+`duration_ms` é o tempo que o bloco levou para streamar (medido no Pi, do
+`thinking_start` ao `thinking_end`) — o app mostra "Thought for 12s". Fica
+**ausente** quando o Pi não pôde medir (histórico re-semeado do arquivo de
+sessão após restart do daemon): aí o app omite o número em vez de inventar um.
+Ao vivo o app também mede o próprio bloco, então um bloco em streaming vai
+contando o tempo no cabeçalho.
 
 Semântica de segmentos: cada bloco de thinking é um fragmento próprio,
 fechado quando chega texto (`agent_chunk`), uma tool (`tool_request`) ou o fim

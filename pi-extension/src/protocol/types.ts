@@ -262,8 +262,10 @@ export type SessionHistoryEvent =
     }
   // Model reasoning, replayed so a re-sync keeps the thinking blocks the app
   // already rendered live. `text` is capped per block (see
-  // THINKING_EVENT_MAX_CHARS) to keep the mirror's byte budget intact.
-  | { ts: number; type: "agent_thinking"; in_reply_to: string; text: string }
+  // THINKING_EVENT_MAX_CHARS) to keep the mirror's byte budget intact;
+  // `duration_ms` is how long the block took to stream (absent when the block
+  // came from a session-file seed, i.e. a daemon restart).
+  | { ts: number; type: "agent_thinking"; in_reply_to: string; text: string; duration_ms?: number }
   // Plan/32: a context-compaction marker, replayed in history (survives
   // re-sync like images) so the app re-renders the "context compacted" notice.
   | { ts: number; type: "compaction"; summary: string; tokens_before: number };

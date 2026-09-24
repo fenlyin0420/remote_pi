@@ -44,6 +44,9 @@ class _StreamingBubbleState extends State<StreamingBubble>
         text: widget.streaming.buffer,
         live: true,
         cursor: _BlinkingCursor(controller: _blink),
+        // Ticks the header while the model reasons; the row it folds into keeps
+        // the final number (same clock, computed in SyncService).
+        startedAt: widget.streaming.startedAt,
       );
     }
     final hasText = widget.streaming.buffer.isNotEmpty;

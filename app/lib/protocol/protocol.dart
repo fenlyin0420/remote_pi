@@ -1241,11 +1241,13 @@ sealed class SessionHistoryEvent {
         text: j['text'] as String,
       ),
       // Model reasoning replayed on re-sync, so a reconnect keeps the thinking
-      // rows the app already showed live.
+      // rows the app already showed live (`duration_ms` is the block's
+      // streaming time; absent when the Pi could not time it).
       'agent_thinking' => AgentThinkingEvt(
         ts: ts,
         inReplyTo: j['in_reply_to'] as String,
         text: j['text'] as String,
+        durationMs: (j['duration_ms'] as num?)?.toInt(),
       ),
       // Plan/32 — compaction replayed from history so the system bubble
       // survives a re-sync.
@@ -1314,10 +1316,18 @@ class AgentMessageEvt extends SessionHistoryEvent {
 class AgentThinkingEvt extends SessionHistoryEvent {
   final String inReplyTo;
   final String text;
+
+  /// How long the block took to stream, when the Pi timed it. Null for blocks
+  /// it could not (a daemon restart re-seeds history from the session file,
+  /// which has no per-block timing) — the UI then shows no timer rather than a
+  /// made-up one.
+  final int? durationMs;
+
   const AgentThinkingEvt({
     required super.ts,
     required this.inReplyTo,
     required this.text,
+    this.durationMs,
   });
 }
 

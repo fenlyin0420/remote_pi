@@ -1331,6 +1331,47 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(sent.filter((d) => d.inner.type === "agent_chunk")).toHaveLength(1);
   });
 
+  test("a reasoning block is timed live and attached to its message", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    const onMessageEnd = captureEventHandler("message_end");
+    onInput({ source: "terminal", text: "think" } as unknown as Parameters<typeof onInput>[0]);
+
+    onUpdate({ assistantMessageEvent: { type: "thinking_start" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onUpdate({ assistantMessageEvent: { type: "thinking_delta", delta: "hmm" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onUpdate({ assistantMessageEvent: { type: "thinking_end", content: "hmm" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onMessageEnd({
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "hmm" }], timestamp: 1 },
+    } as unknown as Parameters<typeof onMessageEnd>[0]);
+
+    const buf = _getMessageBufferForTest() as Array<{ role?: string; thinkingDurations?: number[] }>;
+    const last = buf[buf.length - 1]!;
+    expect(last.role).toBe("assistant");
+    expect(last.thinkingDurations).toHaveLength(1);
+    expect(last.thinkingDurations![0]).toBeGreaterThanOrEqual(0);
+  });
+
+  test("the reasoning timer does not leak into the next message", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    const onMessageEnd = captureEventHandler("message_end");
+    const onAgentEnd = captureEventHandler("agent_end");
+    onInput({ source: "terminal", text: "think" } as unknown as Parameters<typeof onInput>[0]);
+
+    // Streamed a block, then the turn died before the message was persisted.
+    onUpdate({ assistantMessageEvent: { type: "thinking_start" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onUpdate({ assistantMessageEvent: { type: "thinking_delta", delta: "hmm" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onAgentEnd({} as unknown as Parameters<typeof onAgentEnd>[0]);
+
+    onMessageEnd({
+      message: { role: "assistant", content: [{ type: "text", text: "answer" }], timestamp: 2 },
+    } as unknown as Parameters<typeof onMessageEnd>[0]);
+    const buf = _getMessageBufferForTest() as Array<{ thinkingDurations?: number[] }>;
+    expect(buf[buf.length - 1]!.thinkingDurations).toBeUndefined();
+  });
+
   test("session_sync from owner A → session_history reply only to A", async () => {
     await _pairForTest("ownerA__1234567890");
     await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
@@ -3713,6 +3754,46 @@ describe("session sync", () => {
     expect(ev.text.endsWith("[thinking truncated]")).toBe(true);
     expect(ev.text.length).toBe(THINKING_EVENT_MAX_CHARS + "\n\n…[thinking truncated]".length);
     expect(ev.text.length).toBeLessThan(huge.length);
+  });
+
+  test("mapping: reasoning durations ride along with their blocks", () => {
+    const ts = 1_700_000_000_000;
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "why", timestamp: ts },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "first block" },
+          { type: "text", text: "partial answer" },
+          { type: "thinking", thinking: "second block" },
+        ],
+        timestamp: ts + 100,
+        thinkingDurations: [1500, 250],
+      },
+    ]);
+
+    const thinking = events.filter((e) => e.type === "agent_thinking") as Array<{ text: string; duration_ms?: number }>;
+    expect(thinking).toHaveLength(2);
+    // Consumed in content order — a `text` block in between does not shift them.
+    expect(thinking[0]).toMatchObject({ text: "first block", duration_ms: 1500 });
+    expect(thinking[1]).toMatchObject({ text: "second block", duration_ms: 250 });
+  });
+
+  test("mapping: a block we never timed carries no duration (seeded history)", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "hi", timestamp: 1 },
+      { role: "assistant", content: [{ type: "thinking", thinking: "from disk" }], timestamp: 2 },
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "timed" }],
+        timestamp: 3,
+        thinkingDurations: [900],
+      },
+    ]);
+
+    const thinking = events.filter((e) => e.type === "agent_thinking");
+    expect(thinking[0]).not.toHaveProperty("duration_ms");
+    expect(thinking[1]).toMatchObject({ duration_ms: 900 });
   });
 
   test("mapping (plan/30 re-sync): user [image, text] → user_input keeps images", () => {

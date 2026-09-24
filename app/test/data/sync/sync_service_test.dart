@@ -413,6 +413,11 @@ void main() {
     expect(rows.map((m) => m.role), [MsgRole.thinking]);
     expect(rows.single.text, 'weighing options');
     expect(rows.single.toChatMessage(), isA<ThinkingMsg>());
+    expect(
+      rows.single.thinkingMs,
+      isNotNull,
+      reason: 'the block was timed while it streamed',
+    );
     expect(s.sync.streaming!.thinking, isFalse, reason: 'slot is text now');
 
     s.ch.push(AgentDone(inReplyTo: 'r1'));
@@ -547,7 +552,12 @@ void main() {
         sessionStartedAt: 0,
         events: const [
           UserInputEvt(ts: 10, id: 'u1', text: 'why'),
-          AgentThinkingEvt(ts: 11, inReplyTo: 'u1', text: 'because reasons'),
+          AgentThinkingEvt(
+            ts: 11,
+            inReplyTo: 'u1',
+            text: 'because reasons',
+            durationMs: 4200,
+          ),
           AgentMessageEvt(ts: 12, inReplyTo: 'u1', text: 'the answer'),
         ],
         eos: true,

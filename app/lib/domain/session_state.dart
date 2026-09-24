@@ -126,14 +126,23 @@ class AssistantMsg extends ChatMessage {
 /// reconnect / app restart.
 class ThinkingMsg extends ChatMessage {
   final String text;
-  const ThinkingMsg({required super.id, required this.text});
+
+  /// How long the model spent on this block, when known. Live blocks are timed
+  /// by the app; replayed ones carry the Pi's measurement. Null when nobody
+  /// timed it — the block then shows no timer.
+  final Duration? duration;
+
+  const ThinkingMsg({required super.id, required this.text, this.duration});
 
   @override
   bool operator ==(Object other) =>
-      other is ThinkingMsg && other.id == id && other.text == text;
+      other is ThinkingMsg &&
+      other.id == id &&
+      other.text == text &&
+      other.duration == duration;
 
   @override
-  int get hashCode => Object.hash(id, text);
+  int get hashCode => Object.hash(id, text, duration);
 }
 
 class ToolEvent extends ChatMessage {
@@ -220,16 +229,23 @@ class StreamingMessage {
   /// turn, so a single live slot suffices — the slot carries the kind.
   final bool thinking;
 
+  /// When this live segment started arriving. Lets the UI tick an elapsed
+  /// counter while a reasoning block streams (the row it folds into carries
+  /// the final duration). Null for segments nobody times.
+  final DateTime? startedAt;
+
   const StreamingMessage({
     required this.inReplyTo,
     this.buffer = '',
     this.thinking = false,
+    this.startedAt,
   });
 
   StreamingMessage appendDelta(String delta) => StreamingMessage(
     inReplyTo: inReplyTo,
     buffer: buffer + delta,
     thinking: thinking,
+    startedAt: startedAt,
   );
 
   @override

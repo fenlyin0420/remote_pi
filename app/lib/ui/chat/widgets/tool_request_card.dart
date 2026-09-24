@@ -2,6 +2,7 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 // Inline tool execution card that appears in the chat flow.
 //
@@ -13,14 +14,29 @@ import 'package:flutter/material.dart';
 // milliseconds before `tool_result` arrived — confusing UX with no real
 // gating. The card is now purely informational.
 //
+// The details are FOLDED BY DEFAULT: the header always says which tool ran and
+// how it ended (colour + RUNNING/DONE/FAILED), and the outcome line always says
+// the same in words — including the error, so a failure is never hidden behind
+// a tap. What folds away is the command / diff, which is the part that repeats
+// across a long turn.
+//
 // `onDecide` is kept on the API for forward compat — when the Pi adds a
 // real approval pause we can re-enable the controls. Today it is unused.
 
-class ToolRequestCard extends StatelessWidget {
+class ToolRequestCard extends StatefulWidget {
   final ToolEvent tool;
   final void Function(String toolCallId, ApproveDecision decision)? onDecide;
 
   const ToolRequestCard({super.key, required this.tool, this.onDecide});
+
+  @override
+  State<ToolRequestCard> createState() => _ToolRequestCardState();
+}
+
+class _ToolRequestCardState extends State<ToolRequestCard> {
+  bool _expanded = false;
+
+  ToolEvent get tool => widget.tool;
 
   /// Plan/32 — one color drives the whole card so the outcome is unmistakable:
   /// running → blue, done → green, failed → red, denied/expired → grey.
@@ -64,9 +80,11 @@ class ToolRequestCard extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             _buildHeader(context, color),
-            const SizedBox(height: 10),
-            _buildCodeBlock(context),
-            const SizedBox(height: 8),
+            if (_expanded) ...[
+              const SizedBox(height: 10),
+              _buildCodeBlock(context),
+              const SizedBox(height: 8),
+            ],
             _buildOutcome(color),
           ],
         ),
@@ -83,33 +101,46 @@ class ToolRequestCard extends StatelessWidget {
       ToolEventStatus.expired => 'EXPIRED',
     };
 
-    return Row(
-      children: [
-        CustomPaint(
-          size: const Size(14, 14),
-          painter: _TerminalIconPainter(color: color),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          tool.tool.toUpperCase(),
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 11.5,
-            color: color,
-            letterSpacing: 0.6,
+    return GestureDetector(
+      key: const Key('tool-header'),
+      behavior: HitTestBehavior.opaque,
+      // Also the scroll-safe way to reveal the details: the row is a full-width
+      // tap target, and a plain tap during a scroll is not delivered here.
+      onTap: () => setState(() => _expanded = !_expanded),
+      child: Row(
+        children: [
+          CustomPaint(
+            size: const Size(14, 14),
+            painter: _TerminalIconPainter(color: color),
           ),
-        ),
-        const Spacer(),
-        Text(
-          statusLabel,
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 10,
-            color: color,
-            letterSpacing: 0.4,
+          const SizedBox(width: 8),
+          Text(
+            tool.tool.toUpperCase(),
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 11.5,
+              color: color,
+              letterSpacing: 0.6,
+            ),
           ),
-        ),
-      ],
+          const Spacer(),
+          Text(
+            statusLabel,
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 10,
+              color: color,
+              letterSpacing: 0.4,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Icon(
+            _expanded ? LucideIcons.chevronDown : LucideIcons.chevronRight,
+            size: 14,
+            color: color,
+          ),
+        ],
+      ),
     );
   }
 

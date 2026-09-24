@@ -326,12 +326,12 @@ function _publishWorking(working: boolean): void {
 
 function _imageCacheRootDir(): string {
   if (_imageCacheDir) {
-    try { mkdirSync(_imageCacheDir, { recursive: true, mode: 0o700 }); } catch {}
-    try { chmodSync(_imageCacheDir, 0o700); } catch {}
+    try { mkdirSync(_imageCacheDir, { recursive: true, mode: 0o700 }); } catch { /* exists */ }
+    try { chmodSync(_imageCacheDir, 0o700); } catch { /* not the enforcement point */ }
     return _imageCacheDir;
   }
   const dir = mkdtempSync(join(tmpdir(), IMAGE_CACHE_PREFIX));
-  try { chmodSync(dir, 0o700); } catch {}
+  try { chmodSync(dir, 0o700); } catch { /* unenforceable on some filesystems */ }
   _imageCacheDir = dir;
   return dir;
 }
@@ -385,7 +385,7 @@ async function _renderablePngPathFromImage(
 
     try {
       writeFileSync(previewPath, previewBytes, { mode: 0o600 });
-      try { chmodSync(previewPath, 0o600); } catch {}
+      try { chmodSync(previewPath, 0o600); } catch { /* mode already set above */ }
       return previewPath;
     } catch {
       _cleanupPreviewFile(previewPath);
@@ -508,7 +508,7 @@ async function _collectReceivedImagePreviews(msg: ClientUserMessage): Promise<Re
 
     try {
       writeFileSync(path, decoded.decoded, { mode: 0o600 });
-      try { chmodSync(path, 0o600); } catch {}
+      try { chmodSync(path, 0o600); } catch { /* mode already set above */ }
 
       const previewPath =
         image.mime === IMAGE_PREVIEW_MIME
@@ -845,8 +845,22 @@ type BufferMsg = {
   /** Plan/32: pre-compaction token count, set on the synthetic
    *  `role:"compaction"` marker pushed in `session_compact`. */
   tokensBefore?: number;
+  /** LOCAL (fenlyin): wall-clock duration of each reasoning block of this
+   *  assistant message, in content order. Measured live from the SDK's
+   *  `thinking_start`/`thinking_end` (see the message_update hook) and
+   *  attached here so a `session_history` replay can report the same timings
+   *  the app already showed live. Absent for messages seeded from the session
+   *  file — the app then just omits the timer. */
+  thinkingDurations?: number[];
 };
 let _messageBuffer: BufferMsg[] = [];
+// LOCAL (fenlyin): wall-clock timing of the reasoning block currently
+// streaming, plus the finished ones of the assistant message being built.
+// Consumed on `message_end` (attached to the buffered copy) and cleared on
+// `agent_end`, so a replayed `session_history` can carry the same durations
+// the app showed live.
+let _thinkingStartedAt: number | null = null;
+let _pendingThinkingDurations: number[] = [];
 type PendingSteer = { id: string; text: string };
 let _pendingSteers: PendingSteer[] = [];
 let _lastConsumedSteerText: string | null = null;
@@ -2281,7 +2295,18 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       // them in their own collapsible row and closes the segment at the first
       // text/tool boundary. `thinking_delta` is only emitted by models that
       // expose reasoning, so non-reasoning models are byte-identical.
+      if (_thinkingStartedAt == null) _thinkingStartedAt = Date.now();
       _broadcastToActive({ type: "agent_thinking", in_reply_to: _currentTurnId, delta: ae.delta });
+    } else if (ae.type === "thinking_start") {
+      // Time the block here rather than in the app so the duration survives a
+      // history re-sync (see BufferMsg.thinkingDurations) and excludes the
+      // network round-trip.
+      _thinkingStartedAt = Date.now();
+    } else if (ae.type === "thinking_end") {
+      if (_thinkingStartedAt != null) {
+        _pendingThinkingDurations.push(Math.max(0, Date.now() - _thinkingStartedAt));
+        _thinkingStartedAt = null;
+      }
     }
   });
 
@@ -2326,7 +2351,18 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       _broadcastConsumedSteerForUserContent(m.content);
     }
     if (m.role === "user" || m.role === "assistant" || m.role === "toolResult") {
-      _messageBuffer.push(m as unknown as BufferMsg);
+      // Reasoning timings collected while this message streamed belong to it —
+      // attach them to OUR copy so the history mapper can report them without
+      // touching the SDK's message object.
+      if (m.role === "assistant" && _pendingThinkingDurations.length > 0) {
+        _messageBuffer.push({
+          ...(m as object),
+          thinkingDurations: _pendingThinkingDurations,
+        } as unknown as BufferMsg);
+      } else {
+        _messageBuffer.push(m as unknown as BufferMsg);
+      }
+      if (m.role === "assistant") _pendingThinkingDurations = [];
     }
     // Forward a failed turn to connected owners. Without this the app just
     // hangs with no response when the provider errors (e.g. the TUI's
@@ -2348,6 +2384,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   pi.on("agent_end", () => {
     // Buffer is fed by `message_end`; here we only finalize the outbound
     // turn signal to every connected owner. No buffer mutation.
+    _thinkingStartedAt = null;
+    _pendingThinkingDurations = [];
     if (_anyPeerActive() && _currentTurnId) {
       _broadcastToActive({ type: "agent_done", in_reply_to: _currentTurnId });
       _currentTurnId = null;
@@ -5197,6 +5235,10 @@ export function _mapAgentMessagesToEvents(
       const usage = m.usage
         ? { input_tokens: m.usage.input ?? 0, output_tokens: m.usage.output ?? 0 }
         : undefined;
+      // Per-message, in order: the reasoning block timings collected live while
+      // this message streamed. Empty for a session-file seed.
+      const durations = Array.isArray(m.thinkingDurations) ? m.thinkingDurations : [];
+      let thinkingIndex = 0;
       for (const raw of content) {
         if (!raw || typeof raw !== "object") continue;
         const block = raw as {
@@ -5223,6 +5265,7 @@ export function _mapAgentMessagesToEvents(
           // Skip redacted blocks (the ciphertext in `thinkingSignature` is
           // meaningless to the app) and anything empty.
           const text = typeof block.thinking === "string" ? block.thinking : "";
+          const duration = durations[thinkingIndex++];
           if (!text || block.redacted === true) continue;
           events.push({
             ts,
@@ -5231,6 +5274,11 @@ export function _mapAgentMessagesToEvents(
             text: text.length > THINKING_EVENT_MAX_CHARS
               ? text.slice(0, THINKING_EVENT_MAX_CHARS) + THINKING_EVENT_TRUNCATED
               : text,
+            // Only when we actually timed it live — the app hides the timer
+            // rather than showing a made-up one.
+            ...(typeof duration === "number" && Number.isFinite(duration) && duration > 0
+              ? { duration_ms: duration }
+              : {}),
           });
         } else if (block.type === "toolCall") {
           events.push({
