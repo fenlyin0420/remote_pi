@@ -47,9 +47,14 @@ class SyncService extends Service {
   // Serialise box mutations so concurrent async writes stay ordered.
   Future<void> _writeChain = Future<void>.value();
 
-  // Streaming — in-memory only (#7).
+  // Streaming — in-memory only (#7). Two block kinds share ONE live slot:
+  // reasoning (`agent_thinking`) and answer text (`agent_chunk`). Content
+  // blocks are sequential, so only one kind is ever open at a time; a delta of
+  // the other kind closes the open one first.
   final StringBuffer _chunkBuffer = StringBuffer();
   String _chunkReplyTo = '';
+  final StringBuffer _thinkingBuffer = StringBuffer();
+  String _thinkingReplyTo = '';
   Timer? _flushTimer;
   StreamingMessage? _streaming;
   final StreamController<StreamingMessage?> _streamingController =
@@ -163,6 +168,10 @@ class SyncService extends Service {
     _flushTimer = null;
     _chunkBuffer.clear();
     _chunkReplyTo = '';
+    // Reasoning too: a half-streamed thought must not survive the switch and
+    // land as a row in the NEXT chat (the buffers are keyed by nothing).
+    _thinkingBuffer.clear();
+    _thinkingReplyTo = '';
     _workingReplyTo = null;
     _sawRemoteWorking = false;
     _setQueuedMessages(const []);
@@ -457,15 +466,29 @@ class SyncService extends Service {
     }
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
+        // Answer text follows the reasoning block → the reasoning segment is
+        // over; persist it as its own row before the text starts.
+        _finalizeThinkingSegment();
         _chunkBuffer.write(delta);
         _chunkReplyTo = inReplyTo;
         _flushTimer?.cancel();
-        _flushTimer = Timer(const Duration(milliseconds: 16), _flushChunks);
+        _flushTimer = Timer(const Duration(milliseconds: 16), _flushStreaming);
+        _setWorking(true, replyTo: inReplyTo);
+
+      case AgentThinking(:final inReplyTo, :final delta):
+        // Mirror image: a reasoning block after text closes the text segment.
+        _finalizeTextSegment();
+        _thinkingBuffer.write(delta);
+        _thinkingReplyTo = inReplyTo;
+        _flushTimer?.cancel();
+        _flushTimer = Timer(const Duration(milliseconds: 16), _flushStreaming);
         _setWorking(true, replyTo: inReplyTo);
 
       case AgentDone(:final inReplyTo):
-        // Finalize whatever text accumulated since the last tool boundary.
-        final text = _finalizeSegment();
+        // Finalize whatever accumulated since the last tool boundary
+        // (reasoning first — it precedes text within a message).
+        _finalizeThinkingSegment();
+        final text = _finalizeTextSegment();
         _clearSteeringLabel(inReplyTo);
         _setWorking(false, preview: text.isEmpty ? null : text);
 
@@ -547,10 +570,11 @@ class SyncService extends Service {
         }
 
       case ToolRequest(:final toolCallId, :final tool, :final args):
-        // Sequential ordering: close the current text segment as its own row
-        // BEFORE the tool, so "narration → command → narration" renders in
-        // order instead of all text landing after the commands.
-        _finalizeSegment();
+        // Sequential ordering: close the open segment(s) as their own rows
+        // BEFORE the tool, so "reasoning → narration → command → narration"
+        // renders in order instead of all text landing after the commands.
+        _finalizeThinkingSegment();
+        _finalizeTextSegment();
         // ignore: discarded_futures
         _upsert(
           MsgRole.tool,
@@ -787,6 +811,21 @@ class SyncService extends Service {
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
             ),
           );
+        case AgentThinkingEvt(:final text):
+          // Reasoning replayed ahead of the answer of the same message (content
+          // order is preserved by the mapper). Id is stable per (ts, index) so
+          // a re-sent identical history rewrites nothing.
+          if (text.isNotEmpty) {
+            out.add(
+              MessageRecord(
+                id: 'thinking_${e.ts}_$seq',
+                seq: seq++,
+                role: MsgRole.thinking,
+                text: text,
+                ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              ),
+            );
+          }
         case ToolRequestEvt(:final toolCallId, :final tool, :final args):
           out.add(
             MessageRecord(
@@ -1081,12 +1120,28 @@ class SyncService extends Service {
   // Streaming (in-memory only)
   // ---------------------------------------------------------------------------
 
-  void _flushChunks() {
+  /// Drain any coalesced delta sitting in the 16ms buffer into the live slot.
+  /// Exactly one of the two buffers is normally non-empty.
+  void _flushStreaming() {
+    if (_thinkingBuffer.isNotEmpty) {
+      final delta = _thinkingBuffer.toString();
+      _thinkingBuffer.clear();
+      final cur = _streaming;
+      _emitStreaming(
+        (cur != null && cur.thinking && cur.inReplyTo == _thinkingReplyTo)
+            ? cur.appendDelta(delta)
+            : StreamingMessage(
+                inReplyTo: _thinkingReplyTo,
+                buffer: delta,
+                thinking: true,
+              ),
+      );
+    }
     if (_chunkBuffer.isEmpty) return;
     final delta = _chunkBuffer.toString();
     _chunkBuffer.clear();
     final cur = _streaming;
-    if (cur != null && cur.inReplyTo == _chunkReplyTo) {
+    if (cur != null && !cur.thinking && cur.inReplyTo == _chunkReplyTo) {
       _emitStreaming(cur.appendDelta(delta));
     } else {
       _emitStreaming(StreamingMessage(inReplyTo: _chunkReplyTo, buffer: delta));
@@ -1096,10 +1151,14 @@ class SyncService extends Service {
   /// Persist the accumulated streaming text as a standalone assistant row
   /// (unique id, in chronological seq order) and clear the live cursor.
   /// Called at every tool boundary AND on agent_done so text/tool/text
-  /// renders sequentially. No-op (just clears the cursor) when there's no
-  /// text — so a tool-only or empty turn never leaves a blank bubble.
+  /// renders sequentially. No-op when no text segment is open — so a
+  /// tool-only, reasoning-only or empty turn never leaves a blank bubble.
   /// Returns the finalized text (empty if none).
-  String _finalizeSegment() {
+  String _finalizeTextSegment() {
+    final live =
+        _chunkBuffer.isNotEmpty ||
+        (_streaming != null && !_streaming!.thinking);
+    if (!live) return '';
     // Drain any coalesced delta still sitting in the 16ms buffer.
     _flushTimer?.cancel();
     _flushTimer = null;
@@ -1107,7 +1166,7 @@ class SyncService extends Service {
       final delta = _chunkBuffer.toString();
       _chunkBuffer.clear();
       final cur = _streaming;
-      _streaming = (cur != null && cur.inReplyTo == _chunkReplyTo)
+      _streaming = (cur != null && !cur.thinking && cur.inReplyTo == _chunkReplyTo)
           ? cur.appendDelta(delta)
           : StreamingMessage(inReplyTo: _chunkReplyTo, buffer: delta);
     }
@@ -1132,11 +1191,56 @@ class SyncService extends Service {
     return text;
   }
 
+  /// Persist the accumulated reasoning as its own [MsgRole.thinking] row.
+  /// Same lifecycle as [_finalizeTextSegment]: closed by text/tool/turn
+  /// boundaries, no-op when no reasoning block is open. Returns the finalized
+  /// reasoning text (empty if none).
+  String _finalizeThinkingSegment() {
+    final live =
+        _thinkingBuffer.isNotEmpty || (_streaming?.thinking ?? false);
+    if (!live) return '';
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    if (_thinkingBuffer.isNotEmpty) {
+      final delta = _thinkingBuffer.toString();
+      _thinkingBuffer.clear();
+      final cur = _streaming;
+      _streaming = (cur != null && cur.thinking && cur.inReplyTo == _thinkingReplyTo)
+          ? cur.appendDelta(delta)
+          : StreamingMessage(
+              inReplyTo: _thinkingReplyTo,
+              buffer: delta,
+              thinking: true,
+            );
+    }
+    final text = _streaming?.buffer ?? '';
+    if (text.isNotEmpty) {
+      final id = 'thinking_${uuid7()}';
+      // ignore: discarded_futures
+      _upsert(
+        MsgRole.thinking,
+        id,
+        (seq, _) => MessageRecord(
+          id: id,
+          seq: seq,
+          role: MsgRole.thinking,
+          text: text,
+          ts: DateTime.now(),
+        ),
+      );
+    }
+    _thinkingReplyTo = '';
+    _emitStreaming(null);
+    return text;
+  }
+
   void _discardStreamingState() {
     _flushTimer?.cancel();
     _flushTimer = null;
     _chunkBuffer.clear();
     _chunkReplyTo = '';
+    _thinkingBuffer.clear();
+    _thinkingReplyTo = '';
     _emitStreaming(null);
   }
 

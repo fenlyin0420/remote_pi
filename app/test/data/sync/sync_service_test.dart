@@ -380,6 +380,203 @@ void main() {
     s.sync.dispose();
   });
 
+  // ---------------------------------------------------------------------
+  // Model reasoning (`agent_thinking`) — same live slot as text, own row.
+  // ---------------------------------------------------------------------
+
+  test(
+    'reasoning streams in its own slot and is not written live (#7)',
+    () async {
+      final s = await setup();
+      s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'weighing options'));
+      await _settle();
+
+      expect(messages(s.epk), isEmpty, reason: 'a delta is not a row');
+      expect(s.sync.streaming, isNotNull);
+      expect(s.sync.streaming!.thinking, isTrue);
+      expect(s.sync.streaming!.buffer, 'weighing options');
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test('reasoning closes into its own row before the answer text', () async {
+    final s = await setup();
+    s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'weighing options'));
+    await _settle();
+    s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'the answer'));
+    await _settle();
+
+    // The reasoning row lands the moment the answer starts streaming — the
+    // live slot switches kind and nothing is lost.
+    var rows = messages(s.epk);
+    expect(rows.map((m) => m.role), [MsgRole.thinking]);
+    expect(rows.single.text, 'weighing options');
+    expect(rows.single.toChatMessage(), isA<ThinkingMsg>());
+    expect(s.sync.streaming!.thinking, isFalse, reason: 'slot is text now');
+
+    s.ch.push(AgentDone(inReplyTo: 'r1'));
+    await _settle();
+    rows = messages(s.epk);
+    expect(rows.map((m) => m.role), [MsgRole.thinking, MsgRole.assistant]);
+    expect(rows.map((m) => m.text), ['weighing options', 'the answer']);
+    expect(s.sync.streaming, isNull);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('text → reasoning → text keeps chronological order', () async {
+    final s = await setup();
+    s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'first'));
+    await _settle();
+    s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'because'));
+    await _settle();
+    s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'second'));
+    await _settle();
+    s.ch.push(AgentDone(inReplyTo: 'r1'));
+    await _settle();
+
+    final rows = messages(s.epk);
+    expect(rows.map((m) => m.role), [
+      MsgRole.assistant,
+      MsgRole.thinking,
+      MsgRole.assistant,
+    ]);
+    expect(rows.map((m) => m.text), ['first', 'because', 'second']);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('a reasoning-only turn persists just the reasoning row', () async {
+    final s = await setup();
+    s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'just thinking'));
+    await _settle();
+    s.ch.push(AgentDone(inReplyTo: 'r1'));
+    await _settle();
+
+    final rows = messages(s.epk);
+    expect(rows, hasLength(1));
+    expect(rows.single.role, MsgRole.thinking);
+    expect(rows.single.text, 'just thinking');
+    expect(index(s.epk)?.status, SessionActivity.idle);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('a tool boundary closes reasoning before the tool row', () async {
+    final s = await setup();
+    s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'need to list files'));
+    await _settle();
+    s.ch.push(
+      ToolRequest(toolCallId: 'c1', tool: 'bash', args: {'command': 'ls'}),
+    );
+    await _settle();
+
+    expect(messages(s.epk).map((m) => m.role), [
+      MsgRole.thinking,
+      MsgRole.tool,
+    ]);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test(
+    'switching sessions drops a half-streamed thought — no cross-chat bleed',
+    () async {
+      final s = await setup();
+      // Session 1 is mid-reasoning when the user switches chats.
+      s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'half a thought'));
+      await _settle();
+
+      // Another ROOM of the same peer (frames stay attributable, so this is
+      // the switch path that would actually leak).
+      await s.sync.activate(s.epk, 'room2');
+      await _settle();
+      expect(s.sync.streaming, isNull);
+
+      // The new room starts reasoning: the stale buffer must not be finalized
+      // into it.
+      s.ch.push(AgentThinking(inReplyTo: 'r2', delta: 'fresh thought'));
+      await _settle();
+      s.ch.push(AgentDone(inReplyTo: 'r2'));
+      await _settle();
+      final written = [
+        for (final v in LocalBoxes().openMsgsBox(s.epk, 'room2').values)
+          MessageRecord.fromJson((v as Map).cast<String, dynamic>()),
+      ];
+      expect(written.map((m) => m.text), ['fresh thought']);
+      expect(
+        messages(s.epk),
+        isEmpty,
+        reason: 'the thought from room 1 never lands in room 1 either',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test('cancelling a turn drops the live reasoning buffer', () async {
+    final s = await setup();
+    s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'half a thought'));
+    await _settle();
+    s.ch.push(Cancelled(inReplyTo: 'r1', targetId: 'r1'));
+    await _settle();
+
+    expect(s.sync.streaming, isNull);
+    expect(
+      messages(s.epk),
+      isEmpty,
+      reason: 'an interrupted thought is not history',
+    );
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test(
+    'session_history replays reasoning rows, and an identical re-apply '
+    'writes nothing',
+    () async {
+      final s = await setup();
+      final read = SessionReadRepository(LocalBoxes());
+      var emits = 0;
+      final sub = read.watchMessages(s.epk, 'main').listen((_) => emits++);
+      await _settle();
+
+      SessionHistory hist(String inReplyTo) => SessionHistory(
+        inReplyTo: inReplyTo,
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 10, id: 'u1', text: 'why'),
+          AgentThinkingEvt(ts: 11, inReplyTo: 'u1', text: 'because reasons'),
+          AgentMessageEvt(ts: 12, inReplyTo: 'u1', text: 'the answer'),
+        ],
+        eos: true,
+      );
+
+      s.ch.push(hist('sync1'));
+      await _settle();
+      final afterFirst = emits;
+      expect(messages(s.epk).map((m) => m.role), [
+        MsgRole.user,
+        MsgRole.thinking,
+        MsgRole.assistant,
+      ]);
+      expect(messages(s.epk)[1].text, 'because reasons');
+
+      s.ch.push(hist('sync2'));
+      await _settle();
+      expect(
+        emits,
+        afterFirst,
+        reason: 'identical re-apply must not rewrite the reasoning row',
+      );
+
+      await sub.cancel();
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
   test('cancel sends a Cancel frame for the active turn target', () async {
     final s = await setup();
     s.ch.push(UserInput(id: 'u1', text: 'hi'));

@@ -224,6 +224,7 @@ const {
   _onPeerDisconnect,
   routeClientMessage,
   _mapAgentMessagesToEvents,
+  THINKING_EVENT_MAX_CHARS,
   _setMessageBufferForTest,
   _setSessionStartedAtForTest,
   _hasPendingReconnect,
@@ -1289,6 +1290,45 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(chunks).toHaveLength(2);
     const recipients = new Set(chunks.map((d) => d.peer));
     expect(recipients).toEqual(new Set(["ownerA__1234567890", "ownerB__abcdefghij"]));
+  });
+
+  test("thinking_delta broadcasts agent_thinking on the live turn", async () => {
+    await _pairForTest("ownerA__1234567890");
+    await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
+
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    // Seed _currentTurnId by simulating a terminal input first.
+    onInput({ source: "terminal", text: "think about it" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    onUpdate({
+      assistantMessageEvent: { type: "thinking_delta", delta: "weighing options" },
+    } as unknown as Parameters<typeof onUpdate>[0]);
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const thinking = sent.filter((d) => d.inner.type === "agent_thinking");
+    // One for each attached owner.
+    expect(thinking).toHaveLength(2);
+    expect(new Set(thinking.map((d) => d.peer)))
+      .toEqual(new Set(["ownerA__1234567890", "ownerB__abcdefghij"]));
+    expect(thinking[0]!.inner).toMatchObject({ delta: "weighing options" });
+  });
+
+  test("text_delta stays on the agent_chunk path (no thinking frame)", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    onInput({ source: "terminal", text: "hello" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    onUpdate({
+      assistantMessageEvent: { type: "text_delta", delta: "hi" },
+    } as unknown as Parameters<typeof onUpdate>[0]);
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    expect(sent.filter((d) => d.inner.type === "agent_thinking")).toHaveLength(0);
+    expect(sent.filter((d) => d.inner.type === "agent_chunk")).toHaveLength(1);
   });
 
   test("session_sync from owner A → session_history reply only to A", async () => {
@@ -3617,6 +3657,62 @@ describe("session sync", () => {
     });
     // agent_message in_reply_to should point at the prior user_input id
     expect((events[1] as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts}`);
+  });
+
+  test("mapping: thinking block → agent_thinking before the answer text", () => {
+    const ts = 1_700_000_000_000;
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "why is the sky blue", timestamp: ts },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Rayleigh scattering favours short wavelengths." },
+          { type: "text", text: "Because of Rayleigh scattering." },
+        ],
+        timestamp: ts + 100,
+      },
+    ]);
+
+    // user_input + agent_thinking + agent_message (content order preserved)
+    expect(events).toHaveLength(3);
+    expect(events[1]).toMatchObject({
+      ts: ts + 100,
+      type: "agent_thinking",
+      in_reply_to: `sync_${ts}`,
+      text: "Rayleigh scattering favours short wavelengths.",
+    });
+    expect(events[2]).toMatchObject({
+      type: "agent_message",
+      text: "Because of Rayleigh scattering.",
+    });
+  });
+
+  test("mapping: redacted thinking → no event", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "hi", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "", redacted: true, thinkingSignature: "opaque" },
+          { type: "text", text: "ok" },
+        ],
+        timestamp: 2,
+      },
+    ]);
+    expect(events.map((e) => e.type)).toEqual(["user_input", "agent_message"]);
+  });
+
+  test("mapping: oversized thinking is capped so the byte budget survives", () => {
+    const huge = "x".repeat(THINKING_EVENT_MAX_CHARS + 500);
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "hi", timestamp: 1 },
+      { role: "assistant", content: [{ type: "thinking", thinking: huge }], timestamp: 2 },
+    ]);
+    const ev = events[1] as { type: string; text: string };
+    expect(ev.type).toBe("agent_thinking");
+    expect(ev.text.endsWith("[thinking truncated]")).toBe(true);
+    expect(ev.text.length).toBe(THINKING_EVENT_MAX_CHARS + "\n\n…[thinking truncated]".length);
+    expect(ev.text.length).toBeLessThan(huge.length);
   });
 
   test("mapping (plan/30 re-sync): user [image, text] → user_input keeps images", () => {

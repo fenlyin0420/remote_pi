@@ -21,6 +21,28 @@ void main() {
     expect(find.byType(Text), findsNothing);
   });
 
+  testWidgets('a thinking buffer renders the collapsed thinking block', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      const StreamingMessage(
+        inReplyTo: 'x',
+        buffer: 'reasoning so far',
+        thinking: true,
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Thinking…'), findsOneWidget);
+    expect(find.byType(AgentMarkdown), findsNothing);
+    expect(
+      find.text('reasoning so far'),
+      findsNothing,
+      reason: 'collapsed by default, even while it streams',
+    );
+    expect(find.byKey(const Key('streaming-cursor')), findsOneWidget);
+  });
+
   testWidgets('cursor sits one line BELOW the response (not inline)', (
     tester,
   ) async {

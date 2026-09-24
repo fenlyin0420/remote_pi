@@ -310,6 +310,22 @@ void main() {
     h.dispose();
   });
 
+  test('reasoning never becomes the notification body', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi'});
+    await h.connect();
+    await h.delivery.start();
+    h.transport.emit(
+      'room-a',
+      AgentThinking(inReplyTo: 't1', delta: 'internal deliberation…'),
+    );
+    h.transport.emit('room-a', AgentChunk(inReplyTo: 't1', delta: 'the answer'));
+    h.transport.emit('room-a', AgentDone(inReplyTo: 't1'));
+    await pump();
+
+    expect(h.notifier.shown.single.body, 'the answer');
+    h.dispose();
+  });
+
   test('a finished turn is silent while the user reads that chat', () async {
     final h = _Harness(rooms: {'room-a': 'remote_pi'});
     await h.connect();

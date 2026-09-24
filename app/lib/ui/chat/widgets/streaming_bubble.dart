@@ -1,5 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
+import 'package:app/ui/chat/widgets/thinking_block.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
@@ -35,6 +36,16 @@ class _StreamingBubbleState extends State<StreamingBubble>
 
   @override
   Widget build(BuildContext context) {
+    // Reasoning streams into the SAME live slot as the answer text, but renders
+    // as the collapsible thinking block (also collapsed while it arrives — the
+    // label + cursor say "working" without pushing the answer away).
+    if (widget.streaming.thinking) {
+      return ThinkingBlock(
+        text: widget.streaming.buffer,
+        live: true,
+        cursor: _BlinkingCursor(controller: _blink),
+      );
+    }
     final hasText = widget.streaming.buffer.isNotEmpty;
     // Full content width (matches AssistantBubble). Cursor lives on its OWN
     // line directly below the response (never inline beside wrapped text,

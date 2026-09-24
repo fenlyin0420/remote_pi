@@ -803,6 +803,7 @@ sealed class ServerMessage {
     final type = json['type'] as String?;
     return switch (type) {
       'agent_chunk' => AgentChunk.fromJson(json),
+      'agent_thinking' => AgentThinking.fromJson(json),
       'agent_done' => AgentDone.fromJson(json),
       'tool_request' => ToolRequest.fromJson(json),
       'tool_result' => ToolResult.fromJson(json),
@@ -844,6 +845,21 @@ class AgentChunk extends ServerMessage {
   AgentChunk({required this.inReplyTo, required this.delta});
 
   factory AgentChunk.fromJson(Map<String, dynamic> j) => AgentChunk(
+    inReplyTo: j['in_reply_to'] as String,
+    delta: j['delta'] as String,
+  );
+}
+
+/// Model reasoning tokens. Same live turn as [AgentChunk] (`in_reply_to`), but
+/// rendered as its own collapsible row. Pi-extension ≥ the version that added
+/// this frame emits it only for models with a reasoning surface; older Pis
+/// simply never send it (the app renders nothing extra).
+class AgentThinking extends ServerMessage {
+  final String inReplyTo;
+  final String delta;
+  AgentThinking({required this.inReplyTo, required this.delta});
+
+  factory AgentThinking.fromJson(Map<String, dynamic> j) => AgentThinking(
     inReplyTo: j['in_reply_to'] as String,
     delta: j['delta'] as String,
   );
@@ -1224,6 +1240,13 @@ sealed class SessionHistoryEvent {
         inReplyTo: j['in_reply_to'] as String,
         text: j['text'] as String,
       ),
+      // Model reasoning replayed on re-sync, so a reconnect keeps the thinking
+      // rows the app already showed live.
+      'agent_thinking' => AgentThinkingEvt(
+        ts: ts,
+        inReplyTo: j['in_reply_to'] as String,
+        text: j['text'] as String,
+      ),
       // Plan/32 — compaction replayed from history so the system bubble
       // survives a re-sync.
       'compaction' => CompactionEvt(
@@ -1280,6 +1303,18 @@ class AgentMessageEvt extends SessionHistoryEvent {
   final String inReplyTo;
   final String text;
   const AgentMessageEvt({
+    required super.ts,
+    required this.inReplyTo,
+    required this.text,
+  });
+}
+
+/// Model reasoning replayed from `session_history` (one event per thinking
+/// block, in content order before the assistant text of the same message).
+class AgentThinkingEvt extends SessionHistoryEvent {
+  final String inReplyTo;
+  final String text;
+  const AgentThinkingEvt({
     required super.ts,
     required this.inReplyTo,
     required this.text,

@@ -3,7 +3,7 @@ import 'package:app/domain/session_state.dart';
 /// Plan/31 — one persisted chat message (row-granular SSOT). Stored in the
 /// per-session `msgs:<epk>:<roomId>` box, keyed by [seq]. Maps to the domain
 /// [ChatMessage] the UI widgets already render.
-enum MsgRole { user, assistant, tool, compaction }
+enum MsgRole { user, assistant, tool, compaction, thinking }
 
 class MessageRecord {
   /// Protocol id — the dedupe key (optimistic send ↔ Pi echo share it).
@@ -116,6 +116,8 @@ class MessageRecord {
         );
       case MsgRole.assistant:
         return AssistantMsg(id: id, text: text);
+      case MsgRole.thinking:
+        return ThinkingMsg(id: id, text: text);
       case MsgRole.tool:
         final t = tool;
         return ToolEvent(

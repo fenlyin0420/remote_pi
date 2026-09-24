@@ -224,6 +224,10 @@ class BackgroundDelivery extends Service {
         // chunks): keep it as the body so a later `agent_done` has something to
         // show even if the chunks were missed while offline.
         _setPreview(key, text);
+      case AgentThinking():
+        // Reasoning is context, not the answer: it never becomes the banner
+        // body (the turn's text — when there is one — does).
+        break;
       case ErrorMessage(:final message):
         // A provider failure leaves the app hanging with no reply — the one
         // other thing the user actually wants to be told about.

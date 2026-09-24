@@ -6,6 +6,7 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "user_input",
   "queued_message_state",
   "agent_chunk",
+  "agent_thinking",
   "agent_done",
   "agent_message",
   "tool_request",

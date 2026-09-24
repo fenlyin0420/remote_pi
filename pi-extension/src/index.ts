@@ -1162,6 +1162,13 @@ function _getSyncMaxBytes(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : SYNC_MAX_BYTES_DEFAULT;
 }
 
+// Per-block cap for replayed reasoning. One long chain-of-thought would
+// otherwise eat the whole `session_history` byte budget and evict whole older
+// turns (the budget trims from the oldest event). Live streaming is uncapped —
+// this only bounds the re-sync mirror.
+export const THINKING_EVENT_MAX_CHARS = 16384;
+const THINKING_EVENT_TRUNCATED = "\n\n…[thinking truncated]";
+
 function _jsonBytes(value: unknown): number {
   try {
     return Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -2269,6 +2276,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     const ae = event.assistantMessageEvent;
     if (ae.type === "text_delta") {
       _broadcastToActive({ type: "agent_chunk", in_reply_to: _currentTurnId, delta: ae.delta });
+    } else if (ae.type === "thinking_delta") {
+      // Reasoning tokens ride the same turn as the answer text; the app keeps
+      // them in their own collapsible row and closes the segment at the first
+      // text/tool boundary. `thinking_delta` is only emitted by models that
+      // expose reasoning, so non-reasoning models are byte-identical.
+      _broadcastToActive({ type: "agent_thinking", in_reply_to: _currentTurnId, delta: ae.delta });
     }
   });
 
@@ -5186,7 +5199,15 @@ export function _mapAgentMessagesToEvents(
         : undefined;
       for (const raw of content) {
         if (!raw || typeof raw !== "object") continue;
-        const block = raw as { type?: string; text?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
+        const block = raw as {
+          type?: string;
+          text?: unknown;
+          id?: unknown;
+          name?: unknown;
+          arguments?: unknown;
+          thinking?: unknown;
+          redacted?: unknown;
+        };
         if (block.type === "text") {
           const text = String(block.text ?? "");
           if (!text) continue;
@@ -5198,6 +5219,19 @@ export function _mapAgentMessagesToEvents(
             ...(usage ? { usage } : {}),
           };
           events.push(ev);
+        } else if (block.type === "thinking") {
+          // Skip redacted blocks (the ciphertext in `thinkingSignature` is
+          // meaningless to the app) and anything empty.
+          const text = typeof block.thinking === "string" ? block.thinking : "";
+          if (!text || block.redacted === true) continue;
+          events.push({
+            ts,
+            type: "agent_thinking",
+            in_reply_to: lastUserId ?? `sync_${ts}`,
+            text: text.length > THINKING_EVENT_MAX_CHARS
+              ? text.slice(0, THINKING_EVENT_MAX_CHARS) + THINKING_EVENT_TRUNCATED
+              : text,
+          });
         } else if (block.type === "toolCall") {
           events.push({
             ts,

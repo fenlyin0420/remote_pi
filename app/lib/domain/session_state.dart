@@ -120,6 +120,22 @@ class AssistantMsg extends ChatMessage {
   int get hashCode => Object.hash(id, text);
 }
 
+/// Model reasoning for one turn ("thinking"). Rendered as a collapsible block,
+/// collapsed by default — it's context, not the answer. Persisted like any
+/// other row (including the `session_history` replay) so it survives a
+/// reconnect / app restart.
+class ThinkingMsg extends ChatMessage {
+  final String text;
+  const ThinkingMsg({required super.id, required this.text});
+
+  @override
+  bool operator ==(Object other) =>
+      other is ThinkingMsg && other.id == id && other.text == text;
+
+  @override
+  int get hashCode => Object.hash(id, text);
+}
+
 class ToolEvent extends ChatMessage {
   final String toolCallId;
   final String tool;
@@ -199,17 +215,30 @@ class StreamingMessage {
   final String inReplyTo; // id of the UserMsg being answered
   final String buffer;
 
-  const StreamingMessage({required this.inReplyTo, this.buffer = ''});
+  /// True while the buffer holds model reasoning (a thinking block) rather
+  /// than answer text. Thinking blocks and text blocks are sequential within a
+  /// turn, so a single live slot suffices — the slot carries the kind.
+  final bool thinking;
 
-  StreamingMessage appendDelta(String delta) =>
-      StreamingMessage(inReplyTo: inReplyTo, buffer: buffer + delta);
+  const StreamingMessage({
+    required this.inReplyTo,
+    this.buffer = '',
+    this.thinking = false,
+  });
+
+  StreamingMessage appendDelta(String delta) => StreamingMessage(
+    inReplyTo: inReplyTo,
+    buffer: buffer + delta,
+    thinking: thinking,
+  );
 
   @override
   bool operator ==(Object other) =>
       other is StreamingMessage &&
       other.inReplyTo == inReplyTo &&
-      other.buffer == buffer;
+      other.buffer == buffer &&
+      other.thinking == thinking;
 
   @override
-  int get hashCode => Object.hash(inReplyTo, buffer);
+  int get hashCode => Object.hash(inReplyTo, buffer, thinking);
 }

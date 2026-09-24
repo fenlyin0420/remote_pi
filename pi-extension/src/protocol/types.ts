@@ -260,6 +260,10 @@ export type SessionHistoryEvent =
       text: string;
       usage?: Usage;
     }
+  // Model reasoning, replayed so a re-sync keeps the thinking blocks the app
+  // already rendered live. `text` is capped per block (see
+  // THINKING_EVENT_MAX_CHARS) to keep the mirror's byte budget intact.
+  | { ts: number; type: "agent_thinking"; in_reply_to: string; text: string }
   // Plan/32: a context-compaction marker, replayed in history (survives
   // re-sync like images) so the app re-renders the "context compacted" notice.
   | { ts: number; type: "compaction"; summary: string; tokens_before: number };
@@ -308,6 +312,11 @@ export type ServerMessage =
   | { type: "queued_message_state"; id?: string; text?: string; items?: QueuedMessageItem[] }
   | { type: "steer_consumed"; id: string }
   | { type: "agent_chunk"; in_reply_to: string; delta: string }
+  // Model reasoning tokens, streamed live on the same turn as `agent_chunk`.
+  // The app renders them as a collapsible block (collapsed by default) and
+  // replays them via the matching `agent_thinking` history event. Additive:
+  // older clients ignore unknown types.
+  | { type: "agent_thinking"; in_reply_to: string; delta: string }
   | { type: "agent_done"; in_reply_to: string; usage?: Usage }
   | { type: "agent_message"; in_reply_to: string; text: string; usage?: Usage }
   // Plan/32: pushed after a context compaction (live, and replayed on history

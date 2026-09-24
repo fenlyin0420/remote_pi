@@ -265,6 +265,32 @@ Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão d
 
 `"xhigh"` só é honrado em famílias de modelo específicas (Anthropic 4.x reasoning, OpenAI o-series). Pi cai pra um nível vizinho quando não suporta — sem erro.
 
+### Raciocínio do modelo (conteúdo do thinking)
+
+O nível acima é a *configuração*; o **conteúdo** do raciocínio é outro canal,
+introduzido depois e aditivo (clientes antigos ignoram o tipo desconhecido).
+
+Streaming, espelhando `agent_chunk` (mesmo `in_reply_to` da turn):
+
+```jsonc
+{ "type": "agent_thinking", "in_reply_to": "msg-1", "delta": "…" }
+```
+
+No histórico (`session_history`) o bloco inteiro viaja como evento próprio, na
+ordem do content array do SDK (thinking antes do texto da mesma mensagem):
+
+```jsonc
+{ "ts": 1730000000000, "type": "agent_thinking", "in_reply_to": "sync_…", "text": "…" }
+```
+
+Semântica de segmentos: cada bloco de thinking é um fragmento próprio,
+fechado quando chega texto (`agent_chunk`), uma tool (`tool_request`) ou o fim
+da turn (`agent_done`) — então `thinking → texto → tool → thinking → texto`
+renderiza na ordem certa. Blocos `redacted` (ciphertext de safety filter) não
+são enviados. O `text` replayado é truncado por bloco (16 KiB) pra preservar o
+orçamento de bytes do mirror; o streaming ao vivo não tem limite. Modelos sem
+superfície de reasoning não são afetados: nenhum frame novo é emitido.
+
 ### Side-effects
 
 Os replies (`action_ok` / `models_list`) só confirmam dispatch. Efeitos visíveis chegam pelos canais normais:

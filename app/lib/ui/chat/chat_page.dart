@@ -14,6 +14,7 @@ import 'package:app/ui/chat/widgets/attach_sheet.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
+import 'package:app/ui/chat/widgets/thinking_block.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app_settings/app_settings.dart';
@@ -610,6 +611,7 @@ class _MessageList extends StatelessWidget {
           child: switch (msg) {
             UserMsg() => UserBubble(msg),
             AssistantMsg() => AssistantBubble(msg),
+            ThinkingMsg() => ThinkingBubble(msg),
             ToolEvent() => ToolRequestCard(tool: msg, onDecide: onDecide),
             CompactionMsg() => CompactionBubble(msg),
           },
