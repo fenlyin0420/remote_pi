@@ -202,6 +202,16 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
+                    // The notification readback lives on THIS channel because
+                    // this is the one the Dart-side `BackgroundConnection`
+                    // speaks. It started on the notifications channel by
+                    // accident, which meant every read answered with the
+                    // "unknown" fallback — a silent, completely unhelpful
+                    // result for the very call whose job is to explain silence.
+                    "notificationDiagnostics" -> {
+                        result.success(AppNotifications.diagnostics(this))
+                    }
+
                     else -> {
                         result.notImplemented()
                     }
@@ -270,9 +280,6 @@ class MainActivity : FlutterActivity() {
                     AppNotifications.showTest(this)
                     result.success(null)
                 }
-
-                "notificationDiagnostics" ->
-                    result.success(AppNotifications.diagnostics(this))
 
                 "cancelAll" -> {
                     AppNotifications.cancelAll(this)

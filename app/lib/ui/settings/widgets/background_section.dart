@@ -138,11 +138,18 @@ class BackgroundSection extends StatelessWidget {
           // The OS's own answer about the channel and the phone's alert state.
           // Cryptic on purpose: this is the line that replaces a round trip of
           // "it doesn't buzz" / "what do your system settings say?"
+          //
+          // An empty channel id means the platform never answered (the call is
+          // missing or failed), which is NOT the same as "nothing is wrong" —
+          // saying so plainly is the difference between a readout and a decoy.
           if (state.diagnostics != null)
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 10, 18, 0),
               child: Text(
-                'Notification state: ${state.diagnostics!.summary}',
+                state.diagnostics!.channelId.isEmpty
+                    ? 'Notification state: unavailable — the platform did not '
+                          'answer (build without the readback?).'
+                    : 'Notification state: ${state.diagnostics!.summary}',
                 key: const Key('background-diagnostics'),
                 style: context.typo.monoSmall.copyWith(
                   color: colors.muted2,
