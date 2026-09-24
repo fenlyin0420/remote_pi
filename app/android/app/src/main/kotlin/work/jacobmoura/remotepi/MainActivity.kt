@@ -109,7 +109,9 @@ class MainActivity : FlutterActivity() {
                         startImport(result)
                     }
 
-                    else -> result.notImplemented()
+                    else -> {
+                        result.notImplemented()
+                    }
                 }
             }
     }
@@ -157,7 +159,11 @@ class MainActivity : FlutterActivity() {
     }
 
     @Deprecated("FlutterActivity lifecycle; startActivityForResult is the API the SAF flow needs")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?,
+    ) {
         super.onActivityResult(requestCode, resultCode, data)
 
         when (requestCode) {
