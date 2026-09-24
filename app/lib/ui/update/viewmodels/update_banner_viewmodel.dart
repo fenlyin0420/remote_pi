@@ -81,11 +81,20 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
   }
 
   /// Consulta o manifest e decide se o card deve aparecer. Silencioso em
-  /// falha. Idempotente por instância (re-mount cria nova instância e
-  /// re-consulta; uma mesma instância só consulta uma vez).
-  Future<void> check() async {
+  /// falha. Idempotente por instância: a mesma instância só consulta uma vez,
+  /// a menos que [force] seja passado.
+  ///
+  /// [force] existe para o caso que mais dói: o app estava aberto quando uma
+  /// release saiu, então a consulta do boot já passou (e não achou nada). Um
+  /// app que fica aberto por dias nunca saberia que há versão nova — por isso
+  /// a Home re-consulta quando o app volta ao primeiro plano.
+  ///
+  /// Num re-check, uma falha de rede **não** derruba um card que já está na
+  /// tela: ficar sem manifest é motivo para manter o que o usuário já viu, não
+  /// para tirar a oferta dele.
+  Future<void> check({bool force = false}) async {
     if (!enabled) return; // iOS / não-Android → nunca mostra.
-    if (_checked) return;
+    if (_checked && !force) return;
     _checked = true;
 
     final latest = await _checker.fetchLatest();

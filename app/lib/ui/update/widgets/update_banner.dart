@@ -12,9 +12,11 @@ import 'package:provider/provider.dart';
 /// nova a anunciar (iOS, sem update, dispensada, manifest indisponível) — o
 /// gate Android-only vive no [UpdateBannerViewModel.enabled].
 ///
-/// Dispara o check silencioso no primeiro mount (= startup da Home). Tocar no
-/// corpo baixa o APK e abre o instalador do sistema; o X dispensa (persistido
-/// por versão).
+/// Dispara o check silencioso no primeiro mount (= startup da Home) e de novo
+/// sempre que o app volta ao primeiro plano — sem isso, um app que fica aberto
+/// quando a release sai nunca vê o aviso (a Home continua montada por baixo do
+/// chat, então o mount só acontece uma vez). Tocar no corpo baixa o APK e abre o
+/// instalador do sistema; o X dispensa (persistido por versão).
 class UpdateBanner extends StatefulWidget {
   const UpdateBanner({super.key});
 
@@ -22,19 +24,33 @@ class UpdateBanner extends StatefulWidget {
   State<UpdateBanner> createState() => _UpdateBannerState();
 }
 
-class _UpdateBannerState extends State<UpdateBanner> {
+class _UpdateBannerState extends State<UpdateBanner>
+    with WidgetsBindingObserver {
   StreamSubscription<String>? _errorSub;
+  late final UpdateBannerViewModel _vm;
 
   @override
   void initState() {
     super.initState();
     // `context.read` é seguro no initState (não assina). Best-effort: o check
     // se auto-silencia em qualquer falha e é no-op fora do Android.
-    final vm = context.read<UpdateBannerViewModel>();
-    vm.check();
+    _vm = context.read<UpdateBannerViewModel>();
+    _vm.check();
+    WidgetsBinding.instance.addObserver(this);
     // Falhas de download/instalação chegam aqui (o card volta sozinho para o
     // estado de oferta, então o usuário pode tentar de novo).
-    _errorSub = vm.errors.listen(_showError);
+    _errorSub = _vm.errors.listen(_showError);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Volta do segundo plano = a hora barata de re-consultar. Cobre os dois
+    // casos reais: release publicada enquanto o app estava aberto, e o usuário
+    // voltando do instalador do sistema.
+    if (state == AppLifecycleState.resumed) {
+      // ignore: unawaited_futures
+      _vm.check(force: true);
+    }
   }
 
   void _showError(String message) {
@@ -49,6 +65,7 @@ class _UpdateBannerState extends State<UpdateBanner> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _errorSub?.cancel();
     super.dispose();
   }

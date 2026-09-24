@@ -163,6 +163,34 @@ void main() {
       await vm.check();
       expect(checker.calls, 1);
     });
+
+    test('force re-checks — the app that was open when the release landed', () async {
+      // First check: nothing published yet.
+      final checker = _FakeChecker(null);
+      final vm = _vm(checker);
+      await vm.check();
+      expect(vm.state, isA<UpdateBannerHidden>());
+
+      // The release goes out while the app is still open; returning to the
+      // foreground must find it without a restart.
+      checker.result = _info('1.2.0');
+      await vm.check(force: true);
+      expect(checker.calls, 2);
+      expect(vm.state, isA<UpdateBannerVisible>());
+    });
+
+    test('a forced re-check that fails keeps the offer on screen', () async {
+      final checker = _FakeChecker(_info('1.2.0'));
+      final vm = _vm(checker);
+      await vm.check();
+      expect(vm.state, isA<UpdateBannerVisible>());
+
+      // No network on resume: the user already saw that an update exists, so
+      // dropping the card would be worse than leaving a stale offer standing.
+      checker.result = null;
+      await vm.check(force: true);
+      expect(vm.state, isA<UpdateBannerVisible>());
+    });
   });
 
   group('UpdateBannerViewModel.dismiss', () {
