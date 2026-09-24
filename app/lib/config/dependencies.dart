@@ -261,6 +261,7 @@ Future<void> setupDependencies() async {
       _injector.get<Preferences>(),
       _injector.get<BackgroundConnection>(),
       _injector.get<BackgroundDelivery>(),
+      _injector.get<MessageNotifier>(),
     ),
   );
   _injector.addViewModel<UpdateBannerViewModel>(

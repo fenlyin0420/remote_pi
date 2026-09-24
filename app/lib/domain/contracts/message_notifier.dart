@@ -28,6 +28,13 @@ abstract class MessageNotifier {
     String device,
   });
 
+  /// Posts a sample "turn finished" notification.
+  ///
+  /// Exists so sound/vibration can be verified in seconds instead of waiting for
+  /// the agent to finish something — and so "it didn't buzz" has an obvious
+  /// first diagnostic step.
+  Future<void> showTest();
+
   /// Dismisses the session's notification — used when the user opens the chat
   /// on their own, the same way a chat app clears its banner once read.
   Future<void> cancel({required String epk, required String roomId});

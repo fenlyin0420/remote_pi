@@ -109,6 +109,32 @@ class BackgroundSection extends StatelessWidget {
             actionKey: const Key('background-battery-allow'),
             onAction: vm.requestBatteryExemption,
           ),
+          // Sound + vibration are configured on the system's notification
+          // channel, where the app can be right and the phone still silent (a
+          // channel's settings are frozen at creation; the user may also have
+          // muted it, or be in Do Not Disturb). A one-tap sample turns "it
+          // didn't buzz" into a two-second check.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+            child: OutlinedButton.icon(
+              key: const Key('background-test-notification'),
+              onPressed: vm.sendTestNotification,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: colors.accent,
+                side: BorderSide(color: colors.border),
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.all(Radius.circular(6)),
+                ),
+                minimumSize: const Size.fromHeight(0),
+              ),
+              icon: const Icon(LucideIcons.bellRing, size: 16),
+              label: const Text(
+                'Send a test notification',
+                style: TextStyle(fontFamily: kMonoFamily, fontSize: 13),
+              ),
+            ),
+          ),
         ],
         const SizedBox(height: 8),
       ],

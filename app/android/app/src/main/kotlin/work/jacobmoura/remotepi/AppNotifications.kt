@@ -28,10 +28,36 @@ import android.media.RingtoneManager
  */
 object AppNotifications {
     const val CHANNEL_CONNECTION = "connection"
-    const val CHANNEL_MESSAGES = "messages"
+
+    /**
+     * Message channel — `_v2` on purpose.
+     *
+     * A channel's configuration is **immutable** once created: the OS keeps the
+     * first definition forever and silently ignores later code changes. v1 was
+     * created with `enableVibration(true)` and no vibration pattern, which on
+     * Android O+ means "vibrate enabled, nothing to play" — the notifications
+     * arrived silently and without a buzz. Fixing that in place would have been
+     * invisible to every device that had already created the channel, so the fix
+     * has to arrive under a new id (and the old one is deleted below, to keep
+     * one entry in the system's channel list instead of two).
+     */
+    const val CHANNEL_MESSAGES = "messages_v2"
+
+    /** The v1 channel, retired above. Deleted once, then never referenced. */
+    private const val CHANNEL_MESSAGES_LEGACY = "messages"
 
     /** Ongoing foreground-service notice. Never reused for messages. */
     const val ONGOING_ID = 1
+
+    /** Id for the Settings "send a test notification" post. */
+    private const val TEST_ID = 2
+
+    /**
+     * Buzz pattern for message notifications: wait, buzz, pause, buzz. Written
+     * explicitly because a channel's `enableVibration(true)` alone leaves the
+     * pattern null — see [CHANNEL_MESSAGES].
+     */
+    private val VIBRATION_PATTERN = longArrayOf(0, 250, 200, 250)
 
     /** Notification ids for messages start here (see [messageId]). */
     private const val MESSAGE_ID_BASE = 100
@@ -67,6 +93,7 @@ object AppNotifications {
                 ).apply {
                     description = "Notifies you when the agent finishes a turn."
                     enableVibration(true)
+                    vibrationPattern = VIBRATION_PATTERN
                     setSound(
                         RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
                         AudioAttributes
@@ -76,6 +103,12 @@ object AppNotifications {
                     )
                 },
             )
+        }
+
+        // Retire v1 so the settings list shows one "Messages" entry. Safe: the
+        // only notifications it ever carried are transient turn banners.
+        if (nm.getNotificationChannel(CHANNEL_MESSAGES_LEGACY) != null) {
+            nm.deleteNotificationChannel(CHANNEL_MESSAGES_LEGACY)
         }
     }
 
@@ -147,6 +180,47 @@ object AppNotifications {
         if (device.isNotEmpty()) builder.setSubText(device)
 
         nm.notify(messageId(epk, room), builder.build())
+    }
+
+    /**
+     * Posts a sample turn notification, so the user can check sound + vibration
+     * in two seconds instead of waiting for the agent to finish something.
+     *
+     * Carries no session extras: tapping it just opens the app, because there is
+     * no session behind it to open.
+     */
+    fun showTest(ctx: Context) {
+        ensureChannels(ctx)
+        val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
+        val tap =
+            PendingIntent.getActivity(
+                ctx,
+                TEST_ID,
+                Intent(ctx, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        val detail =
+            """
+            Test notification. If you saw this but felt nothing, check this app's
+            notification settings: the "Messages" channel must allow sound and
+            vibration, and the phone must not be in Do Not Disturb.
+            """.trimIndent().replace('\n', ' ')
+        nm.notify(
+            TEST_ID,
+            Notification
+                .Builder(ctx, CHANNEL_MESSAGES)
+                .setSmallIcon(R.drawable.ic_stat_remote_pi)
+                .setContentTitle("Remote Pi")
+                .setContentText("Test notification — a finished turn looks like this.")
+                .setStyle(Notification.BigTextStyle().bigText(detail))
+                .setContentIntent(tap)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setShowWhen(true)
+                .build(),
+        )
     }
 
     fun cancelAll(ctx: Context) {

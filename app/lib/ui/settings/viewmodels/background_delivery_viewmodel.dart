@@ -1,6 +1,7 @@
 import 'package:app/data/background/background_delivery.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/contracts/background_connection.dart';
+import 'package:app/domain/contracts/message_notifier.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/settings/states/background_delivery_state.dart';
 
@@ -18,9 +19,11 @@ class BackgroundDeliveryViewModel extends ViewModel<BackgroundDeliveryState> {
     Preferences prefs,
     BackgroundConnection background,
     BackgroundDelivery delivery,
+    MessageNotifier notifier,
   ) : _prefs = prefs,
       _background = background,
       _delivery = delivery,
+      _notifier = notifier,
       super(
         BackgroundDeliveryState(
           // Both of these are synchronous getters, so the section renders with
@@ -40,6 +43,7 @@ class BackgroundDeliveryViewModel extends ViewModel<BackgroundDeliveryState> {
   final Preferences _prefs;
   final BackgroundConnection _background;
   final BackgroundDelivery _delivery;
+  final MessageNotifier _notifier;
 
   /// Re-reads the platform state. Call on entry and after anything that can
   /// change it (toggling, returning from a system settings screen).
@@ -104,6 +108,10 @@ class BackgroundDeliveryViewModel extends ViewModel<BackgroundDeliveryState> {
     emit(state.copyWith(busy: false));
     await refresh();
   }
+
+  /// Posts a sample notification so the user can check sound + vibration, and
+  /// so the answer to "it didn't buzz" starts with "did the test buzz?".
+  Future<void> sendTestNotification() => _notifier.showTest();
 
   /// Re-applies "the keeper should be up" after the OS stopped it (OEM battery
   /// managers do this without telling anyone). Goes through the service so the

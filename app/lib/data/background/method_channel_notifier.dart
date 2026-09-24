@@ -78,6 +78,18 @@ class MethodChannelNotifier implements MessageNotifier {
   }
 
   @override
+  Future<void> showTest() async {
+    if (!_supported) return;
+    try {
+      await _channel.invokeMethod<void>('showTest');
+    } on PlatformException {
+      // Nothing actionable.
+    } on MissingPluginException {
+      // ditto
+    }
+  }
+
+  @override
   Future<void> cancel({required String epk, required String roomId}) async {
     if (!_supported) return;
     try {

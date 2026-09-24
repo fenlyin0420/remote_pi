@@ -266,6 +266,11 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "showTest" -> {
+                    AppNotifications.showTest(this)
+                    result.success(null)
+                }
+
                 "cancelAll" -> {
                     AppNotifications.cancelAll(this)
                     result.success(null)

@@ -134,6 +134,7 @@ class _Notifier implements MessageNotifier {
   final shown = <({String epk, String room, String title, String body})>[];
   final cancelled = <({String epk, String room})>[];
   int cancelAllCount = 0;
+  int testCount = 0;
   NotificationTap? pending;
 
   @override
@@ -158,6 +159,9 @@ class _Notifier implements MessageNotifier {
   }) async {
     shown.add((epk: epk, room: roomId, title: title, body: body));
   }
+
+  @override
+  Future<void> showTest() async => testCount++;
 
   @override
   Future<void> cancel({required String epk, required String roomId}) async {
