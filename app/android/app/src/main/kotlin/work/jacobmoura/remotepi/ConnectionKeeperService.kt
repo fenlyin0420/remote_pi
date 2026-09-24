@@ -45,9 +45,16 @@ class ConnectionKeeperService : Service() {
         @Volatile
         var running: Boolean = false
             private set
-
         fun start(ctx: Context) {
             AppNotifications.ensureChannels(ctx)
+            // Already in the foreground: do nothing. This is what makes "swipe
+            // the notice away" stick — the caller re-asserts the keeper on every
+            // peer/preference change (room switches included), and a second
+            // `startForegroundService` would re-post the notification the user
+            // just dismissed. Android 14 made that notice dismissible on purpose,
+            // and the service keeps running after dismissal, so the only thing
+            // standing between the user and a clean shade is our own re-posting.
+            if (running) return
             val intent = Intent(ctx, ConnectionKeeperService::class.java)
             try {
                 ctx.startForegroundService(intent)
@@ -63,10 +70,15 @@ class ConnectionKeeperService : Service() {
         }
 
         fun stop(ctx: Context) {
+            // Clear the flag synchronously: `stopService` is asynchronous, and a
+            // stop→start flip (toggling the switch twice) must not see a stale
+            // "running" and skip the restart.
+            val wasRunning = running
+            running = false
             // Deliver the stop intent only to an instance that exists. Starting
             // a fresh one just to kill it would flash a notice and, on Android
             // 12+, is exactly the background start the platform refuses.
-            if (running) {
+            if (wasRunning) {
                 val intent =
                     Intent(ctx, ConnectionKeeperService::class.java).apply {
                         action = ACTION_STOP

@@ -112,7 +112,16 @@ object AppNotifications {
         }
     }
 
-    /** The (silent, ongoing) foreground-service notice. */
+    /**
+     * The foreground-service notice.
+     *
+     * Deliberately terse ("Connected") and silent: Android requires *a*
+     * notification for any foreground service, so this one is built to be the
+     * least intrusive thing that satisfies that. On Android 13+ the user can
+     * swipe it away — the service keeps running, and
+     * [ConnectionKeeperService.start] refuses to re-post it for as long as the
+     * keeper lives.
+     */
     fun connectionNotification(ctx: Context): Notification {
         val tap =
             PendingIntent.getActivity(
@@ -127,7 +136,7 @@ object AppNotifications {
             .Builder(ctx, CHANNEL_CONNECTION)
             .setSmallIcon(R.drawable.ic_stat_remote_pi)
             .setContentTitle("Remote Pi")
-            .setContentText("Connected — keeping the background connection alive")
+            .setContentText("Connected")
             .setContentIntent(tap)
             .setOngoing(true)
             .setShowWhen(false)
