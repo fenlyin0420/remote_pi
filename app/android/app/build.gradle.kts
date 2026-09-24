@@ -67,6 +67,20 @@ android {
             }
         }
     }
+
+    // Distribute arm64 only. Flutter's `--target-platform` limits
+    // libapp.so/libflutter.so, but prebuilt AARs (MLKit's
+    // libbarhopper_v3.so, CameraX, dartjni) ship all three ABIs and would
+    // otherwise add ~9 MB no arm64 device ever loads. `ndk.abiFilters` does
+    // not strip those, so exclude them at packaging time. Debug is left
+    // alone so x86_64 emulators still run.
+    packaging {
+        jniLibs {
+            excludes.add("lib/armeabi-v7a/**")
+            excludes.add("lib/x86/**")
+            excludes.add("lib/x86_64/**")
+        }
+    }
 }
 
 flutter {
