@@ -119,6 +119,23 @@ void main() {
       expect(transfer.exportedNames.single, endsWith('.json'));
     });
 
+    test('the payload is the bundle, not the suggested filename', () async {
+      // Guards a real shipped bug: the Android side stored the filename in the
+      // slot meant for the JSON and wrote *that* to disk, producing a backup
+      // file containing only its own name. Nothing here could catch the native
+      // write, but the two arguments must at least stay distinct and the
+      // payload must survive as parseable JSON.
+      await boot(initial: _identity(7));
+      await service.export();
+
+      final payload = transfer.exportedJsons.single;
+      final name = transfer.exportedNames.single;
+      expect(payload, isNot(equals(name)));
+      expect(payload, isNot(contains('.json')));
+      // Still a real, parseable bundle rather than a stray string.
+      expect(IdentityBundle.decode(payload).identity.ownerPk, _identity(7).ownerPk);
+    });
+
     test('cancelling the picker returns null without an error', () async {
       await boot(initial: _identity(7));
       transfer.exportResult = null;

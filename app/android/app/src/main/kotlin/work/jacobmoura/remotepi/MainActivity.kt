@@ -54,8 +54,17 @@ class MainActivity : FlutterActivity() {
      * activity), so a single slot is enough. A second call while one is
      * pending is rejected rather than silently clobbering the first.
      */
-    private var pendingExport: Pair<String, MethodChannel.Result>? = null
+    // Holds the payload *and* the result to resolve. The payload must be stored
+    // here, not re-derived later: the system picker returns only a URI, so the
+    // JSON is gone once this call returns.
+    private var pendingExport: PendingExport? = null
     private var pendingImport: MethodChannel.Result? = null
+
+    private data class PendingExport(
+        val json: String,
+        val fileName: String,
+        val result: MethodChannel.Result,
+    )
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -121,7 +130,7 @@ class MainActivity : FlutterActivity() {
         fileName: String,
         result: MethodChannel.Result,
     ) {
-        pendingExport = fileName to result
+        pendingExport = PendingExport(json, fileName, result)
         try {
             startActivityForResult(
                 Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
@@ -170,7 +179,9 @@ class MainActivity : FlutterActivity() {
             REQ_EXPORT -> {
                 val pending = pendingExport ?: return
                 pendingExport = null
-                val (json, result) = pending
+                val json = pending.json
+                val fileName = pending.fileName
+                val result = pending.result
                 if (resultCode != Activity.RESULT_OK) {
                     // Cancelled — not an error, the Dart side treats null as such.
                     result.success(null)
@@ -189,7 +200,7 @@ class MainActivity : FlutterActivity() {
                         result.error("write_failed", "Could not open the selected file", null)
                         return
                     }
-                    result.success(uri.lastPathSegment ?: json.hashCode().toString())
+                    result.success(uri.lastPathSegment ?: fileName)
                 } catch (e: Exception) {
                     result.error("write_failed", e.message ?: "Could not write the file", null)
                 }
