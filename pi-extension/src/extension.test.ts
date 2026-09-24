@@ -3292,6 +3292,10 @@ describe("rooms wiring", () => {
     expect(_getState()).toBe("idle");
   });
 
+  // LOCAL PATCH (fenlyin): an initial Relay failure is no longer terminal.
+  // Upstream returned to `idle` and waited for a manual restart; that left the
+  // relay dead for ~18h (2026-09-22 outage). The patched path arms the normal
+  // reconnect state instead, so the assertion is `started`.
   test("generic initial Relay failure closes its candidate before reporting", async () => {
     const failure = new Error("initial Relay failed");
     _defaultConnectImpl = async () => { throw failure; };
@@ -3305,7 +3309,9 @@ describe("rooms wiring", () => {
       "error",
     );
     expect(relayRef.current?.close).toHaveBeenCalledTimes(1);
-    expect(_getState()).toBe("idle");
+    // Patched: the failed candidate is closed, but the process stays armed to
+    // retry (`started`) rather than idling until a manual restart.
+    expect(_getState()).toBe("started");
   });
 
   test("PeerChannel outer envelope omits `room` field (defensive, until W1.A/C ready)", async () => {
@@ -3504,8 +3510,12 @@ describe("session sync", () => {
     expect(h.inner["truncated"]).toBe(false);
   });
 
+  // LOCAL PATCH (fenlyin): the default cap is 10000, not 30 (see the
+  // SYNC_LIMIT_DEFAULT comment in index.ts — a short mirror silently dropped
+  // older conversation on every room re-entry). The cap behaviour is still
+  // covered here, driven explicitly through the env override.
   test("buffer with 50 events + env=30 → returns 30, truncated:true", async () => {
-    delete process.env["REMOTE_PI_SYNC_LIMIT"];  // default 30
+    process.env["REMOTE_PI_SYNC_LIMIT"] = "30";
     await _pairForTest("peer-ss-mirror-5");
 
     const ts = 1_700_000_000_000;

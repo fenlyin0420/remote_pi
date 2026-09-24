@@ -1134,15 +1134,98 @@ let _lockedName: string | null = null;
 
 // ── Session sync limit (mirror cache cap) ─────────────────────────────────────
 //
-// Configurable via REMOTE_PI_SYNC_LIMIT env var (positive int, default 30).
-// Read on every session_sync so QA can `export REMOTE_PI_SYNC_LIMIT=N` between
-// runs without restarting the extension. The value is also clamped against
-// the client-provided `limit` (server is authoritative).
-const SYNC_LIMIT_DEFAULT = 30;
+// Configurable via REMOTE_PI_SYNC_LIMIT env var (positive int).
+// Read on every session_sync so it can be tuned without restarting the
+// extension. The value is also clamped against the client-provided `limit`
+// (server is authoritative).
+//
+// LOCAL PATCH (fenlyin): default 30 → 10000. The app has no paging: it
+// substitutes its local cache with this reply, so a short mirror means every
+// room re-entry (session_sync on adopt) silently drops the older conversation.
+// The wire budget below — not this count — is what actually bounds the reply.
+const SYNC_LIMIT_DEFAULT = 10000;
+// LOCAL PATCH (fenlyin): byte budget for one `session_history`. The app applies
+// the reply as the whole cache (batching would clobber it: `_applyHistory`
+// reconciles per message), and the relay drops outer envelopes over 4 MiB
+// (`RELAY_MAX_CT_MIB`). Stay clear of both: trim the oldest events instead.
+const SYNC_MAX_BYTES_DEFAULT = 3 * 1024 * 1024;
+
 function _getSyncLimit(): number {
   const raw = process.env["REMOTE_PI_SYNC_LIMIT"];
   const parsed = raw ? parseInt(raw, 10) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : SYNC_LIMIT_DEFAULT;
+}
+
+function _getSyncMaxBytes(): number {
+  const raw = process.env["REMOTE_PI_SYNC_MAX_BYTES"];
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : SYNC_MAX_BYTES_DEFAULT;
+}
+
+function _jsonBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+// ── LOCAL PATCH (fenlyin): seed the history mirror from the Pi session ────────
+//
+// `_messageBuffer` only ever held messages observed live by THIS process, so any
+// Pi process replacement (daemon restart, crash, app "New Context") made every
+// room come back empty — the app mirrors the buffer, and the buffer was gone.
+// The session itself is resumed with `--continue`, so the whole conversation is
+// already on disk: read it once at session_start and prefill the mirror.
+// Display-only — the agent's own context is untouched.
+let _historySeeded = false;
+const SEEDED_ROLES = new Set(["user", "assistant", "toolResult"]);
+
+/** Prefills `_messageBuffer` with the resumed session's messages (once per process). */
+export function _seedMessageBufferFromSession(ctx: unknown): void {
+  if (_historySeeded) return;
+  _historySeeded = true;
+  if (_messageBuffer.length > 0) return;
+  try {
+    const sm = (ctx as { sessionManager?: { getEntries?: () => unknown[] } } | null)
+      ?.sessionManager;
+    const entries = sm?.getEntries?.();
+    if (!Array.isArray(entries)) return;
+    const seeded: unknown[] = [];
+    for (const entry of entries as Array<Record<string, unknown>>) {
+      if (!entry || typeof entry !== "object") continue;
+      const message = entry["message"] as { role?: string; timestamp?: number } | undefined;
+      if (
+        entry["type"] === "message" &&
+        message &&
+        SEEDED_ROLES.has(message.role ?? "")
+      ) {
+        const ts = typeof message.timestamp === "number"
+          ? message.timestamp
+          : Date.parse((entry["timestamp"] as string) ?? "") || 0;
+        seeded.push(
+          ts === message.timestamp
+            ? message
+            : { ...(message as object), timestamp: ts },
+        );
+      } else if (entry["type"] === "compaction") {
+        seeded.push({
+          role: "compaction",
+          content: typeof entry["summary"] === "string" ? entry["summary"] : "",
+          timestamp: Date.parse((entry["timestamp"] as string) ?? "") || 0,
+          tokensBefore:
+            typeof entry["tokensBefore"] === "number" ? entry["tokensBefore"] : 0,
+        });
+      }
+    }
+    if (seeded.length === 0) return;
+    _messageBuffer = seeded as typeof _messageBuffer;
+    process.stderr.write(
+      `[remote-pi] history seeded from session: ${seeded.length} messages\n`,
+    );
+  } catch (err) {
+    process.stderr.write(`[remote-pi] history seed failed: ${String(err)}\n`);
+  }
 }
 
 // ── Relay reconnect state ─────────────────────────────────────────────────────
@@ -2341,6 +2424,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
     _lastEventCtx = ctx;
+    // LOCAL PATCH (fenlyin): prefill the history mirror with the resumed
+    // session's conversation so a room keeps its history across restarts.
+    _seedMessageBufferFromSession(ctx);
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the
     // bridge here; fresh-module hosts already created theirs in the factory.
@@ -2987,7 +3073,18 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
       );
       return;
     }
-    ctx.ui.notify(`[remote-pi] relay connect failed: ${String(err)}`, "error");
+    ctx.ui.notify(
+      `[remote-pi] relay connect failed: ${String(err)} — will keep retrying`,
+      "error",
+    );
+    // LOCAL PATCH (fenlyin): an initial connect failure used to be terminal —
+    // the relay stayed down until the process was manually restarted
+    // (2026-09-22 outage: dead relay for ~18h). Arm the same reconnect state
+    // used after a dropped connection so we keep retrying forever.
+    _relayUrl = relayUrl;
+    _state = "started";
+    _scheduleReconnect(_relayLifecycleGeneration, relayUrl);
+    _emitRelayState();
     return;
   }
 
@@ -4764,13 +4861,30 @@ function _handleSessionSync(
 
   const allEvents = _mapAgentMessagesToEvents(_messageBuffer);
   const slice = effectiveLimit > 0 ? allEvents.slice(-effectiveLimit) : [];
-  const truncated = allEvents.length > effectiveLimit;
+  // LOCAL PATCH (fenlyin): fit the reply to the budget by dropping the OLDEST
+  // events (the relay would otherwise reject the whole envelope, and the app
+  // cannot be handed this as several messages).
+  const budget = _getSyncMaxBytes();
+  let events = slice;
+  let bytes = _jsonBytes(events);
+  while (events.length > 1 && bytes > budget) {
+    events = events.slice(Math.max(1, Math.floor(events.length / 8)));
+    bytes = _jsonBytes(events);
+  }
+  const truncated =
+    allEvents.length > effectiveLimit || events.length !== slice.length;
+  // LOCAL PATCH (fenlyin): one line of ops evidence for "why did the room lose
+  // history" — the reply size and whether anything was dropped.
+  process.stderr.write(
+    `[remote-pi] session_history: ${events.length}/${allEvents.length} events, ` +
+    `${Math.round(bytes / 1024)} KB, truncated=${truncated}\n`,
+  );
 
   sender.send({
     type: "session_history",
     in_reply_to: msg.id,
     session_started_at: _sessionStartedAt,
-    events: slice,
+    events,
     eos: true,
     truncated,
   });

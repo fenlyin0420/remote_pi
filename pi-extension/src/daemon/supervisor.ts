@@ -608,15 +608,14 @@ export class Supervisor {
       return;
     }
 
-    // Crash: schedule restart with backoff. After exhausting the schedule
-    // we give up and stay in `crashed`.
-    if (slot.restartAttempt >= RESTART_BACKOFFS_MS.length) {
-      process.stderr.write(
-        `[remote-pi-supervisord] giving up restart for ${id} after ${slot.restartAttempt} attempts\n`,
-      );
-      return;
-    }
-    const delay = RESTART_BACKOFFS_MS[slot.restartAttempt]!;
+    // Crash: schedule restart with backoff.
+    // LOCAL PATCH (fenlyin): never give up. The fixed schedule used to end in
+    // a permanent `crashed` state (2026-09-22 outage: daemon down ~20h until
+    // manual restart). After exhausting the schedule, keep retrying at the
+    // final (5-minute) interval forever.
+    const delay = slot.restartAttempt < RESTART_BACKOFFS_MS.length
+      ? RESTART_BACKOFFS_MS[slot.restartAttempt]!
+      : RESTART_BACKOFFS_MS[RESTART_BACKOFFS_MS.length - 1]!;
     process.stderr.write(
       `[remote-pi-supervisord] scheduling restart of ${id} in ${delay}ms (attempt ${slot.restartAttempt + 1})\n`,
     );
