@@ -1,5 +1,6 @@
 package work.jacobmoura.remotepi
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -30,16 +31,198 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "work.jacobmoura.remotepi/update"
 
+        /** Identity backup/restore — see [setUpIdentityTransferChannel]. */
+        private const val IDENTITY_CHANNEL = "work.jacobmoura.remotepi/identity"
+
         /** FileProvider authority declared in AndroidManifest.xml. */
         private val AUTHORITY_SUFFIX = ".fileprovider"
 
         /** Subdirectory of cacheDir the FileProvider exposes (see file_paths.xml). */
         private const val UPDATE_DIR = "updates"
+
+        /** Request codes for the SAF pickers; must not collide. */
+        private const val REQ_EXPORT = 4701
+        private const val REQ_IMPORT = 4702
     }
+
+    /**
+     * Pending result for an in-flight SAF picker. SAF is asynchronous — the
+     * user may take arbitrarily long in the system UI — so the Dart future is
+     * resolved from [onActivityResult] instead of the method call.
+     *
+     * Only one picker can be open at a time (it is a full-screen system
+     * activity), so a single slot is enough. A second call while one is
+     * pending is rejected rather than silently clobbering the first.
+     */
+    private var pendingExport: Pair<String, MethodChannel.Result>? = null
+    private var pendingImport: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        setUpUpdateChannel(flutterEngine)
+        setUpIdentityTransferChannel(flutterEngine)
+    }
+
+    // -----------------------------------------------------------------------
+    // Identity backup / restore
+    // -----------------------------------------------------------------------
+
+    /**
+     * Channel backing the "export / import my identity" feature.
+     *
+     * Uses the Storage Access Framework rather than a fixed path: the user
+     * picks the destination (and the source) themselves, which means the app
+     * needs no storage permission at all and never guesses at a location that
+     * may not exist on a given OEM build. It also keeps the key file out of
+     * app-private storage, which is the entire point — it has to survive the
+     * phone being replaced.
+     *
+     *  - `exportIdentity(json, fileName)` — writes [json] to a user-chosen
+     *    location; resolves with the display path, or null when cancelled.
+     *  - `importIdentity()` — reads a user-chosen file; resolves with its
+     *    contents, or null when cancelled.
+     */
+    private fun setUpIdentityTransferChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, IDENTITY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "exportIdentity" -> {
+                        val json = call.argument<String>("json")
+                        val fileName = call.argument<String>("fileName")
+                        if (json == null || fileName.isNullOrBlank()) {
+                            result.error("bad_args", "json and fileName are required", null)
+                            return@setMethodCallHandler
+                        }
+                        if (pendingExport != null) {
+                            result.error("busy", "A file picker is already open", null)
+                            return@setMethodCallHandler
+                        }
+                        startExport(json, fileName, result)
+                    }
+
+                    "importIdentity" -> {
+                        if (pendingImport != null) {
+                            result.error("busy", "A file picker is already open", null)
+                            return@setMethodCallHandler
+                        }
+                        startImport(result)
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun startExport(
+        json: String,
+        fileName: String,
+        result: MethodChannel.Result,
+    ) {
+        pendingExport = fileName to result
+        try {
+            startActivityForResult(
+                Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "application/json"
+                    putExtra(Intent.EXTRA_TITLE, fileName)
+                    addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                },
+                REQ_EXPORT,
+            )
+        } catch (e: Exception) {
+            pendingExport = null
+            result.error("picker_unavailable", e.message ?: "No file picker available", null)
+        }
+    }
+
+    private fun startImport(result: MethodChannel.Result) {
+        pendingImport = result
+        try {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    // Deliberately not constrained to application/json: some
+                    // providers report backups as octet-stream or plain text,
+                    // and a wrong pick is rejected by the bundle parser anyway.
+                    type = "*/*"
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                },
+                REQ_IMPORT,
+            )
+        } catch (e: Exception) {
+            pendingImport = null
+            result.error("picker_unavailable", e.message ?: "No file picker available", null)
+        }
+    }
+
+    @Deprecated("FlutterActivity lifecycle; startActivityForResult is the API the SAF flow needs")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        when (requestCode) {
+            REQ_EXPORT -> {
+                val pending = pendingExport ?: return
+                pendingExport = null
+                val (json, result) = pending
+                if (resultCode != Activity.RESULT_OK) {
+                    // Cancelled — not an error, the Dart side treats null as such.
+                    result.success(null)
+                    return
+                }
+                val uri = data?.data
+                if (uri == null) {
+                    result.error("no_uri", "The file picker returned no location", null)
+                    return
+                }
+                try {
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(json.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    } ?: run {
+                        result.error("write_failed", "Could not open the selected file", null)
+                        return
+                    }
+                    result.success(uri.lastPathSegment ?: json.hashCode().toString())
+                } catch (e: Exception) {
+                    result.error("write_failed", e.message ?: "Could not write the file", null)
+                }
+            }
+
+            REQ_IMPORT -> {
+                val result = pendingImport ?: return
+                pendingImport = null
+                if (resultCode != Activity.RESULT_OK) {
+                    result.success(null)
+                    return
+                }
+                val uri = data?.data
+                if (uri == null) {
+                    result.error("no_uri", "The file picker returned no file", null)
+                    return
+                }
+                try {
+                    val text =
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            input.readBytes().toString(Charsets.UTF_8)
+                        }
+                    if (text == null) {
+                        result.error("read_failed", "Could not open the selected file", null)
+                        return
+                    }
+                    result.success(text)
+                } catch (e: Exception) {
+                    result.error("read_failed", e.message ?: "Could not read the file", null)
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // In-app update
+    // -----------------------------------------------------------------------
+
+    private fun setUpUpdateChannel(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {

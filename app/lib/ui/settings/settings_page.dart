@@ -4,6 +4,7 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
+import 'package:app/ui/settings/widgets/identity_backup_section.dart';
 import 'package:app/ui/settings/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -51,6 +52,11 @@ class SettingsPage extends StatelessWidget {
           const _RelaySection(),
           Divider(color: colors.border, height: 1),
           const _DisplaySection(),
+          Divider(color: colors.border, height: 1),
+          // Identity backup/restore. Sits above the peer list because it is
+          // the thing a user reaches for when moving to a new phone — the
+          // pairing list is about day-to-day management of the current one.
+          const IdentityBackupSection(),
           Divider(color: colors.border, height: 1),
           const _SectionHeader('Pairings'),
           switch (state) {

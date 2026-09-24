@@ -16,12 +16,15 @@ import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
+import 'package:app/data/pairing/identity_transfer_service.dart';
+import 'package:app/data/pairing/method_channel_identity_transfer.dart';
 import 'package:app/data/update/method_channel_apk_installer.dart';
 import 'package:app/data/update/secure_dismissed_update_store.dart';
 import 'package:app/data/update/update_checker_impl.dart';
 import 'package:app/data/update/url_launcher_opener.dart';
 import 'package:app/data/voice/speech_service.dart';
 import 'package:app/domain/contracts/apk_installer.dart';
+import 'package:app/domain/contracts/identity_transfer.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/update_checker.dart';
 import 'package:app/domain/contracts/url_opener.dart';
@@ -39,6 +42,7 @@ import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
+import 'package:app/ui/settings/viewmodels/identity_backup_viewmodel.dart';
 import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -207,6 +211,23 @@ Future<void> setupDependencies() async {
   // In-app update: downloads the APK and hands it to the system installer
   // through the native channel (no browser round-trip).
   _injector.addOther<ApkInstaller>(() => MethodChannelApkInstaller());
+
+  // Identity backup / restore — carries the Owner keypair + paired peers to a
+  // new phone as a file, so a replacement does not rescan the QR. Uses the
+  // platform's own file picker (no storage permission) and the same
+  // OwnerIdentityStore the sync-backed path writes to.
+  _injector.addOther<IdentityTransfer>(() => MethodChannelIdentityTransfer());
+  _injector.addOther<IdentityTransferService>(
+    () => IdentityTransferService(
+      transfer: _injector.get<IdentityTransfer>(),
+      bridge: _injector.get<OwnerIdentityBridge>(),
+      pairing: _injector.get<PairingStorage>(),
+      identityStore: _injector.get<OwnerIdentityStore>(),
+    ),
+  );
+  _injector.addViewModel<IdentityBackupViewModel>(
+    () => IdentityBackupViewModel(_injector.get<IdentityTransferService>()),
+  );
   _injector.addViewModel<UpdateBannerViewModel>(
     () => UpdateBannerViewModel(
       _injector.get<UpdateChecker>(),

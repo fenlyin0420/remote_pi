@@ -18,6 +18,7 @@ import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/pairing_page.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/settings_page.dart';
+import 'package:app/ui/settings/viewmodels/identity_backup_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/sync_required/sync_required_page.dart';
 import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
@@ -372,8 +373,16 @@ GoRouter buildRouter(
       // Settings (entered from /home menu)
       GoRoute(
         path: '/settings',
-        builder: (ctx, st) =>
-            ViewmodelProvider<SettingsViewModel>(child: const SettingsPage()),
+        builder: (ctx, st) => MultiProvider(
+          providers: [
+            ViewmodelProvider<SettingsViewModel>(),
+            // Backup & restore has its own VM: the flows are modal and
+            // long-lived (the system file picker can stay open
+            // indefinitely), so its errors must not disturb the peer list.
+            ViewmodelProvider<IdentityBackupViewModel>(),
+          ],
+          child: const SettingsPage(),
+        ),
       ),
     ],
   );

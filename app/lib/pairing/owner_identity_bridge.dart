@@ -118,6 +118,22 @@ class OwnerIdentityBridge extends ChangeNotifier {
     return _ed25519.newKeyPairFromSeed(id.ownerSk);
   }
 
+  /// Adopt an externally-restored identity (identity backup import).
+  ///
+  /// Unlike the platform-sync path, this neither wipes peers nor triggers a
+  /// router reset: the caller is mid-restore and owns that sequencing (wipe →
+  /// save store → adopt → write the imported peers), because it also has the
+  /// peer list to put back. Wiping here would race the caller's own restore.
+  ///
+  /// Notifies listeners so anything rendering the Owner pk refreshes. The
+  /// caller must persist to [OwnerIdentityStore] itself — this only moves the
+  /// in-memory cache.
+  void adoptIdentity(OwnerIdentity identity) {
+    if (_disposed) return;
+    _current = identity;
+    notifyListeners();
+  }
+
   /// Subscribe to platform sync events. When the incoming Owner-pk
   /// differs from [_current], the bridge:
   ///   1. wipes [PairingStorage] (peers + rooms) — stale handles.
