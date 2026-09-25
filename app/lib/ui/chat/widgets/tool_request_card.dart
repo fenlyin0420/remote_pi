@@ -224,7 +224,8 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     ];
   }
 
-  /// The user's wrap preference for tool output — soft-wrap to the box
+  /// The user's wrap preference for a tool's text — applied to BOTH blocks:
+  /// the command/args block and the returned output. Soft-wrap to the box
   /// width, or one physical line per row with sideways scrolling (the
   /// default). Absent provider (widget tests) falls back to the default.
   bool get _softWrap {
@@ -357,7 +358,12 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   Widget _buildCodeBlock(BuildContext context, List<_DiffLine>? resultDiff) {
     final colors = context.colors;
     final typo = context.typo;
-    final content = _buildToolSummary(context, resultDiff);
+    // The same wrap preference as the output block: soft-wrapped (a Row with
+    // an Expanded content), or one unbroken line per row the user scrolls
+    // sideways — the whole block scrolls as one, so the gutter stays aligned
+    // across the command, the diff and the preview.
+    final content = _buildToolSummary(context, resultDiff, nowrap: !_softWrap);
+    final prompt = Text(r'$ ', style: typo.mono.copyWith(color: colors.muted));
     return Container(
       key: const Key('tool-code-block'),
       decoration: BoxDecoration(
@@ -366,17 +372,33 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
         borderRadius: BorderRadius.circular(8),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(r'$ ', style: typo.mono.copyWith(color: colors.muted)),
-          Expanded(child: content),
-        ],
-      ),
+      child: _softWrap
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                prompt,
+                Expanded(child: content),
+              ],
+            )
+          : SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  prompt,
+                  content,
+                ],
+              ),
+            ),
     );
   }
 
-  Widget _buildToolSummary(BuildContext context, List<_DiffLine>? resultDiff) {
+  Widget _buildToolSummary(
+    BuildContext context,
+    List<_DiffLine>? resultDiff, {
+    required bool nowrap,
+  }) {
     final colors = context.colors;
     final typo = context.typo;
     final display = _formatToolDisplay(tool.tool, tool.args);
@@ -392,7 +414,8 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
           display?.command ?? _formatArgs(tool.tool, tool.args),
           style: typo.mono,
         ),
-        for (final line in lines) _buildDiffLine(colors, typo, line),
+        for (final line in lines)
+          _buildDiffLine(colors, typo, line, nowrap: nowrap),
       ],
     );
   }
@@ -400,13 +423,18 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   /// One diff line on its own row — removed/added lines carry a low-alpha
   /// tint of their colour behind the full row, so the change reads at a
   /// glance.
+  ///
+  /// With soft wrapping off the block scrolls sideways and every row keeps
+  /// its full line width — the tint then stretches to the whole (unwrapped)
+  /// line instead of the box width.
   Widget _buildDiffLine(
     AppColors colors,
     AppTypography typo,
-    _DiffLine line,
-  ) {
+    _DiffLine line, {
+    required bool nowrap,
+  }) {
     return Container(
-      width: double.infinity,
+      width: nowrap ? null : double.infinity,
       color: line.bg?.call(colors),
       child: Text(
         line.text,
@@ -553,14 +581,26 @@ class _DiffLine {
   /// A line of the tool's own diff, taken verbatim: the Pi pads the line number
   /// into the line itself, so only the leading sign has to be read to colour
   /// it. A `@@` header (a full patch, not this diff) falls through to context.
-  factory _DiffLine.raw(String text) => _DiffLine._(
-    text,
-    switch (text.isEmpty ? ' ' : text[0]) {
-      '+' => (AppColors colors) => colors.success,
-      '-' => (AppColors colors) => colors.error,
-      _ => (AppColors colors) => colors.text,
-    },
-  );
+  ///
+  /// Lines without the number prefix (rare, but they exist) land here — the
+  /// tint follows the leading sign just like the colour, so a change line
+  /// never renders untinted next to its numbered neighbours.
+  factory _DiffLine.raw(String text) {
+    final sign = text.isEmpty ? ' ' : text[0];
+    return _DiffLine._(
+      text,
+      switch (sign) {
+        '+' => (AppColors colors) => colors.success,
+        '-' => (AppColors colors) => colors.error,
+        _ => (AppColors colors) => colors.text,
+      },
+      switch (sign) {
+        '+' => (AppColors colors) => colors.success.withValues(alpha: 0.12),
+        '-' => (AppColors colors) => colors.error.withValues(alpha: 0.12),
+        _ => null,
+      },
+    );
+  }
 
   /// A "there is more" marker: muted, like the output block's own marker.
   factory _DiffLine.marker(String text) =>

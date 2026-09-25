@@ -269,7 +269,7 @@ void main() {
       expect(added.color, AppColors.dark.success.withValues(alpha: 0.12));
     });
 
-    testWidgets('tool output defaults to one line per row, scrolling sideways', (
+    testWidgets('both blocks default to one line per row, scrolling sideways', (
       tester,
     ) async {
       final wide = ToolEvent(
@@ -288,8 +288,10 @@ void main() {
               w is SingleChildScrollView &&
               w.scrollDirection == Axis.horizontal,
         ),
-        findsOneWidget,
-        reason: 'nowrap default — the output row scrolls sideways',
+        findsNWidgets(2),
+        reason:
+            'nowrap default — the command block and the output row both '
+            'scroll sideways',
       );
     });
 
@@ -320,8 +322,36 @@ void main() {
               w.scrollDirection == Axis.horizontal,
         ),
         findsNothing,
-        reason: 'soft-wrap on — the output wraps to the box width',
+        reason:
+            'soft-wrap on — the output and the command block wrap to the '
+            'box width',
       );
+    });
+
+    testWidgets('a change line without a line number still gets the tint', (
+      tester,
+    ) async {
+      // Not every diff line carries the Pi's number prefix — a `+ text`
+      // line would otherwise fall into the verbatim path and render
+      // untinted next to its numbered neighbours.
+      const edit = ToolEvent(
+        id: 'tc13',
+        toolCallId: 'tc13',
+        tool: 'edit',
+        args: {'path': 'lib/a.dart'},
+        status: ToolEventStatus.completed,
+        result: 'Successfully replaced 1 block(s) in lib/a.dart.',
+        diff: '+ untitled change line\n- 4 numbered one',
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: edit)));
+      await _expand(tester);
+
+      final untitled = tester.widget<Container>(
+        find
+            .ancestor(of: find.text('+ untitled change line'), matching: find.byType(Container))
+            .first,
+      );
+      expect(untitled.color, AppColors.dark.success.withValues(alpha: 0.12));
     });
 
     // The args preview above is a guess the daemon makes before the edit runs.
