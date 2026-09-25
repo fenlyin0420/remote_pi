@@ -25,6 +25,9 @@ class Preferences extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
   AppFontScale _fontScale = AppFontScale.standard;
   bool _backgroundConnection = true;
+  // Tool-result wrap: default false → tool output renders on single
+  // lines the user scrolls sideways, instead of soft-wrapping.
+  bool _toolResultSoftWrap = false;
 
   Preferences([FlutterSecureStorage? store])
       : _store = store ?? const FlutterSecureStorage();
@@ -37,6 +40,7 @@ class Preferences extends ChangeNotifier {
   static const _kThemeModeKey = 'prefs.theme_mode';
   static const _kFontScaleKey = 'prefs.font_scale';
   static const _kBackgroundConnectionKey = 'prefs.background_connection';
+  static const _kToolResultSoftWrapKey = 'prefs.tool_result_soft_wrap';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -120,6 +124,21 @@ class Preferences extends ChangeNotifier {
   /// also re-evaluates on peer changes rather than trusting this flag alone.
   bool get backgroundConnection => _backgroundConnection;
 
+  /// Soft-wrap the text a tool returned. `false` (default) → the output
+  /// keeps one physical line each and scrolls sideways in a box; `true`
+  /// wraps it to the box width instead.
+  bool get toolResultSoftWrap => _toolResultSoftWrap;
+
+  Future<void> setToolResultSoftWrap(bool value) async {
+    if (_toolResultSoftWrap == value) return;
+    _toolResultSoftWrap = value;
+    await _store.write(
+      key: _kToolResultSoftWrapKey,
+      value: value.toString(),
+    );
+    notifyListeners();
+  }
+
   /// Hydrate from secure storage. Safe to call multiple times.
   Future<void> load() async {
     var changed = false;
@@ -170,6 +189,15 @@ class Preferences extends ChangeNotifier {
     final background = backgroundRaw != 'false';
     if (background != _backgroundConnection) {
       _backgroundConnection = background;
+      changed = true;
+    }
+
+    // Unset (fresh install / pre-feature) reads as OFF — sideways scroll
+    // is the default.
+    final wrap = await _store.read(key: _kToolResultSoftWrapKey);
+    final wrapBool = wrap == 'true';
+    if (wrapBool != _toolResultSoftWrap) {
+      _toolResultSoftWrap = wrapBool;
       changed = true;
     }
 

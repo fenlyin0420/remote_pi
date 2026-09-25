@@ -76,6 +76,16 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     await _prefs.setHideToolCallsFor(epk, meta.roomId, value);
   }
 
+  /// Whether tool output soft-wraps. `false` (default) keeps one
+  /// physical line per row, scrolling sideways; `true` wraps to width.
+  bool get toolResultSoftWrap => _prefs?.toolResultSoftWrap ?? false;
+
+  Future<void> setToolResultSoftWrap(bool value) async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    await prefs.setToolResultSoftWrap(value);
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------

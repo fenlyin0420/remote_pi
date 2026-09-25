@@ -1,8 +1,12 @@
+import 'dart:math';
+
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:provider/provider.dart';
 
 // Inline tool execution card that appears in the chat flow.
 //
@@ -155,6 +159,10 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     return text.trim();
   }
 
+  /// A line-numbered line in the diff the Pi returned: `+ 13 text`,
+  /// `- 13 text`, or `  13 text` (context — the sign column is a space).
+  static final _resultDiffLineRe = RegExp(r'^([+\-])? +(\d+) (.*)$');
+
   /// The change the tool reports having made, ready to render — null until the
   /// result arrives, and for every tool that reports none.
   ///
@@ -168,10 +176,37 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   List<_DiffLine>? _resultDiffLines() {
     final diff = tool.diff;
     if (diff == null) return null;
-    final lines = [
-      for (final raw in diff.split('\n'))
-        if (raw.isNotEmpty) _DiffLine.raw(raw),
+    final rawLines = [
+      for (final raw in diff.split('\n')) if (raw.isNotEmpty) raw,
     ];
+    if (rawLines.isEmpty) return null;
+
+    // The Pi's own numbers are unpadded, so 9 and 100 would drift apart —
+    // re-pad to the widest number so the gutter stays a fixed column with
+    // no per-line indent.
+    var width = 0;
+    for (final raw in rawLines) {
+      final match = _resultDiffLineRe.firstMatch(raw);
+      if (match != null) width = max(width, match[2]!.length);
+    }
+
+    final lines = <_DiffLine>[];
+    for (final raw in rawLines) {
+      final match = _resultDiffLineRe.firstMatch(raw);
+      if (match == null) {
+        lines.add(_DiffLine.raw(raw));
+        continue;
+      }
+      final sign = match[1] ?? ' ';
+      final text = '$sign ${match[2]!.padLeft(width, '0')} ${match[3]}';
+      lines.add(
+        switch (sign) {
+          '+' => _DiffLine.added(text),
+          '-' => _DiffLine.removed(text),
+          _ => _DiffLine.context(text),
+        },
+      );
+    }
     return lines.isEmpty ? null : lines;
   }
 
@@ -189,8 +224,24 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     ];
   }
 
+  /// The user's wrap preference for tool output — soft-wrap to the box
+  /// width, or one physical line per row with sideways scrolling (the
+  /// default). Absent provider (widget tests) falls back to the default.
+  bool get _softWrap {
+    // No provider in a bare widget test → default (nowrap).
+    if (context.findAncestorWidgetOfExactType<ChangeNotifierProvider<Preferences>>() == null) {
+      return false;
+    }
+    return Provider.of<Preferences>(context, listen: true).toolResultSoftWrap;
+  }
+
   /// The returned text — folded away with the rest of the details, because it
   /// is the longest part of a tool row by far.
+  ///
+  /// [toolResultSoftWrap] off (the default): each physical line stays as one
+  /// unbroken row the user scrolls sideways (with vertical scroll on top for
+  /// long outputs); on: the text soft-wraps to the box width and scrolls
+  /// vertically.
   Widget _buildOutput(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
@@ -199,6 +250,43 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
         ? full.substring(0, _maxOutputChars)
         : full;
     final hidden = full.length - shown.length;
+    final output = SelectableText(
+      shown,
+      style: typo.mono.copyWith(color: colors.muted2),
+    );
+    final marker = hidden > 0
+        ? Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              '… $hidden more characters',
+              style: typo.monoSmall.copyWith(color: colors.muted),
+            ),
+          )
+        : null;
+    final child = _softWrap
+        ? SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                output,
+                ?marker,
+              ],
+            ),
+          )
+        : SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: output,
+                ),
+                ?marker,
+              ],
+            ),
+          );
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -209,26 +297,7 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxHeight: _outputMaxHeight),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SelectableText(
-                shown,
-                style: typo.mono.copyWith(color: colors.muted2),
-              ),
-              if (hidden > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    '… $hidden more characters',
-                    style: typo.monoSmall.copyWith(color: colors.muted),
-                  ),
-                ),
-            ],
-          ),
-        ),
+        child: child,
       ),
     );
   }
@@ -290,6 +359,7 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     final typo = context.typo;
     final content = _buildToolSummary(context, resultDiff);
     return Container(
+      key: const Key('tool-code-block'),
       decoration: BoxDecoration(
         color: colors.codeBg,
         border: Border.all(color: colors.border),
@@ -314,19 +384,33 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     final lines = _boundedDiff(
       resultDiff ?? display?.lines ?? const <_DiffLine>[],
     );
-    return Text.rich(
-      TextSpan(
-        style: typo.mono,
-        children: [
-          TextSpan(text: display?.command ?? _formatArgs(tool.tool, tool.args)),
-          for (final line in lines) ...[
-            const TextSpan(text: '\n'),
-            TextSpan(
-              text: line.text,
-              style: TextStyle(color: line.color(colors)),
-            ),
-          ],
-        ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          display?.command ?? _formatArgs(tool.tool, tool.args),
+          style: typo.mono,
+        ),
+        for (final line in lines) _buildDiffLine(colors, typo, line),
+      ],
+    );
+  }
+
+  /// One diff line on its own row — removed/added lines carry a low-alpha
+  /// tint of their colour behind the full row, so the change reads at a
+  /// glance.
+  Widget _buildDiffLine(
+    AppColors colors,
+    AppTypography typo,
+    _DiffLine line,
+  ) {
+    return Container(
+      width: double.infinity,
+      color: line.bg?.call(colors),
+      child: Text(
+        line.text,
+        style: typo.mono.copyWith(color: line.color(colors)),
       ),
     );
   }
@@ -371,41 +455,58 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
 
   static _ToolDisplay? _formatEditDisplay(Map args) {
     final filePath = _stringArg(args, const ['file_path', 'path']);
-    final lines = <_DiffLine>[];
+    final lineMaps = <Object?>[];
     final hunks = args['hunks'];
-    if (hunks is! Iterable) return null;
-
-    for (final hunk in hunks) {
-      if (hunk is! Map || hunk['lines'] is! Iterable) continue;
-      if (lines.isNotEmpty) lines.add(_DiffLine.context('      ...'));
-      for (final rawLine in hunk['lines'] as Iterable) {
-        if (rawLine is! Map) continue;
-        final text = _lineText(rawLine);
-        switch (rawLine['kind']) {
-          case 'context':
-            lines.add(_DiffLine.context(text));
-          case 'remove':
-            lines.add(_DiffLine.removed(text));
-          case 'add':
-            lines.add(_DiffLine.added(text));
-          case 'ellipsis':
-            lines.add(_DiffLine.context('      ...'));
+    if (hunks is Iterable) {
+      for (final hunk in hunks) {
+        if (hunk is! Map || hunk['lines'] is! Iterable) continue;
+        if (lineMaps.isNotEmpty) lineMaps.add('...');
+        for (final rawLine in hunk['lines'] as Iterable) {
+          if (rawLine is! Map) continue;
+          lineMaps.add(rawLine);
         }
       }
     }
+    if (lineMaps.isEmpty) return null;
 
-    if (lines.isEmpty) return null;
+    // The daemon's line numbers arrive unpadded, so a rewrite of lines
+    // 1..500 would show a drifting gutter — pad to the widest number so
+    // every line number sits in the same fixed column.
+    final widths = <int>[];
+    for (final entry in lineMaps) {
+      if (entry is! Map) continue;
+      final number = entry['oldLine'] ?? entry['newLine'];
+      if (number is int) widths.add(number.toString().length);
+    }
+    final width = widths.fold(0, max);
+
+    final separator = '${' ' * (width + 3)}…';
+    final lines = [
+      for (final entry in lineMaps)
+        switch (entry) {
+          Map() => switch (entry['kind']) {
+              'remove' => _DiffLine.removed(_lineText(entry, width)),
+              'add' => _DiffLine.added(_lineText(entry, width)),
+              'ellipsis' => _DiffLine.context(separator),
+              _ => _DiffLine.context(_lineText(entry, width)),
+            },
+          _ => _DiffLine.context(separator),
+        },
+    ];
+
     return _ToolDisplay(command: 'edit $filePath', lines: lines);
   }
 
-  static String _lineText(Map rawLine) {
+  static String _lineText(Map rawLine, int width) {
     final sign = switch (rawLine['kind']) {
       'remove' => '-',
       'add' => '+',
       _ => ' ',
     };
     final lineNumber = rawLine['oldLine'] ?? rawLine['newLine'];
-    final number = lineNumber is int ? lineNumber.toString().padLeft(3) : '   ';
+    final number = lineNumber is int
+        ? lineNumber.toString().padLeft(width, '0')
+        : ' ' * width;
     return '$sign $number ${rawLine['text'] ?? ''}';
   }
 
@@ -428,14 +529,23 @@ class _ToolDisplay {
 class _DiffLine {
   final String text;
   final Color Function(AppColors colors) color;
+  /// Row background (a low-alpha tint of the line colour) — null for
+  /// context/marker lines.
+  final Color Function(AppColors colors)? bg;
 
-  const _DiffLine._(this.text, this.color);
+  const _DiffLine._(this.text, this.color, [this.bg]);
 
-  factory _DiffLine.removed(String text) =>
-      _DiffLine._(text, (colors) => colors.error);
+  factory _DiffLine.removed(String text) => _DiffLine._(
+    text,
+    (colors) => colors.error,
+    (colors) => colors.error.withValues(alpha: 0.12),
+  );
 
-  factory _DiffLine.added(String text) =>
-      _DiffLine._(text, (colors) => colors.success);
+  factory _DiffLine.added(String text) => _DiffLine._(
+    text,
+    (colors) => colors.success,
+    (colors) => colors.success.withValues(alpha: 0.12),
+  );
 
   factory _DiffLine.context(String text) =>
       _DiffLine._(text, (colors) => colors.text);

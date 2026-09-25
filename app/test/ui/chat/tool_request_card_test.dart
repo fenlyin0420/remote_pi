@@ -1,8 +1,11 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
@@ -19,22 +22,53 @@ Future<void> _expand(WidgetTester tester) async {
 }
 
 /// The card's code block as `(text, colour)` pairs — the command line plus one
-/// entry per diff line. Read from the rich text so a line's colour can be
-/// asserted, not just its presence.
-List<(String, Color?)> _codeBlockSpans(WidgetTester tester) {
-  final rich = tester
+/// entry per diff line. Scoped to the code-block key so the header labels
+/// don't pollute the list; a line's colour can be asserted, not just its
+/// presence.
+List<(String, Color?)> _codeBlockLines(WidgetTester tester) {
+  final texts = tester
       .widgetList<Text>(
-        find.byWidgetPredicate((w) => w is Text && w.textSpan != null),
+        find.descendant(
+          of: find.byKey(const Key('tool-code-block')),
+          matching: find.byType(Text),
+        ),
       )
-      .single;
-  final out = <(String, Color?)>[];
-  rich.textSpan!.visitChildren((span) {
-    if (span is TextSpan && span.text != null) {
-      out.add((span.text!, span.style?.color));
-    }
-    return true;
-  });
-  return out;
+      .toList();
+  return [
+    for (final text in texts)
+      if (text.data != null && text.data != r'$ ')
+        (text.data!, text.style?.color),
+  ];
+}
+
+/// Secure-storage double: everything reads back as unset; `load` can run
+/// against it and no toggle is persisted.
+class _FakeSecureStorage implements FlutterSecureStorage {
+  @override
+  Future<String?> read({
+    required String key,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async => null;
+
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 }
 
 const _failedTool = ToolEvent(
@@ -183,20 +217,110 @@ void main() {
       await _expand(tester);
 
       expect(
-        find.textContaining('   16 args: {', findRichText: true),
+        find.textContaining('  16 args: {'),
         findsOneWidget,
       );
       expect(
-        find.textContaining("-  17   tool: 'Edit',", findRichText: true),
+        find.textContaining("- 17   tool: 'Edit',"),
         findsOneWidget,
       );
       expect(
-        find.textContaining("+  17   tool: 'edit',", findRichText: true),
+        find.textContaining("+ 17   tool: 'edit',"),
         findsOneWidget,
       );
       expect(
-        find.textContaining('   18 },', findRichText: true),
+        find.textContaining('  18 },'),
         findsOneWidget,
+      );
+    });
+
+    testWidgets('line numbers sit in one fixed column, no per-line indent', (
+      tester,
+    ) async {
+      // 9 and 100 would drift in the Pi's unpadded form — the card pads both
+      // to the widest number so the gutter stays a single column.
+      const edit = ToolEvent(
+        id: 'tc10',
+        toolCallId: 'tc10',
+        tool: 'edit',
+        args: {'path': 'lib/a.dart'},
+        status: ToolEventStatus.completed,
+        result: 'Successfully replaced 1 block(s) in lib/a.dart.',
+        diff: '- 9 a short line\n+ 100 a longer line than the other',
+      );
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: edit)));
+      await _expand(tester);
+
+      expect(find.text('- 009 a short line'), findsOneWidget);
+      expect(find.text('+ 100 a longer line than the other'), findsOneWidget);
+
+      // The changed rows carry a low-alpha tint of their colour behind them.
+      final removed = tester.widget<Container>(
+        find
+            .ancestor(of: find.text('- 009 a short line'), matching: find.byType(Container))
+            .first,
+      );
+      expect(removed.color, AppColors.dark.error.withValues(alpha: 0.12));
+      final added = tester.widget<Container>(
+        find
+            .ancestor(of: find.text('+ 100 a longer line than the other'), matching: find.byType(Container))
+            .first,
+      );
+      expect(added.color, AppColors.dark.success.withValues(alpha: 0.12));
+    });
+
+    testWidgets('tool output defaults to one line per row, scrolling sideways', (
+      tester,
+    ) async {
+      final wide = ToolEvent(
+        id: 'tc11',
+        toolCallId: 'tc11',
+        tool: 'Bash',
+        args: {'command': 'cat wide'},
+        status: ToolEventStatus.completed,
+        result: 'x' * 400,
+      );
+      await tester.pumpWidget(_wrap(ToolRequestCard(tool: wide)));
+      await _expand(tester);
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is SingleChildScrollView &&
+              w.scrollDirection == Axis.horizontal,
+        ),
+        findsOneWidget,
+        reason: 'nowrap default — the output row scrolls sideways',
+      );
+    });
+
+    testWidgets('soft-wrapping the output is one preference toggle away', (
+      tester,
+    ) async {
+      final wide = ToolEvent(
+        id: 'tc12',
+        toolCallId: 'tc12',
+        tool: 'Bash',
+        args: {'command': 'cat wide'},
+        status: ToolEventStatus.completed,
+        result: 'x' * 400,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setToolResultSoftWrap(true);
+      await tester.pumpWidget(
+        ChangeNotifierProvider<Preferences>.value(
+          value: prefs,
+          child: _wrap(ToolRequestCard(tool: wide)),
+        ),
+      );
+      await _expand(tester);
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is SingleChildScrollView &&
+              w.scrollDirection == Axis.horizontal,
+        ),
+        findsNothing,
+        reason: 'soft-wrap on — the output wraps to the box width',
       );
     });
 
@@ -227,7 +351,7 @@ void main() {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: edit)));
       await _expand(tester);
 
-      final spans = _codeBlockSpans(tester);
+      final spans = _codeBlockLines(tester);
       expect(spans.first.$1, 'edit lib/a.dart');
       expect(
         spans.map((s) => s.$1),
@@ -247,10 +371,12 @@ void main() {
       expect(
         tester
             .widgetList<Text>(
-              find.byWidgetPredicate((w) => w is Text && w.textSpan != null),
+              find.descendant(
+                of: find.byKey(const Key('tool-code-block')),
+                matching: find.byType(Text),
+              ),
             )
-            .single
-            .textSpan!
+            .first
             .style!
             .fontFamily,
         kMonoFamily,
@@ -290,7 +416,7 @@ void main() {
       await _expand(tester);
 
       expect(
-        find.textContaining('+ 13 const b = 3;', findRichText: true),
+        find.textContaining('+ 13 const b = 3;'),
         findsOneWidget,
       );
     });
@@ -309,7 +435,7 @@ void main() {
       await tester.pumpWidget(_wrapScrolling(ToolRequestCard(tool: edit)));
       await _expand(tester);
 
-      final spans = _codeBlockSpans(tester);
+      final spans = _codeBlockLines(tester);
       expect(
         spans.where((s) => s.$1.startsWith('+ ')).length,
         400,

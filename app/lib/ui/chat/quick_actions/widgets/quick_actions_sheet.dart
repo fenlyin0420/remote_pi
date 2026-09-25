@@ -187,6 +187,11 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
                 value: vm.hideToolCalls,
                 onToggle: (v) => _onHideToolCalls(vm, v),
               ),
+              const _Divider(),
+              _ToolResultWrapRow(
+                value: vm.toolResultSoftWrap,
+                onToggle: (v) => _onWrapToolResults(vm, v),
+              ),
             ],
             const SizedBox(height: 18),
           ],
@@ -299,6 +304,14 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
   Future<void> _onHideToolCalls(QuickActionsViewModel vm, bool value) async {
     try {
       await vm.setHideToolCalls(value);
+    } catch (_) {
+      // Local-only preference write — nothing to surface on failure.
+    }
+  }
+
+  Future<void> _onWrapToolResults(QuickActionsViewModel vm, bool value) async {
+    try {
+      await vm.setToolResultSoftWrap(value);
     } catch (_) {
       // Local-only preference write — nothing to surface on failure.
     }
@@ -571,6 +584,45 @@ class _HideToolCallsRow extends StatelessWidget {
           ),
           Switch(
             key: const Key('qa-hide-tool-calls'),
+            value: value,
+            onChanged: onToggle,
+            activeThumbColor: colors.accent,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Global display preference (unlike the row above, which is per-room):
+/// soft-wrap the tool's returned output, or keep one physical line per
+/// row and scroll sideways. `false` is the default.
+class _ToolResultWrapRow extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onToggle;
+  const _ToolResultWrapRow({required this.value, required this.onToggle});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Row(
+        children: [
+          Icon(LucideIcons.wrapText, color: colors.accent, size: 18),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              'Wrap tool output',
+              style: TextStyle(
+                fontFamily: kMonoFamily,
+                fontSize: 12,
+                color: colors.text,
+              ),
+            ),
+          ),
+          Switch(
+            key: const Key('qa-wrap-tool-results'),
             value: value,
             onChanged: onToggle,
             activeThumbColor: colors.accent,
