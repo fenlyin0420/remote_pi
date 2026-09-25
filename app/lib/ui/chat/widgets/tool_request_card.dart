@@ -1,12 +1,10 @@
 import 'dart:math';
 
-import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
-import 'package:provider/provider.dart';
 
 // Inline tool execution card that appears in the chat flow.
 //
@@ -160,8 +158,9 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   }
 
   /// A line-numbered line in the diff the Pi returned: `+ 13 text`,
-  /// `- 13 text`, or `  13 text` (context — the sign column is a space).
-  static final _resultDiffLineRe = RegExp(r'^([+\-])? +(\d+) (.*)$');
+  /// `- 13 text`, or `  13 text` (context — the sign is absent). The Pi's
+  /// own spacing varies, so the whitespace around the number is not pinned.
+  static final _resultDiffLineRe = RegExp(r'^([+\-])?[ \t]*(\d+) +(.*)$');
 
   /// The change the tool reports having made, ready to render — null until the
   /// result arrives, and for every tool that reports none.
@@ -197,8 +196,14 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
         lines.add(_DiffLine.raw(raw));
         continue;
       }
-      final sign = match[1] ?? ' ';
-      final text = '$sign ${match[2]!.padLeft(width, '0')} ${match[3]}';
+      // The number sits at the very left of the row (padded to a fixed
+      // width, so the column never drifts), the sign follows it — no
+      // leading sign/whitespace column to read as an indent.
+      final number = match[2]!.padLeft(width, '0');
+      final sign = match[1];
+      final text = sign == null
+          ? '$number ${match[3]}'
+          : '$number $sign ${match[3]}';
       lines.add(
         switch (sign) {
           '+' => _DiffLine.added(text),
@@ -224,25 +229,12 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     ];
   }
 
-  /// The user's wrap preference for a tool's text — applied to BOTH blocks:
-  /// the command/args block and the returned output. Soft-wrap to the box
-  /// width, or one physical line per row with sideways scrolling (the
-  /// default). Absent provider (widget tests) falls back to the default.
-  bool get _softWrap {
-    // No provider in a bare widget test → default (nowrap).
-    if (context.findAncestorWidgetOfExactType<ChangeNotifierProvider<Preferences>>() == null) {
-      return false;
-    }
-    return Provider.of<Preferences>(context, listen: true).toolResultSoftWrap;
-  }
-
   /// The returned text — folded away with the rest of the details, because it
   /// is the longest part of a tool row by far.
   ///
-  /// [toolResultSoftWrap] off (the default): each physical line stays as one
-  /// unbroken row the user scrolls sideways (with vertical scroll on top for
-  /// long outputs); on: the text soft-wraps to the box width and scrolls
-  /// vertically.
+  /// Each physical line stays as one unbroken row the user scrolls sideways
+  /// (with vertical scroll on top for long outputs) — the way a terminal
+  /// reads on a phone; a soft-wrapping wall of text was tried and dropped.
   Widget _buildOutput(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
@@ -264,30 +256,19 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
             ),
           )
         : null;
-    final child = _softWrap
-        ? SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                output,
-                ?marker,
-              ],
-            ),
-          )
-        : SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: output,
-                ),
-                ?marker,
-              ],
-            ),
-          );
+    final child = SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: output,
+          ),
+          ?marker,
+        ],
+      ),
+    );
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -358,12 +339,10 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   Widget _buildCodeBlock(BuildContext context, List<_DiffLine>? resultDiff) {
     final colors = context.colors;
     final typo = context.typo;
-    // The same wrap preference as the output block: soft-wrapped (a Row with
-    // an Expanded content), or one unbroken line per row the user scrolls
-    // sideways — the whole block scrolls as one, so the gutter stays aligned
-    // across the command, the diff and the preview.
-    final content = _buildToolSummary(context, resultDiff, nowrap: !_softWrap);
-    final prompt = Text(r'$ ', style: typo.mono.copyWith(color: colors.muted));
+    // One unbroken line per row, the whole block scrolling sideways as one —
+    // so the diff's gutter stays aligned across the command, the diff and
+    // the preview (a soft-wrapping wall of text was tried and dropped).
+    final content = _buildToolSummary(context, resultDiff);
     return Container(
       key: const Key('tool-code-block'),
       decoration: BoxDecoration(
@@ -372,33 +351,21 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
         borderRadius: BorderRadius.circular(8),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: _softWrap
-          ? Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                prompt,
-                Expanded(child: content),
-              ],
-            )
-          : SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  prompt,
-                  content,
-                ],
-              ),
-            ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(r'$ ', style: typo.mono.copyWith(color: colors.muted)),
+            content,
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _buildToolSummary(
-    BuildContext context,
-    List<_DiffLine>? resultDiff, {
-    required bool nowrap,
-  }) {
+  Widget _buildToolSummary(BuildContext context, List<_DiffLine>? resultDiff) {
     final colors = context.colors;
     final typo = context.typo;
     final display = _formatToolDisplay(tool.tool, tool.args);
@@ -414,27 +381,17 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
           display?.command ?? _formatArgs(tool.tool, tool.args),
           style: typo.mono,
         ),
-        for (final line in lines)
-          _buildDiffLine(colors, typo, line, nowrap: nowrap),
+        for (final line in lines) _buildDiffLine(colors, typo, line),
       ],
     );
   }
 
   /// One diff line on its own row — removed/added lines carry a low-alpha
   /// tint of their colour behind the full row, so the change reads at a
-  /// glance.
-  ///
-  /// With soft wrapping off the block scrolls sideways and every row keeps
-  /// its full line width — the tint then stretches to the whole (unwrapped)
-  /// line instead of the box width.
-  Widget _buildDiffLine(
-    AppColors colors,
-    AppTypography typo,
-    _DiffLine line, {
-    required bool nowrap,
-  }) {
+  /// glance. The row keeps its full (unwrapped) line width, so the tint
+  /// stretches to the whole line.
+  Widget _buildDiffLine(AppColors colors, AppTypography typo, _DiffLine line) {
     return Container(
-      width: nowrap ? null : double.infinity,
       color: line.bg?.call(colors),
       child: Text(
         line.text,
@@ -508,7 +465,7 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     }
     final width = widths.fold(0, max);
 
-    final separator = '${' ' * (width + 3)}…';
+    final separator = '${' ' * (width + 1)}…';
     final lines = [
       for (final entry in lineMaps)
         switch (entry) {
@@ -526,16 +483,18 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
   }
 
   static String _lineText(Map rawLine, int width) {
+    // Same shape as the tool's own diff: the (zero-padded) line number at
+    // the very left of the row, then the sign and the text.
     final sign = switch (rawLine['kind']) {
       'remove' => '-',
       'add' => '+',
-      _ => ' ',
+      _ => '',
     };
     final lineNumber = rawLine['oldLine'] ?? rawLine['newLine'];
     final number = lineNumber is int
         ? lineNumber.toString().padLeft(width, '0')
         : ' ' * width;
-    return '$sign $number ${rawLine['text'] ?? ''}';
+    return sign.isEmpty ? '$number ${rawLine['text'] ?? ''}' : '$number $sign ${rawLine['text'] ?? ''}';
   }
 
   static String _stringArg(Map args, List<String> keys) {

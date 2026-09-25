@@ -1,11 +1,8 @@
-import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:provider/provider.dart';
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
@@ -39,36 +36,6 @@ List<(String, Color?)> _codeBlockLines(WidgetTester tester) {
       if (text.data != null && text.data != r'$ ')
         (text.data!, text.style?.color),
   ];
-}
-
-/// Secure-storage double: everything reads back as unset; `load` can run
-/// against it and no toggle is persisted.
-class _FakeSecureStorage implements FlutterSecureStorage {
-  @override
-  Future<String?> read({
-    required String key,
-    IOSOptions? iOptions,
-    AndroidOptions? aOptions,
-    LinuxOptions? lOptions,
-    WebOptions? webOptions,
-    MacOsOptions? mOptions,
-    WindowsOptions? wOptions,
-  }) async => null;
-
-  @override
-  Future<void> write({
-    required String key,
-    required String? value,
-    IOSOptions? iOptions,
-    AndroidOptions? aOptions,
-    LinuxOptions? lOptions,
-    WebOptions? webOptions,
-    MacOsOptions? mOptions,
-    WindowsOptions? wOptions,
-  }) async {}
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => null;
 }
 
 const _failedTool = ToolEvent(
@@ -217,19 +184,19 @@ void main() {
       await _expand(tester);
 
       expect(
-        find.textContaining('  16 args: {'),
+        find.textContaining('16 args: {'),
         findsOneWidget,
       );
       expect(
-        find.textContaining("- 17   tool: 'Edit',"),
+        find.textContaining("17 -   tool: 'Edit',"),
         findsOneWidget,
       );
       expect(
-        find.textContaining("+ 17   tool: 'edit',"),
+        find.textContaining("17 +   tool: 'edit',"),
         findsOneWidget,
       );
       expect(
-        find.textContaining('  18 },'),
+        find.textContaining('18 },'),
         findsOneWidget,
       );
     });
@@ -251,19 +218,19 @@ void main() {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: edit)));
       await _expand(tester);
 
-      expect(find.text('- 009 a short line'), findsOneWidget);
-      expect(find.text('+ 100 a longer line than the other'), findsOneWidget);
+      expect(find.text('009 - a short line'), findsOneWidget);
+      expect(find.text('100 + a longer line than the other'), findsOneWidget);
 
       // The changed rows carry a low-alpha tint of their colour behind them.
       final removed = tester.widget<Container>(
         find
-            .ancestor(of: find.text('- 009 a short line'), matching: find.byType(Container))
+            .ancestor(of: find.text('009 - a short line'), matching: find.byType(Container))
             .first,
       );
       expect(removed.color, AppColors.dark.error.withValues(alpha: 0.12));
       final added = tester.widget<Container>(
         find
-            .ancestor(of: find.text('+ 100 a longer line than the other'), matching: find.byType(Container))
+            .ancestor(of: find.text('100 + a longer line than the other'), matching: find.byType(Container))
             .first,
       );
       expect(added.color, AppColors.dark.success.withValues(alpha: 0.12));
@@ -292,39 +259,6 @@ void main() {
         reason:
             'nowrap default — the command block and the output row both '
             'scroll sideways',
-      );
-    });
-
-    testWidgets('soft-wrapping the output is one preference toggle away', (
-      tester,
-    ) async {
-      final wide = ToolEvent(
-        id: 'tc12',
-        toolCallId: 'tc12',
-        tool: 'Bash',
-        args: {'command': 'cat wide'},
-        status: ToolEventStatus.completed,
-        result: 'x' * 400,
-      );
-      final prefs = Preferences(_FakeSecureStorage());
-      await prefs.setToolResultSoftWrap(true);
-      await tester.pumpWidget(
-        ChangeNotifierProvider<Preferences>.value(
-          value: prefs,
-          child: _wrap(ToolRequestCard(tool: wide)),
-        ),
-      );
-      await _expand(tester);
-      expect(
-        find.byWidgetPredicate(
-          (w) =>
-              w is SingleChildScrollView &&
-              w.scrollDirection == Axis.horizontal,
-        ),
-        findsNothing,
-        reason:
-            'soft-wrap on — the output and the command block wrap to the '
-            'box width',
       );
     });
 
@@ -385,15 +319,15 @@ void main() {
       expect(spans.first.$1, 'edit lib/a.dart');
       expect(
         spans.map((s) => s.$1),
-        containsAll(<String>['  12 const a = 1;', '- 13 const b = 2;', '+ 13 const b = 3;']),
+        containsAll(<String>['12 const a = 1;', '13 - const b = 2;', '13 + const b = 3;']),
       );
       expect(
-        spans.firstWhere((s) => s.$1.contains('- 13')).$2,
+        spans.firstWhere((s) => s.$1.contains('13 -')).$2,
         AppColors.dark.error,
         reason: 'a removed line is red',
       );
       expect(
-        spans.firstWhere((s) => s.$1.contains('+ 13')).$2,
+        spans.firstWhere((s) => s.$1.contains('13 +')).$2,
         AppColors.dark.success,
         reason: 'an added line is green',
       );
@@ -446,7 +380,7 @@ void main() {
       await _expand(tester);
 
       expect(
-        find.textContaining('+ 13 const b = 3;'),
+        find.textContaining('13 + const b = 3;'),
         findsOneWidget,
       );
     });
@@ -467,7 +401,7 @@ void main() {
 
       final spans = _codeBlockLines(tester);
       expect(
-        spans.where((s) => s.$1.startsWith('+ ')).length,
+        spans.where((s) => s.$1.contains(' + ')).length,
         400,
         reason: '400 diff lines render, the rest is declared',
       );
