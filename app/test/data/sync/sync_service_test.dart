@@ -2,7 +2,9 @@
 // channel adopted into a real ConnectionManager and asserts box contents.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/records/message_record.dart';
@@ -37,6 +39,30 @@ class _FakeChannel implements IChannel, IControlLink {
 
   void push(ServerMessage m) => _ctrl.add(m);
   void pushControl(ControlInbound m) => _control.add(m);
+}
+
+/// [_FakeChannel] plus the room-tagged side channel (`IRoomFrameLink`) the
+/// real WsTransport carries: EVERY inbound envelope with its sender room,
+/// including rooms the app is not addressing. Lets a test simulate a
+/// background room keeping a turn in flight while the user views another.
+class _FakeRoomChannel extends _FakeChannel implements IRoomFrameLink {
+  final _frames = StreamController<RoomFrame>.broadcast();
+
+  @override
+  Stream<RoomFrame> get roomFrames => _frames.stream;
+
+  @override
+  Future<void> close() async {
+    await super.close();
+    await _frames.close();
+  }
+
+  void pushRoomFrame(String roomId, Map<String, dynamic> json) => _frames.add(
+    RoomFrame(
+      roomId: roomId,
+      payload: Uint8List.fromList(utf8.encode(jsonEncode(json))),
+    ),
+  );
 }
 
 class _FakeStorage extends PairingStorage {
@@ -88,6 +114,34 @@ void main() {
       ),
     );
     await _settle(); // _onlineActivated → activate(epk) settles
+    return (conn: conn, ch: ch, sync: sync, epk: epk);
+  }
+
+  /// Like [setup], but with the room-tagged side channel so background-room
+  /// frames can be pushed via `ch.pushRoomFrame`.
+  Future<
+    ({ConnectionManager conn, _FakeRoomChannel ch, SyncService sync, String epk})
+  >
+  setupWithRooms() async {
+    final ch = _FakeRoomChannel();
+    final conn = ConnectionManager(
+      factory: (_, _) async => ch,
+      storage: _FakeStorage(),
+      emitDebounce: Duration.zero,
+    );
+    final boxes = LocalBoxes();
+    final sync = SyncService(conn, boxes);
+    final epk = 'epk_sync_${++_counter}';
+    conn.adopt(
+      ch,
+      PeerRecord(
+        remoteEpk: epk,
+        sessionName: 'Pi',
+        relayUrl: 'ws://localhost',
+        pairedAt: '2026-01-01T00:00:00Z',
+      ),
+    );
+    await _settle();
     return (conn: conn, ch: ch, sync: sync, epk: epk);
   }
 
@@ -486,20 +540,22 @@ void main() {
   });
 
   test(
-    'switching sessions drops a half-streamed thought — no cross-chat bleed',
+    'switching rooms keeps a half-streamed thought in ITS room — no '
+    'cross-room bleed, and it survives the switch',
     () async {
       final s = await setup();
-      // Session 1 is mid-reasoning when the user switches chats.
+      // Session 1 is mid-reasoning when the user switches rooms.
       s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'half a thought'));
       await _settle();
+      expect(s.sync.streaming, isNotNull);
 
       // Another ROOM of the same peer (frames stay attributable, so this is
       // the switch path that would actually leak).
       await s.sync.activate(s.epk, 'room2');
       await _settle();
-      expect(s.sync.streaming, isNull);
+      expect(s.sync.streaming, isNull, reason: 'room2 has no live turn');
 
-      // The new room starts reasoning: the stale buffer must not be finalized
+      // Room2 starts reasoning: room1's stale buffer must not be finalized
       // into it.
       s.ch.push(AgentThinking(inReplyTo: 'r2', delta: 'fresh thought'));
       await _settle();
@@ -510,10 +566,126 @@ void main() {
           MessageRecord.fromJson((v as Map).cast<String, dynamic>()),
       ];
       expect(written.map((m) => m.text), ['fresh thought']);
+
+      // Back in room1: its half-streamed thought is STILL LIVE — same
+      // content, same reasoning clock — instead of being discarded.
+      await s.sync.activate(s.epk, 'main');
+      await _settle();
+      final live = s.sync.streaming;
+      expect(live, isNotNull, reason: 'room1 turn survived the switch');
+      expect(live!.buffer, 'half a thought');
+      expect(live.thinking, isTrue);
+      expect(live.startedAt, isNotNull);
       expect(
         messages(s.epk),
         isEmpty,
-        reason: 'the thought from room 1 never lands in room 1 either',
+        reason: 'still streaming — nothing persisted yet',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'room switch away-and-back keeps a streaming answer: content accumulates '
+    'while away and the bubble restores on return',
+    () async {
+      final s = await setupWithRooms();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'Hel'));
+      await _settle();
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'lo'));
+      await _settle();
+      expect(s.sync.streaming!.buffer, 'Hello');
+
+      // The user moves to another room of the same peer.
+      await s.sync.activate(s.epk, 'roomB');
+      await _settle();
+      expect(s.sync.streaming, isNull, reason: 'roomB is idle');
+
+      // While viewing roomB, room main keeps streaming. Those frames arrive
+      // room-tagged on the side channel (the session writer only sees
+      // roomB's frames) and must keep filling MAIN's in-memory slot.
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_chunk', 'in_reply_to': 'u1', 'delta': ' wor'},
+      );
+      await _settle();
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_chunk', 'in_reply_to': 'u1', 'delta': 'ld'},
+      );
+      await _settle();
+      expect(
+        s.sync.streaming,
+        isNull,
+        reason: 'background room never paints the visible chat',
+      );
+      expect(
+        messages(s.epk).where((m) => m.role == MsgRole.assistant),
+        isEmpty,
+        reason: 'streaming content is in-memory only until finalized',
+      );
+
+      // Returning to main restores the FULL accumulated bubble.
+      await s.sync.activate(s.epk, 'main');
+      await _settle();
+      final live = s.sync.streaming;
+      expect(live, isNotNull, reason: 'in-flight answer restored on return');
+      expect(live!.buffer, 'Hello world');
+      expect(live.inReplyTo, 'u1');
+
+      // The turn finishes in main: the finalized row carries ALL the text.
+      s.ch.push(AgentDone(inReplyTo: 'u1'));
+      await _settle();
+      final rows = messages(s.epk);
+      final assistant = rows.singleWhere((m) => m.role == MsgRole.assistant);
+      expect(assistant.text, 'Hello world');
+      expect(s.sync.streaming, isNull);
+      expect(s.sync.isWorking, isFalse);
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'the thinking counter does NOT reset to zero on a room switch: the '
+    'reasoning start time survives away-and-back',
+    () async {
+      final s = await setupWithRooms();
+      s.ch.push(AgentThinking(inReplyTo: 'r1', delta: 'mulling'));
+      await _settle();
+      final started = s.sync.streaming!.startedAt;
+      expect(started, isNotNull, reason: 'reasoning block is clocked');
+
+      await s.sync.activate(s.epk, 'roomB');
+      await _settle();
+
+      // Time passes while the user is in roomB; the reasoning segment stays
+      // open in main's slot.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      s.ch.pushRoomFrame(
+        'main',
+        {'type': 'agent_thinking', 'in_reply_to': 'r1', 'delta': ' more'},
+      );
+      await _settle();
+
+      await s.sync.activate(s.epk, 'main');
+      await _settle();
+
+      final live = s.sync.streaming!;
+      expect(live.thinking, isTrue);
+      expect(live.buffer, 'mulling more');
+      expect(
+        live.startedAt,
+        started,
+        reason: 'the clock must not restart when the user comes back',
+      );
+      expect(
+        DateTime.now().difference(live.startedAt!).inMilliseconds,
+        greaterThanOrEqualTo(100),
+        reason: 'elapsed time keeps counting through the switch',
       );
       s.conn.dispose();
       s.sync.dispose();

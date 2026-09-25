@@ -7,6 +7,17 @@
 // Streaming is the ONE exception to SSOT (#7): AgentChunk deltas are coalesced
 // into an in-memory Stream<StreamingMessage?> and NEVER written to the DB; only
 // the finalized message lands in the box on `agent_done`.
+//
+// Turn state (streaming buffers, whole-turn working flag, queued list) is
+// PER-ROOM, not global: rooms of one peer share a single WS and the transport
+// only routes the ACTIVE room's frames to the session writer (`serverMessages`).
+// Non-active rooms keep streaming through `ConnectionManager.roomFrames`
+// (every inbound envelope, tagged with its sender room) → `roomMessages`. This
+// service folds those frames into each room's own in-memory turn state WITHOUT
+// DB writes (a background room's finalized rows are recovered by the history
+// re-sync when the user returns to it). That is what keeps a turn in flight
+// when the user switches rooms and comes back: the buffer AND the
+// reasoning-block start time survive in the room's own slot.
 
 import 'dart:async';
 import 'dart:convert';
@@ -17,6 +28,7 @@ import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/local/records/session_index_record.dart';
 import 'package:app/data/sync/sync_events.dart';
+import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/domain/session_state.dart';
@@ -24,18 +36,61 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
 import 'package:flutter/foundation.dart';
 
+/// Per-room in-memory turn state (the "live" half of a session, never
+/// persisted): the two streaming segment buffers, the reasoning-block start
+/// time, the coalesce timer, the whole-turn working flag and the room's queued
+/// messages. Keyed by `(epk, room)` in [SyncService._turns] — one slot per
+/// room so switching away from a streaming chat neither loses its content nor
+/// resets its thinking counter.
+class _RoomTurn {
+  final String epk;
+  final String room;
+
+  _RoomTurn(this.epk, this.room);
+
+  // Streaming — two block kinds share ONE live slot: reasoning
+  // (`agent_thinking`) and answer text (`agent_chunk`). Content blocks are
+  // sequential, so only one kind is ever open at a time; a delta of the other
+  // kind closes the open one first.
+  final StringBuffer chunkBuffer = StringBuffer();
+  String chunkReplyTo = '';
+  final StringBuffer thinkingBuffer = StringBuffer();
+  String thinkingReplyTo = '';
+  // When the live reasoning segment started — the row it folds into carries
+  // the elapsed time, and the streaming block ticks it
+  // (StreamingMessage.startedAt).
+  DateTime? thinkingStartedAt;
+  Timer? flushTimer;
+  StreamingMessage? streaming;
+
+  // Whether this room's agent is currently producing a reply. Spans the
+  // WHOLE turn (send/echo → agent_done), not just the token-streaming window.
+  bool working = false;
+  bool sawRemoteWorking = false;
+  // Id of the user message the in-flight reply is answering — the `cancel`
+  // target while working. Null when idle.
+  String? workingReplyTo;
+
+  List<QueuedMsg> queuedMessages = const [];
+}
+
 class SyncService extends Service {
   final ConnectionManager _conn;
   final LocalBoxes _boxes;
 
   StreamSubscription<ConnectionStatus>? _connSub;
   StreamSubscription<ServerMessage>? _msgSub;
+  StreamSubscription<RoomMessage>? _roomMsgSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<Map<String, PresenceState>>? _presenceSub;
 
   // Active session being written (follows ConnectionManager).
   String? _activeEpk;
   String _activeRoomId = 'main';
+
+  // Per-room in-memory turn state — survives room switches; only the
+  // UI-facing streams/gatters follow the ACTIVE room's slot.
+  final Map<String, _RoomTurn> _turns = {};
 
   // In-memory dedupe + ordering for the active session's msgs box. Rebuilt on
   // [activate]. Key = `<role>:<id>` so a user msg and the assistant reply that
@@ -47,19 +102,6 @@ class SyncService extends Service {
   // Serialise box mutations so concurrent async writes stay ordered.
   Future<void> _writeChain = Future<void>.value();
 
-  // Streaming — in-memory only (#7). Two block kinds share ONE live slot:
-  // reasoning (`agent_thinking`) and answer text (`agent_chunk`). Content
-  // blocks are sequential, so only one kind is ever open at a time; a delta of
-  // the other kind closes the open one first.
-  final StringBuffer _chunkBuffer = StringBuffer();
-  String _chunkReplyTo = '';
-  final StringBuffer _thinkingBuffer = StringBuffer();
-  String _thinkingReplyTo = '';
-  // When the live reasoning segment started — the row it folds into carries the
-  // elapsed time, and the streaming block ticks it (StreamingMessage.startedAt).
-  DateTime? _thinkingStartedAt;
-  Timer? _flushTimer;
-  StreamingMessage? _streaming;
   final StreamController<StreamingMessage?> _streamingController =
       StreamController<StreamingMessage?>.broadcast();
 
@@ -72,25 +114,14 @@ class SyncService extends Service {
   final StreamController<ExtensionUiRequest> _extensionUiController =
       StreamController<ExtensionUiRequest>.broadcast();
 
-  List<QueuedMsg> _queuedMessages = const [];
   final StreamController<List<QueuedMsg>> _queuedController =
       StreamController<List<QueuedMsg>>.broadcast();
 
-  bool _pendingSyncRequest = false;
-  Timer? _syncDebounce;
-
-  // Whether the active session's agent is currently producing a reply. Spans
-  // the WHOLE turn (send/echo → agent_done), not just the token-streaming
-  // window — restoring the old broad "working" signal. Mirrored into the
-  // session index (durable, for Home) and exposed in-memory (for the chat
-  // pill, no box-key matching needed).
-  bool _working = false;
-  bool _sawRemoteWorking = false;
-  // Id of the user message the in-flight reply is answering — the `cancel`
-  // target while working. Null when idle.
-  String? _workingReplyTo;
   final StreamController<bool> _workingController =
       StreamController<bool>.broadcast();
+
+  bool _pendingSyncRequest = false;
+  Timer? _syncDebounce;
 
   // Plan/32 safety net — if the relay never echoes a sent message back, the
   // optimistic `pending:true` bubble would spin forever. After this window we
@@ -112,6 +143,11 @@ class SyncService extends Service {
       _syncTurnStateFromRoomMeta();
     });
     _presenceSub = _conn.presenceStream.listen((_) => _writeRuntime());
+    // Background ingestion: EVERY room's inbound frames (the active room's
+    // frames arrive here too — the handler skips them; the writer path owns
+    // those). Feeds the non-active rooms' turn state so a streaming room the
+    // user is not viewing keeps accumulating.
+    _roomMsgSub = _conn.roomMessages.listen(_onRoomMessage);
     _onStatus(_conn.status); // replay current
   }
 
@@ -119,7 +155,8 @@ class SyncService extends Service {
   // Public surface (commands + in-memory streams)
   // ---------------------------------------------------------------------------
 
-  StreamingMessage? get streaming => _streaming;
+  /// The ACTIVE room's live streaming slot (null when idle / unbound).
+  StreamingMessage? get streaming => _activeTurn?.streaming;
   Stream<StreamingMessage?> get streamingStream => _streamingController.stream;
   Stream<SessionEvent> get events => _eventController.stream;
 
@@ -128,20 +165,36 @@ class SyncService extends Service {
   /// a full-screen modal and replies via [respondExtensionUi].
   Stream<ExtensionUiRequest> get extensionUiRequestStream =>
       _extensionUiController.stream;
-  List<QueuedMsg> get queuedMessages => _queuedMessages;
+  List<QueuedMsg> get queuedMessages =>
+      _activeTurn?.queuedMessages ?? const [];
   String? get queuedText =>
-      _queuedMessages.isEmpty ? null : _queuedMessages.first.text;
+      queuedMessages.isEmpty ? null : queuedMessages.first.text;
   Stream<List<QueuedMsg>> get queuedStream => _queuedController.stream;
 
-  /// True while the active session's agent is producing a reply (whole turn).
-  bool get isWorking => _working;
+  /// True while the ACTIVE room's agent is producing a reply (whole turn).
+  bool get isWorking => _activeTurn?.working ?? false;
   Stream<bool> get workingStream => _workingController.stream;
 
   /// `cancel` target for the in-flight reply (null when idle).
-  String? get workingReplyTo => _workingReplyTo;
+  String? get workingReplyTo => _activeTurn?.workingReplyTo;
 
   String? get activeEpk => _activeEpk;
   String get activeRoomId => _activeRoomId;
+
+  /// The slot whose turn state the UI-facing getters/streams reflect.
+  _RoomTurn? get _activeTurn {
+    final epk = _activeEpk;
+    if (epk == null) return null;
+    return _turns[LocalBoxes.sessionKey(epk, _activeRoomId)];
+  }
+
+  _RoomTurn _turn(String epk, String room) => _turns.putIfAbsent(
+    LocalBoxes.sessionKey(epk, room),
+    () => _RoomTurn(epk, room),
+  );
+
+  bool _isActive(_RoomTurn t) =>
+      t.epk == _activeEpk && t.room == _activeRoomId;
 
   /// Bind the writer to a (peer, room). Opens the box and rebuilds the
   /// dedupe/seq index from it. Called by the chat when it mounts / switches
@@ -149,44 +202,35 @@ class SyncService extends Service {
   Future<void> activate(String epk, String roomId) async {
     final room = roomId.isEmpty ? 'main' : roomId;
     if (_activeEpk == epk && _activeRoomId == room && _indexLoaded) return;
-    // Genuine session switch: drop the in-memory turn state so the
-    // PREVIOUS session's streaming buffer + whole-turn working flag can't
-    // bleed into the next chat (the bug where chat 2 looked "working"
-    // because chat 1 was mid-turn). We deliberately do NOT clear the
-    // durable session index — the previous room may still be running on
-    // the Pi, and Home keeps showing it via the relay's per-room
-    // `meta.working` broadcast.
-    _resetTurnState();
+    // Session switch: drop the previous room's no-echo send backstops (its
+    // pending rows re-arm when ITS box loads — see _loadIndex). Per-room turn
+    // state deliberately SURVIVES: a room still mid-turn keeps accumulating
+    // (working flag, streaming buffers, reasoning start time) in its own slot,
+    // so returning to it restores the in-flight bubble and its thinking
+    // counter instead of starting from zero.
+    _cancelAllSendTimers();
+    final prevTurn = _activeEpk != null
+        ? _turns[LocalBoxes.sessionKey(_activeEpk!, _activeRoomId)]
+        : null;
     _activeEpk = epk;
     _activeRoomId = room;
+    // Re-aim the UI-facing streams at the NEW room's slot: when the previous
+    // room was mid-turn (working pill / live bubble), publish the new room's
+    // state — or the cleared sentinel — so listeners that don't re-seed on
+    // their own (a still-mounted chat VM, a quick A→B→A hop) stop showing the
+    // previous room's working state. A genuinely idle switch emits nothing.
+    if (prevTurn != null &&
+        (prevTurn.working || prevTurn.streaming != null)) {
+      final nextTurn = _turns[LocalBoxes.sessionKey(epk, room)];
+      if (!_streamingController.isClosed) {
+        _streamingController.add(nextTurn?.streaming);
+      }
+      if (!_workingController.isClosed) {
+        _workingController.add(nextTurn?.working ?? false);
+      }
+    }
     await _loadIndex();
     _writeRuntime();
-  }
-
-  /// Clears the in-memory streaming buffer + whole-turn working flag
-  /// (emitting the cleared state so listeners update) WITHOUT touching the
-  /// durable session index. Used on a session switch — see [activate].
-  void _resetTurnState() {
-    _flushTimer?.cancel();
-    _flushTimer = null;
-    _chunkBuffer.clear();
-    _chunkReplyTo = '';
-    // Reasoning too: a half-streamed thought must not survive the switch and
-    // land as a row in the NEXT chat (the buffers are keyed by nothing).
-    _thinkingBuffer.clear();
-    _thinkingReplyTo = '';
-    _thinkingStartedAt = null;
-    _workingReplyTo = null;
-    _sawRemoteWorking = false;
-    _setQueuedMessages(const []);
-    // Session switch: the previous chat's in-flight sends are no longer ours
-    // to confirm — drop their backstops so a stale timer can't fire later.
-    _cancelAllSendTimers();
-    if (_streaming != null) _emitStreaming(null);
-    if (_working) {
-      _working = false;
-      if (!_workingController.isClosed) _workingController.add(false);
-    }
   }
 
   Future<void> sendMessage(
@@ -199,6 +243,7 @@ class SyncService extends Service {
     final now = DateTime.now();
     final isSteer = streamingBehavior == UserMessageStreamingBehavior.steer;
     // Optimistic pending row (#defaults: optimistic + dedupe by id).
+    final t = epk != null ? _turn(epk, _activeRoomId) : null;
     if (epk != null) {
       await _upsert(
         MsgRole.user,
@@ -215,7 +260,7 @@ class SyncService extends Service {
         ),
       );
       if (!isSteer) {
-        _setWorking(true, preview: _preview(text, image), replyTo: id);
+        _setWorking(t!, true, preview: _preview(text, image), replyTo: id);
       }
       // Arm the no-echo backstop for this row. The timeout is keyed off the
       // row's `ts`, NOT online-ness: an offline "held pending" send is reaped
@@ -238,8 +283,8 @@ class SyncService extends Service {
     // clears it (even for a text-less, tool-only turn).
     // Steering messages should not create a new cursor, because they do not
     // start a fresh assistant turn.
-    if (!isSteer) {
-      _emitStreaming(StreamingMessage(inReplyTo: id));
+    if (!isSteer && t != null) {
+      _emitStreaming(t, StreamingMessage(inReplyTo: id));
     }
     debugPrint('[msg-send] id=$id text=${_preview(text, image)}');
     await ch.send(
@@ -273,11 +318,12 @@ class SyncService extends Service {
     _pendingSendTimers.remove(id);
     // ignore: discarded_futures
     _removeById(id);
+    final t = _activeTurn;
     // Clear the thinking cursor only if it's seeded for this message.
-    if (_streaming?.inReplyTo == id) _emitStreaming(null);
+    if (t != null && t.streaming?.inReplyTo == id) _emitStreaming(t, null);
     // Clear working ONLY if this id owns it — never knock down a turn that a
     // different (echoed) message is already driving.
-    if (_workingReplyTo == id) _setWorking(false);
+    if (t != null && t.workingReplyTo == id) _setWorking(t, false);
     debugPrint(
       '[msg-timeout] id=$id removed (no echo in '
       '${pendingSendTimeout.inSeconds}s)',
@@ -298,11 +344,14 @@ class SyncService extends Service {
   Future<void> queueMessage(String text) async {
     final ch = _conn.channel;
     if (ch == null) return;
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final t = _turn(epk, _activeRoomId);
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
     final id = _newId();
-    _setQueuedMessages([
-      ..._queuedMessages,
+    _setQueuedMessages(t, [
+      ...t.queuedMessages,
       QueuedMsg(
         id: id,
         text: trimmed,
@@ -316,11 +365,14 @@ class SyncService extends Service {
   Future<void> setQueuedMessage(String text) => queueMessage(text);
 
   Future<void> clearQueuedMessage([String? targetId]) async {
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final t = _turn(epk, _activeRoomId);
     if (targetId == null) {
-      _setQueuedMessages(const []);
+      _setQueuedMessages(t, const []);
     } else {
-      _setQueuedMessages([
-        for (final item in _queuedMessages)
+      _setQueuedMessages(t, [
+        for (final item in t.queuedMessages)
           if (item.id != targetId) item,
       ]);
     }
@@ -399,11 +451,12 @@ class SyncService extends Service {
     final epk = _activeEpk;
     if (epk == null) return;
     final room = _activeRoomId;
+    final t = _turn(epk, room);
     // Session wiped → any optimistic sends/streaming/working state are moot.
     _cancelAllSendTimers();
-    _discardStreamingState();
-    _setQueuedMessages(const []);
-    _setWorking(false);
+    _discardStreamingState(t);
+    _setQueuedMessages(t, const []);
+    _setWorking(t, false);
     await _enqueue(() async {
       if (_activeEpk != epk || _activeRoomId != room) return;
       final box = await _boxes.msgsBox(epk, room);
@@ -417,7 +470,7 @@ class SyncService extends Service {
   }
 
   // ---------------------------------------------------------------------------
-  // Channel → DB
+  // Channel → DB (active room) + per-room turn state
   // ---------------------------------------------------------------------------
 
   void _onStatus(ConnectionStatus s) {
@@ -447,6 +500,60 @@ class SyncService extends Service {
     _writeRuntime();
   }
 
+  /// Background path — every room's inbound frames (raw material that also
+  /// feeds background notifications). Active-room frames are skipped here
+  /// (the writer path owns them, DB writes included); non-active rooms only
+  /// get their IN-MEMORY turn state updated, so a streaming room the user is
+  /// not viewing keeps filling its own slot. Its finalized rows come back
+  /// via the history re-sync when the user re-enters it.
+  void _onRoomMessage(RoomMessage m) {
+    if (m.epk == _activeEpk && m.roomId == _activeRoomId) return;
+    final t = _turn(m.epk, m.roomId);
+    switch (m.message) {
+      case AgentChunk(:final inReplyTo, :final delta):
+        _applyChunk(t, inReplyTo, delta);
+      case AgentThinking(:final inReplyTo, :final delta):
+        _applyThinking(t, inReplyTo, delta);
+      case AgentDone(:final inReplyTo):
+        _applyAgentDone(t, inReplyTo);
+      case UserInput(:final id, :final text, :final streamingBehavior):
+        if (t.queuedMessages.any((item) => item.id == id)) {
+          _setQueuedMessages(t, [
+            for (final item in t.queuedMessages)
+              if (item.id != id) item,
+          ]);
+        }
+        if (streamingBehavior == UserMessageStreamingBehavior.steer) {
+          _setActivity(m.epk, m.roomId, SessionActivity.working, preview: text);
+        } else {
+          _setWorking(t, true, preview: _preview(text, null), replyTo: id);
+          if (t.streaming?.inReplyTo != id) {
+            _emitStreaming(t, StreamingMessage(inReplyTo: id));
+          }
+        }
+      case Cancelled(:final targetId):
+        _pendingSendTimers.remove(targetId)?.cancel();
+        _applyCancelled(t, targetId);
+      case ErrorMessage():
+        _discardStreamingState(t);
+        _setWorking(t, false);
+      case QueuedMessageState(:final items):
+        _setQueuedMessages(t, [
+          for (final item in items)
+            QueuedMsg(
+              id: item.id,
+              text: item.text,
+              editable: item.editable,
+              createdAt: item.createdAt,
+            ),
+        ]);
+      default:
+        // DB-backed frames (AgentMessage, Tool*, SessionHistory, …) for a
+        // background room: not the writer's job; recovered by re-sync.
+        break;
+    }
+  }
+
   Future<void> _onlineActivated() async {
     final peer = _conn.activePeer;
     if (peer != null && _activeEpk == null) {
@@ -468,34 +575,23 @@ class SyncService extends Service {
     if (originEpk != null && _activeEpk != null && originEpk != _activeEpk) {
       return;
     }
+    // Turn-state slot for the active room (null pre-bind, before any
+    // activate — DB writes are no-ops then too, so skipping turn state is
+    // consistent).
+    final epk = _activeEpk;
+    final t = epk != null ? _turn(epk, _activeRoomId) : null;
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
-        // Answer text follows the reasoning block → the reasoning segment is
-        // over; persist it as its own row before the text starts.
-        _finalizeThinkingSegment();
-        _chunkBuffer.write(delta);
-        _chunkReplyTo = inReplyTo;
-        _flushTimer?.cancel();
-        _flushTimer = Timer(const Duration(milliseconds: 16), _flushStreaming);
-        _setWorking(true, replyTo: inReplyTo);
+        if (t == null) return;
+        _applyChunk(t, inReplyTo, delta);
 
       case AgentThinking(:final inReplyTo, :final delta):
-        // Mirror image: a reasoning block after text closes the text segment.
-        _finalizeTextSegment();
-        _thinkingStartedAt ??= DateTime.now();
-        _thinkingBuffer.write(delta);
-        _thinkingReplyTo = inReplyTo;
-        _flushTimer?.cancel();
-        _flushTimer = Timer(const Duration(milliseconds: 16), _flushStreaming);
-        _setWorking(true, replyTo: inReplyTo);
+        if (t == null) return;
+        _applyThinking(t, inReplyTo, delta);
 
       case AgentDone(:final inReplyTo):
-        // Finalize whatever accumulated since the last tool boundary
-        // (reasoning first — it precedes text within a message).
-        _finalizeThinkingSegment();
-        final text = _finalizeTextSegment();
-        _clearSteeringLabel(inReplyTo);
-        _setWorking(false, preview: text.isEmpty ? null : text);
+        if (t == null) return;
+        _applyAgentDone(t, inReplyTo);
 
       case AgentMessage(:final inReplyTo, :final text):
         // ignore: discarded_futures
@@ -514,7 +610,8 @@ class SyncService extends Service {
         );
 
       case QueuedMessageState(:final items):
-        _setQueuedMessages([
+        if (t == null) return;
+        _setQueuedMessages(t, [
           for (final item in items)
             QueuedMsg(
               id: item.id,
@@ -538,9 +635,9 @@ class SyncService extends Service {
         debugPrint('[msg-echo] id=$id');
         // Echo arrived → the send landed; disarm the no-echo backstop.
         _pendingSendTimers.remove(id)?.cancel();
-        if (_queuedMessages.any((item) => item.id == id)) {
-          _setQueuedMessages([
-            for (final item in _queuedMessages)
+        if (t != null && t.queuedMessages.any((item) => item.id == id)) {
+          _setQueuedMessages(t, [
+            for (final item in t.queuedMessages)
               if (item.id != id) item,
           ]);
         }
@@ -561,16 +658,17 @@ class SyncService extends Service {
                   ts: DateTime.now(),
                 ),
         );
+        if (t == null) return;
         // Steering input should not start/replace the working turn bubble.
         if (streamingBehavior == UserMessageStreamingBehavior.steer) {
-          _setActivity(SessionActivity.working, preview: text);
+          _setActivity(epk!, _activeRoomId, SessionActivity.working, preview: text);
         } else {
-          _setWorking(true, preview: text, replyTo: id);
+          _setWorking(t, true, preview: text, replyTo: id);
           // Show the thinking cursor for this turn (foreign-device echo, or the
           // local echo when the send-seed was already cleared). Guarded so it
           // never wipes a buffer that's already accumulating for this id.
-          if (_streaming?.inReplyTo != id) {
-            _emitStreaming(StreamingMessage(inReplyTo: id));
+          if (t.streaming?.inReplyTo != id) {
+            _emitStreaming(t, StreamingMessage(inReplyTo: id));
           }
         }
 
@@ -578,8 +676,10 @@ class SyncService extends Service {
         // Sequential ordering: close the open segment(s) as their own rows
         // BEFORE the tool, so "reasoning → narration → command → narration"
         // renders in order instead of all text landing after the commands.
-        _finalizeThinkingSegment();
-        _finalizeTextSegment();
+        if (t != null) {
+          _finalizeThinkingSegment(t);
+          _finalizeTextSegment(t);
+        }
         // ignore: discarded_futures
         _upsert(
           MsgRole.tool,
@@ -626,21 +726,17 @@ class SyncService extends Service {
 
       case Cancelled(:final targetId):
         _pendingSendTimers.remove(targetId)?.cancel();
-        _discardStreamingState();
-        // Cancel is stop-generation, not delete-history. Only drop a local
-        // optimistic row that never got confirmed by the Pi echo; preserve
-        // confirmed user/tool rows as the audit trail of what happened.
-        // ignore: discarded_futures
-        _removePendingById(targetId);
-        _clearSteeringLabels();
-        _setWorking(false);
+        if (t != null) _applyCancelled(t, targetId);
 
       case Bye(:final rawReason):
         if (!_eventController.isClosed) {
           _eventController.add(PeerWentOffline(rawReason));
         }
-        _clearSteeringLabels();
-        _setWorking(false);
+        if (t != null) {
+          _clearSteeringLabels();
+          _discardStreamingState(t);
+          _setWorking(t, false);
+        }
         final peer = _conn.activePeer;
         if (peer != null) {
           // ignore: discarded_futures
@@ -658,9 +754,11 @@ class SyncService extends Service {
           }
           break;
         }
-        _discardStreamingState();
+        if (t != null) {
+          _discardStreamingState(t);
+          _setWorking(t, false);
+        }
         _clearSteeringLabels();
-        _setWorking(false);
         // ignore: discarded_futures
         _upsert(
           MsgRole.assistant,
@@ -782,6 +880,8 @@ class SyncService extends Service {
     if (_activeEpk == epk && _activeRoomId == room) {
       final started = h.sessionStartedAt;
       _updateIndex(
+        epk,
+        room,
         (cur) => cur.copyWith(
           sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(started),
         ),
@@ -920,7 +1020,8 @@ class SyncService extends Service {
         // Re-arm the no-echo backstop for any pending row this session owns, so
         // a bubble persisted across an app restart / quick session-switch is
         // reaped by its `ts` instead of spinning forever (already-stale → fires
-        // immediately). Timers were cleared by _resetTurnState before this load.
+        // immediately). Timers were cleared by the session switch before this
+        // load.
         if (r.role == MsgRole.user && r.pending) _armSendTimeout(r.id, r.ts);
       }
       _indexLoaded = true;
@@ -1029,8 +1130,10 @@ class SyncService extends Service {
     });
   }
 
-  void _setActivity(SessionActivity status, {String? preview}) {
+  void _setActivity(String epk, String room, SessionActivity status, {String? preview}) {
     _updateIndex(
+      epk,
+      room,
       (cur) => cur.copyWith(
         status: status,
         lastMessageAt: preview != null ? DateTime.now() : null,
@@ -1039,56 +1142,67 @@ class SyncService extends Service {
     );
   }
 
-  void _setQueuedMessages(List<QueuedMsg> items) {
+  void _setQueuedMessages(_RoomTurn t, List<QueuedMsg> items) {
     final next = List<QueuedMsg>.unmodifiable(items);
-    if (_queuedMessages == next) return;
-    _queuedMessages = next;
-    if (!_queuedController.isClosed) _queuedController.add(next);
+    if (t.queuedMessages == next) return;
+    t.queuedMessages = next;
+    if (_isActive(t) && !_queuedController.isClosed) _queuedController.add(next);
   }
 
-  /// Single source of "the active session is working". Drives the in-memory
-  /// flag/stream (chat pill) AND the durable session index (Home dot).
-
+  /// Single source of "a room is working". Drives that room's in-memory
+  /// flag/stream (the chat pill, active room only), its durable session index
+  /// (Home dot) and — for the connected room — the app-side room-meta
+  /// correction the relay-based Home dot falls back on.
   void _syncTurnStateFromRoomMeta() {
     final epk = _activeEpk;
     if (epk == null) return;
+    final t = _turns[LocalBoxes.sessionKey(epk, _activeRoomId)];
     final remoteWorking = _conn.isRoomWorking(epk, _activeRoomId);
     if (remoteWorking) {
-      _sawRemoteWorking = true;
+      if (t != null) t.sawRemoteWorking = true;
       return;
     }
-    if (_sawRemoteWorking && _working) {
-      _discardStreamingState();
-      _setWorking(false);
+    if (t != null && t.sawRemoteWorking && t.working) {
+      _discardStreamingState(t);
+      _setWorking(t, false);
     }
-    _sawRemoteWorking = false;
+    if (t != null) t.sawRemoteWorking = false;
   }
 
-  void _setWorking(bool on, {String? preview, String? replyTo}) {
+  void _setWorking(
+    _RoomTurn t,
+    bool on, {
+    String? preview,
+    String? replyTo,
+  }) {
     _setActivity(
+      t.epk,
+      t.room,
       on ? SessionActivity.working : SessionActivity.idle,
       preview: preview,
     );
-    // Snapshot nullable field once; Dart won't promote mutable fields safely.
-    final epk = _activeEpk;
-    if (epk != null) {
-      _conn.markRoomWorking(epk, _activeRoomId, on);
+    // App-side correction is only valid for the CONNECTED room — non-active
+    // rooms' Home dots stay the relay's domain (their relay meta broadcast is
+    // the source of truth).
+    if (_isActive(t)) {
+      _conn.markRoomWorking(t.epk, t.room, on);
     }
     if (on) {
-      if (replyTo != null) _workingReplyTo = replyTo;
+      if (replyTo != null) t.workingReplyTo = replyTo;
     } else {
-      _workingReplyTo = null;
-      _sawRemoteWorking = false;
+      t.workingReplyTo = null;
+      t.sawRemoteWorking = false;
     }
-    if (_working == on) return;
-    _working = on;
-    if (!_workingController.isClosed) _workingController.add(on);
+    if (t.working == on) return;
+    t.working = on;
+    if (_isActive(t) && !_workingController.isClosed) _workingController.add(on);
   }
 
-  void _updateIndex(SessionIndexRecord Function(SessionIndexRecord cur) build) {
-    final epk = _activeEpk;
-    if (epk == null) return;
-    final room = _activeRoomId;
+  void _updateIndex(
+    String epk,
+    String room,
+    SessionIndexRecord Function(SessionIndexRecord cur) build,
+  ) {
     // ignore: discarded_futures
     _enqueue(() async {
       final idx = _boxes.sessionsIndexBox();
@@ -1126,35 +1240,82 @@ class SyncService extends Service {
   }
 
   // ---------------------------------------------------------------------------
-  // Streaming (in-memory only)
+  // Per-room turn state (streaming in-memory only — #7)
   // ---------------------------------------------------------------------------
+
+  void _applyChunk(_RoomTurn t, String inReplyTo, String delta) {
+    // Answer text follows the reasoning block → the reasoning segment is
+    // over; persist it as its own row before the text starts.
+    _finalizeThinkingSegment(t);
+    t.chunkBuffer.write(delta);
+    t.chunkReplyTo = inReplyTo;
+    t.flushTimer?.cancel();
+    t.flushTimer = Timer(const Duration(milliseconds: 16), () => _flushStreaming(t));
+    _setWorking(t, true, replyTo: inReplyTo);
+  }
+
+  void _applyThinking(_RoomTurn t, String inReplyTo, String delta) {
+    // Mirror image: a reasoning block after text closes the text segment.
+    _finalizeTextSegment(t);
+    // First delta of this reasoning segment: stamp the start. Survives room
+    // switches (per-room slot) so the thinking counter never resets to zero.
+    t.thinkingStartedAt ??= DateTime.now();
+    t.thinkingBuffer.write(delta);
+    t.thinkingReplyTo = inReplyTo;
+    t.flushTimer?.cancel();
+    t.flushTimer = Timer(const Duration(milliseconds: 16), () => _flushStreaming(t));
+    _setWorking(t, true, replyTo: inReplyTo);
+  }
+
+  void _applyAgentDone(_RoomTurn t, String inReplyTo) {
+    // Finalize whatever accumulated since the last tool boundary
+    // (reasoning first — it precedes text within a message).
+    _finalizeThinkingSegment(t);
+    final text = _finalizeTextSegment(t);
+    if (_isActive(t)) _clearSteeringLabel(inReplyTo);
+    _setWorking(t, false, preview: text.isEmpty ? null : text);
+  }
+
+  void _applyCancelled(_RoomTurn t, String targetId) {
+    _discardStreamingState(t);
+    if (_isActive(t)) {
+      // Cancel is stop-generation, not delete-history. Only drop a local
+      // optimistic row that never got confirmed by the Pi echo; preserve
+      // confirmed user/tool rows as the audit trail of what happened.
+      // ignore: discarded_futures
+      _removePendingById(targetId);
+      _clearSteeringLabels();
+    }
+    _setWorking(t, false);
+  }
 
   /// Drain any coalesced delta sitting in the 16ms buffer into the live slot.
   /// Exactly one of the two buffers is normally non-empty.
-  void _flushStreaming() {
-    if (_thinkingBuffer.isNotEmpty) {
-      final delta = _thinkingBuffer.toString();
-      _thinkingBuffer.clear();
-      final cur = _streaming;
+  void _flushStreaming(_RoomTurn t) {
+    if (t.thinkingBuffer.isNotEmpty) {
+      final delta = t.thinkingBuffer.toString();
+      t.thinkingBuffer.clear();
+      final cur = t.streaming;
       _emitStreaming(
-        (cur != null && cur.thinking && cur.inReplyTo == _thinkingReplyTo)
+        t,
+        (cur != null && cur.thinking && cur.inReplyTo == t.thinkingReplyTo)
             ? cur.appendDelta(delta)
             : StreamingMessage(
-                inReplyTo: _thinkingReplyTo,
+                inReplyTo: t.thinkingReplyTo,
                 buffer: delta,
                 thinking: true,
-                startedAt: _thinkingStartedAt,
+                startedAt: t.thinkingStartedAt,
               ),
       );
     }
-    if (_chunkBuffer.isEmpty) return;
-    final delta = _chunkBuffer.toString();
-    _chunkBuffer.clear();
-    final cur = _streaming;
-    if (cur != null && !cur.thinking && cur.inReplyTo == _chunkReplyTo) {
-      _emitStreaming(cur.appendDelta(delta));
+    if (t.chunkBuffer.isEmpty) return;
+    final delta = t.chunkBuffer.toString();
+    t.chunkBuffer.clear();
+    final cur = t.streaming;
+    if (cur != null && !cur.thinking && cur.inReplyTo == t.chunkReplyTo) {
+      _emitStreaming(t, cur.appendDelta(delta));
     } else {
-      _emitStreaming(StreamingMessage(inReplyTo: _chunkReplyTo, buffer: delta));
+      _emitStreaming(t, StreamingMessage(inReplyTo: t.chunkReplyTo, buffer: delta));
     }
   }
 
@@ -1163,25 +1324,27 @@ class SyncService extends Service {
   /// Called at every tool boundary AND on agent_done so text/tool/text
   /// renders sequentially. No-op when no text segment is open — so a
   /// tool-only, reasoning-only or empty turn never leaves a blank bubble.
+  /// Background (non-active) rooms only clear their in-memory segment; their
+  /// finalized rows come back via the history re-sync on re-entry.
   /// Returns the finalized text (empty if none).
-  String _finalizeTextSegment() {
+  String _finalizeTextSegment(_RoomTurn t) {
     final live =
-        _chunkBuffer.isNotEmpty ||
-        (_streaming != null && !_streaming!.thinking);
+        t.chunkBuffer.isNotEmpty ||
+        (t.streaming != null && !t.streaming!.thinking);
     if (!live) return '';
     // Drain any coalesced delta still sitting in the 16ms buffer.
-    _flushTimer?.cancel();
-    _flushTimer = null;
-    if (_chunkBuffer.isNotEmpty) {
-      final delta = _chunkBuffer.toString();
-      _chunkBuffer.clear();
-      final cur = _streaming;
-      _streaming = (cur != null && !cur.thinking && cur.inReplyTo == _chunkReplyTo)
+    t.flushTimer?.cancel();
+    t.flushTimer = null;
+    if (t.chunkBuffer.isNotEmpty) {
+      final delta = t.chunkBuffer.toString();
+      t.chunkBuffer.clear();
+      final cur = t.streaming;
+      t.streaming = (cur != null && !cur.thinking && cur.inReplyTo == t.chunkReplyTo)
           ? cur.appendDelta(delta)
-          : StreamingMessage(inReplyTo: _chunkReplyTo, buffer: delta);
+          : StreamingMessage(inReplyTo: t.chunkReplyTo, buffer: delta);
     }
-    final text = _streaming?.buffer ?? '';
-    if (text.isNotEmpty) {
+    final text = t.streaming?.buffer ?? '';
+    if (text.isNotEmpty && _isActive(t)) {
       final id = 'agent_${uuid7()}';
       // ignore: discarded_futures
       _upsert(
@@ -1196,8 +1359,8 @@ class SyncService extends Service {
         ),
       );
     }
-    _chunkReplyTo = '';
-    _emitStreaming(null);
+    t.chunkReplyTo = '';
+    _emitStreaming(t, null);
     return text;
   }
 
@@ -1205,31 +1368,32 @@ class SyncService extends Service {
   /// Same lifecycle as [_finalizeTextSegment]: closed by text/tool/turn
   /// boundaries, no-op when no reasoning block is open. Returns the finalized
   /// reasoning text (empty if none).
-  String _finalizeThinkingSegment() {
+  String _finalizeThinkingSegment(_RoomTurn t) {
     final live =
-        _thinkingBuffer.isNotEmpty || (_streaming?.thinking ?? false);
+        t.thinkingBuffer.isNotEmpty || (t.streaming?.thinking ?? false);
     if (!live) return '';
-    _flushTimer?.cancel();
-    _flushTimer = null;
-    if (_thinkingBuffer.isNotEmpty) {
-      final delta = _thinkingBuffer.toString();
-      _thinkingBuffer.clear();
-      final cur = _streaming;
-      _streaming = (cur != null && cur.thinking && cur.inReplyTo == _thinkingReplyTo)
+    t.flushTimer?.cancel();
+    t.flushTimer = null;
+    if (t.thinkingBuffer.isNotEmpty) {
+      final delta = t.thinkingBuffer.toString();
+      t.thinkingBuffer.clear();
+      final cur = t.streaming;
+      t.streaming = (cur != null && cur.thinking && cur.inReplyTo == t.thinkingReplyTo)
           ? cur.appendDelta(delta)
           : StreamingMessage(
-              inReplyTo: _thinkingReplyTo,
+              inReplyTo: t.thinkingReplyTo,
               buffer: delta,
               thinking: true,
-              startedAt: _thinkingStartedAt,
+              startedAt: t.thinkingStartedAt,
             );
     }
-    final text = _streaming?.buffer ?? '';
+    final text = t.streaming?.buffer ?? '';
     // The block is over: freeze how long it took. Measured here (not in the UI)
     // so the persisted row and the live counter are the same number.
-    final startedAt = _thinkingStartedAt;
-    final elapsed = startedAt == null ? null : DateTime.now().difference(startedAt);
-    if (text.isNotEmpty) {
+    final startedAt = t.thinkingStartedAt;
+    final elapsed =
+        startedAt == null ? null : DateTime.now().difference(startedAt);
+    if (text.isNotEmpty && _isActive(t)) {
       final id = 'thinking_${uuid7()}';
       // ignore: discarded_futures
       _upsert(
@@ -1245,26 +1409,31 @@ class SyncService extends Service {
         ),
       );
     }
-    _thinkingReplyTo = '';
-    _thinkingStartedAt = null;
-    _emitStreaming(null);
+    t.thinkingReplyTo = '';
+    t.thinkingStartedAt = null;
+    _emitStreaming(t, null);
     return text;
   }
 
-  void _discardStreamingState() {
-    _flushTimer?.cancel();
-    _flushTimer = null;
-    _chunkBuffer.clear();
-    _chunkReplyTo = '';
-    _thinkingBuffer.clear();
-    _thinkingReplyTo = '';
-    _thinkingStartedAt = null;
-    _emitStreaming(null);
+  void _discardStreamingState(_RoomTurn t) {
+    t.flushTimer?.cancel();
+    t.flushTimer = null;
+    t.chunkBuffer.clear();
+    t.chunkReplyTo = '';
+    t.thinkingBuffer.clear();
+    t.thinkingReplyTo = '';
+    t.thinkingStartedAt = null;
+    _emitStreaming(t, null);
   }
 
-  void _emitStreaming(StreamingMessage? s) {
-    _streaming = s;
-    if (!_streamingController.isClosed) _streamingController.add(s);
+  /// Set the room's live slot. UI streams only observe the ACTIVE room's slot
+  /// — a background room's slot updates silently until the user returns to
+  /// it (the chat VM re-seeds from [streaming] on its activate).
+  void _emitStreaming(_RoomTurn t, StreamingMessage? s) {
+    t.streaming = s;
+    if (_isActive(t) && !_streamingController.isClosed) {
+      _streamingController.add(s);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1290,11 +1459,14 @@ class SyncService extends Service {
 
   @override
   void dispose() {
-    _flushTimer?.cancel();
+    for (final t in _turns.values) {
+      t.flushTimer?.cancel();
+    }
     _syncDebounce?.cancel();
     _cancelAllSendTimers();
     _connSub?.cancel();
     _msgSub?.cancel();
+    _roomMsgSub?.cancel();
     _roomsSub?.cancel();
     _presenceSub?.cancel();
     _streamingController.close();
