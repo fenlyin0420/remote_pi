@@ -376,7 +376,11 @@ opcional e retrocompatível. O que conta como "texto" é decidido **pelo
 conteúdo, nunca pelo nome**: sem byte NUL e decodificável como UTF-8 (BOM
 opcional) ou UTF-16 (BOM obrigatório). `Makefile`, `id_rsa.pub`, `.log`,
 `.gitignore` ou config sem extensão valem; um `.txt` binário não. Teto de
-256 KB por arquivo (o app corta e marca o conteúdo).
+1 MiB por arquivo (o app corta e marca o conteúdo). O teto vem do envelope
+externo do relay — 4 MiB de payload decodificado, o default com que o nosso
+roda — e não de um limite do Pi: o conteúdo viaja como string JSON, cujo
+escape pode dobrar o tamanho no caso patológico, então 1 MiB é o maior teto
+que ainda não estoura o envelope com nenhum conteúdo.
 
 Ao contrário da imagem, o arquivo **não vira conteúdo do prompt**: o Pi grava
 no disco e passa ao agente o caminho absoluto, para ele ler/editar com as

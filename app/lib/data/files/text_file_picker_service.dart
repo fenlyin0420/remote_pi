@@ -57,15 +57,21 @@ class TextFilePickerService implements ITextFilePickerService {
 
   final TextFilePickerBackend _backend;
 
-  /// Longest upload accepted. The file travels inline — UTF-8 JSON inside the
-  /// relay's ~4 MiB frame budget — so this stays well clear of it (and of what
-  /// a phone should hold in memory). Longer files are cut here and marked.
-  static const int maxBytes = 256 * 1024;
+  /// Longest upload accepted.
+  ///
+  /// The content travels inline as a JSON string inside the relay's outer
+  /// envelope, which is capped at 4 MiB of decoded payload (the relay's
+  /// default; ours runs without `RELAY_MAX_CT_MIB`). JSON escaping can double
+  /// the byte count in the pathological case (a file made of quotes or
+  /// backslashes), so 1 MiB is the largest cap that still cannot overflow the
+  /// envelope under any content — and it leaves room for the caption and any
+  /// image on the same message. Longer files are cut here and marked.
+  static const int maxBytes = 1024 * 1024;
 
   /// Appended to [PickedTextFile.text] when the cap cut the file, so the agent
   /// is never silently handed half of a file.
-  static const String truncationMarker =
-      '\n…[truncated: only the first 256 KB of this file is included]';
+  static final String truncationMarker =
+      '\n…[truncated: only the first ${maxBytes ~/ 1024} KB of this file is included]';
 
   @override
   Future<PickedTextFile?> pickTextFile() async {
