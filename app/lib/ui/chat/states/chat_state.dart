@@ -56,6 +56,12 @@ class ChatReady extends ChatState {
   /// dead end when pi-ask rejects an answer.
   final String? pendingUiError;
 
+  /// Command channel — the `/` palette's catalogue, as the Pi reported it for
+  /// this room. Empty until the first fetch resolves (and while offline), which
+  /// the composer renders as "no suggestions" rather than an error: typing the
+  /// name still works, since the Pi is the one that classifies it.
+  final List<WireCommand> commands;
+
   String? get queuedText =>
       queuedMessages.isEmpty ? null : queuedMessages.first.text;
 
@@ -70,6 +76,7 @@ class ChatReady extends ChatState {
     this.queuedMessages = const [],
     this.pendingUiRequest,
     this.pendingUiError,
+    this.commands = const [],
   });
 
   ChatReady copyWith({
@@ -88,6 +95,7 @@ class ChatReady extends ChatState {
     bool clearPendingUiRequest = false,
     String? pendingUiError,
     bool clearPendingUiError = false,
+    List<WireCommand>? commands,
   }) =>
       ChatReady(
         messages: messages ?? this.messages,
@@ -108,6 +116,7 @@ class ChatReady extends ChatState {
         pendingUiError: clearPendingUiError
             ? null
             : (pendingUiError ?? this.pendingUiError),
+        commands: commands ?? this.commands,
       );
 
   @override
@@ -122,7 +131,8 @@ class ChatReady extends ChatState {
       other.isWorking == isWorking &&
       other.queuedMessages == queuedMessages &&
       other.pendingUiRequest == pendingUiRequest &&
-      other.pendingUiError == pendingUiError;
+      other.pendingUiError == pendingUiError &&
+      other.commands == commands;
 
   @override
   int get hashCode => Object.hash(
@@ -136,6 +146,7 @@ class ChatReady extends ChatState {
         queuedMessages,
         pendingUiRequest,
         pendingUiError,
+        commands,
       );
 }
 

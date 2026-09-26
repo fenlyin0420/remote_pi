@@ -1,3 +1,4 @@
+import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/domain/value_objects/session_label.dart';
@@ -472,7 +473,47 @@ class ChatPage extends StatelessWidget {
           file: attachments.takeFileForSend(),
         );
       },
+      // Command channel. `/slash` and `!shell` go to the Pi instead of the
+      // model: the Pi classifies a slash name (builtin it can drive, extension
+      // command / skill / template over its RPC channel, or a refusal it
+      // explains), and runs a shell command in its own shell and cwd. Failures
+      // are the Pi's own words, so they are shown verbatim.
+      onRunCommand: actionsEnabled
+          ? (text) => _runCommand(context, vm, text)
+          : null,
+      onRunBash: actionsEnabled
+          ? (command, {excludeFromContext = false}) => vm.runBash(
+                command,
+                excludeFromContext: excludeFromContext,
+              )
+          : null,
+      commands: isReady ? state.commands : const [],
+      onCommandsRequested: actionsEnabled ? vm.refreshCommands : null,
     );
+  }
+
+  /// Runs a `/command` and surfaces the Pi's refusal (unknown name, desktop
+  /// only, needs a daemon room) as a toast. Success needs no toast: the command
+  /// either acts on the session (model switch, compaction notice) or answers in
+  /// the transcript.
+  static Future<void> _runCommand(
+    BuildContext context,
+    ChatViewModel vm,
+    String text,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await vm.runCommand(text);
+    } on ActionFailure catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          duration: const Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   /// Open the Camera / Photo Library / File sheet and drive the picker.

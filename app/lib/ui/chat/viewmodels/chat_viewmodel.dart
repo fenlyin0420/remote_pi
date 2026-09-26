@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -34,6 +35,14 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// while that screen is mounted (the tablet swaps VMs per session, the phone
   /// disposes on back).
   final VisibleSession _visibleSession;
+
+  /// Command channel — optional so the many test harnesses that construct this
+  /// VM keep working without an actions repository. `null` means the `/`
+  /// palette has no catalogue to offer; typing a command name still works,
+  /// because the Pi classifies it either way.
+  final IActionsRepository? _actions;
+
+  List<WireCommand> _commands = const [];
 
   StreamSubscription<List<MessageRecord>>? _msgsSub;
   StreamSubscription<RuntimeRecord>? _runtimeSub;
@@ -71,8 +80,9 @@ class ChatViewModel extends ViewModel<ChatState> {
     this._conn,
     this._prefs,
     this._storage,
-    this._visibleSession,
-  ) : super(const ChatReady(messages: [])) {
+    this._visibleSession, [
+    this._actions,
+  ]) : super(const ChatReady(messages: [])) {
     // Plan/32f — do NOT seed _streaming/_working from the shared SyncService
     // here: it may still be bound to the PREVIOUS chat (this VM is recreated
     // on session switch, before _bootstrap rebinds via activate). Seeding now
@@ -329,7 +339,44 @@ class ChatViewModel extends ViewModel<ChatState> {
       queuedMessages: _queuedMessages,
       pendingUiRequest: _pendingUiRequest,
       pendingUiError: _pendingUiError,
+      commands: _commands,
     );
+  }
+
+  // --- Command channel (`/slash` and `!shell`) ---
+
+  /// Fetches the `/` palette catalogue from the Pi (cached per peer+room by the
+  /// repository, so re-opening the palette is a local hit). Called when the
+  /// palette becomes visible rather than at bootstrap: the room may not be live
+  /// yet at mount, and a failure here is not worth an error banner — the user can
+  /// still type the command, and the next open retries.
+  Future<void> refreshCommands() async {
+    final actions = _actions;
+    if (actions == null || _disposed) return;
+    try {
+      final commands = await actions.listCommands();
+      if (_disposed) return;
+      _commands = commands;
+      _recompute();
+    } on ActionFailure {
+      // Best-effort: an empty palette is a missing convenience, not an error.
+    }
+  }
+
+  /// Runs a `/slash` line. Errors carry the Pi's own explanation (unknown name,
+  /// desktop-only, needs a daemon room) and are rethrown for the page to toast.
+  Future<void> runCommand(String text) async {
+    final actions = _actions;
+    if (actions == null) return;
+    await actions.runCommand(text);
+  }
+
+  /// Runs a `!shell` command on the Pi. The output arrives as a `bash` tool
+  /// card on the normal tool stream, not through this Future.
+  Future<void> runBash(String command, {bool excludeFromContext = false}) async {
+    final actions = _actions;
+    if (actions == null) return;
+    await actions.runBash(command, excludeFromContext: excludeFromContext);
   }
 
   // --- Commands (writer = SyncService; lifecycle = ConnectionManager) ---

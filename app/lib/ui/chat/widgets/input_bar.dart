@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/voice/states/voice_input_state.dart';
@@ -65,6 +66,24 @@ class InputBar extends StatefulWidget {
   /// button (offline/streaming); vision/has-image gating is internal.
   final VoidCallback? onOpenAttach;
 
+  /// Command channel — a `/slash` line was submitted. Null falls back to
+  /// [onSend] (so a host that hasn't opted in behaves exactly as before).
+  final void Function(String text)? onRunCommand;
+
+  /// Command channel — a `!shell` line was submitted, with the `!` already
+  /// stripped. [excludeFromContext] is true for the `!!` form, which mirrors
+  /// the desktop: the output is shown, the model doesn't see it.
+  final void Function(String command, {bool excludeFromContext})? onRunBash;
+
+  /// Command channel — the `/` palette's catalogue. Empty renders no palette,
+  /// so the composer looks unchanged until the Pi answers `commands_list`.
+  final List<WireCommand> commands;
+
+  /// Called once each time the `/` palette becomes visible, so the host can
+  /// (re)fetch the catalogue lazily — the room may not have been live when the
+  /// chat mounted.
+  final VoidCallback? onCommandsRequested;
+
   const InputBar({
     super.key,
     required this.onSend,
@@ -78,6 +97,10 @@ class InputBar extends StatefulWidget {
     this.onVoiceHint,
     this.attachment,
     this.onOpenAttach,
+    this.onRunCommand,
+    this.onRunBash,
+    this.commands = const [],
+    this.onCommandsRequested,
     this.disabled = false,
     this.streaming = false,
   });
@@ -97,6 +120,9 @@ class _InputBarState extends State<InputBar> {
   // handling would consume Enter before an ancestor ever sees it.
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onComposerKey);
   bool _empty = true;
+  /// Whether the `/` palette is on screen (mirrors `_commandQuery != null`, kept
+  /// as state so the visible/invisible transition drives one fetch).
+  bool _paletteVisible = false;
   bool _cancelArmed = false;
   // True while the hold-to-talk gesture is active. Lets `_beginVoice` tell
   // whether the user is still holding once `startRecording` resolves — if not
@@ -134,10 +160,19 @@ class _InputBarState extends State<InputBar> {
 
   void _onTextChange() {
     final next = _controller.text.isEmpty;
-    if (next == _empty) return;
+    final paletteVisible = _commandQuery != null;
+    final wasVisible = _paletteVisible;
+    // While the palette is hidden nothing on screen depends on the text, so a
+    // rebuild only matters when the composer becomes empty (or stops being).
+    // While it IS visible every keystroke re-filters it, so rebuild then too.
+    if (next == _empty && paletteVisible == wasVisible && !paletteVisible) return;
     setState(() {
       _empty = next;
+      _paletteVisible = paletteVisible;
     });
+    // Fetch lazily, on each appearance: the room may not have been live when
+    // the chat mounted, and the repository answers a repeat call from cache.
+    if (paletteVisible && !wasVisible) widget.onCommandsRequested?.call();
   }
 
   @override
@@ -154,8 +189,62 @@ class _InputBarState extends State<InputBar> {
     // Plan/30 — an attached image or file makes an empty-caption send valid.
     final hasAttachment = widget.attachment?.hasAttachment ?? false;
     if (text.isEmpty && !hasAttachment) return;
+    // Command channel — `/slash` and `!shell` are intercepted ONLY when the
+    // composer carries no attachment: an attachment makes the text a caption,
+    // and silently dropping a picked file to run a command would be worse than
+    // sending the literal text.
+    if (!hasAttachment && text.startsWith('!')) {
+      final command = text.replaceFirst(RegExp(r'^!+'), '').trim();
+      if (command.isEmpty) return;
+      _controller.clear();
+      final runBash = widget.onRunBash;
+      if (runBash == null) {
+        widget.onSend(text);
+        return;
+      }
+      // `!!cmd` mirrors the desktop: shown, but kept out of the model's context.
+      runBash(command, excludeFromContext: text.startsWith('!!'));
+      return;
+    }
+    if (!hasAttachment && text.startsWith('/') && text.length > 1) {
+      _controller.clear();
+      (widget.onRunCommand ?? widget.onSend)(text);
+      return;
+    }
     _controller.clear();
     widget.onSend(text);
+  }
+
+  /// The unfinished `/name` being typed, or null when the palette should stay
+  /// out of the way: once an argument follows the name the user knows what they
+  /// are doing and the popup would only cover the composer.
+  String? get _commandQuery {
+    final text = _controller.text;
+    if (!text.startsWith('/')) return null;
+    if (text.contains(' ') || text.contains('\n')) return null;
+    return text.substring(1);
+  }
+
+  /// Palette entries matching the typed prefix. Everything known is offered —
+  /// including what this room can't run — because "that exists but is desktop
+  /// only" is the answer the user needs, not silence.
+  List<WireCommand> get _paletteMatches {
+    final query = _commandQuery;
+    if (query == null) return const [];
+    final needle = query.toLowerCase();
+    return [
+      for (final command in widget.commands)
+        if (needle.isEmpty || command.name.toLowerCase().startsWith(needle))
+          command,
+    ];
+  }
+
+  /// Runs a palette entry. Tapping is "do it": the entry's description is the
+  /// confirmation, and a command needing arguments is typed instead (the Pi's
+  /// own usage error explains what it wants).
+  void _runPaletteEntry(WireCommand command) {
+    _controller.clear();
+    (widget.onRunCommand ?? widget.onSend)('/${command.name}');
   }
 
   void _editQueued(QueuedMsg item) {
@@ -371,6 +460,10 @@ class _InputBarState extends State<InputBar> {
                       ? () => widget.onClearQueued?.call(item.id)
                       : null,
                 ),
+              _CommandPalette(
+                entries: _paletteMatches,
+                onRun: _runPaletteEntry,
+              ),
               Row(
                 children: [
                   _QuickActionsButton(
@@ -604,6 +697,110 @@ class _QueuedMessagePreview extends StatelessWidget {
 }
 
 /// Compact Stop affordance shown beside Send while steering text is typed.
+/// Command channel — the `/` palette. A scrollable list above the composer,
+/// filtered by the name being typed. Entries this room cannot run stay visible
+/// (greyed, with the reason) so "why doesn't /login work here?" is answered on
+/// screen instead of by a failed round-trip.
+class _CommandPalette extends StatelessWidget {
+  /// Tall enough for ~4 rows; beyond that it scrolls, so the palette never
+  /// pushes the composer off a phone screen.
+  static const double maxHeight = 184;
+
+  final List<WireCommand> entries;
+  final void Function(WireCommand command) onRun;
+
+  const _CommandPalette({required this.entries, required this.onRun});
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) return const SizedBox.shrink();
+    final colors = context.colors;
+    return Container(
+      margin: const EdgeInsets.only(left: 4, right: 4, bottom: 10),
+      constraints: const BoxConstraints(maxHeight: maxHeight),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colors.border),
+      ),
+      child: ListView.separated(
+        shrinkWrap: true,
+        padding: EdgeInsets.zero,
+        itemCount: entries.length,
+        separatorBuilder: (_, _) => Divider(
+          height: 1,
+          thickness: 1,
+          color: colors.border.withValues(alpha: 0.5),
+        ),
+        itemBuilder: (context, index) {
+          final command = entries[index];
+          final unavailable = _unavailableReason(command);
+          final enabled = unavailable == null;
+          final nameColor = enabled ? colors.text : colors.muted2;
+          return InkWell(
+            key: Key('command-palette-${command.name}'),
+            onTap: enabled ? () => onRun(command) : null,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '/${command.name}',
+                    style: TextStyle(
+                      color: nameColor,
+                      fontFamily: kMonoFamily,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (command.description != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      command.description!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.muted2,
+                        fontSize: 11,
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
+                  if (!enabled) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      unavailable,
+                      style: TextStyle(
+                        color: colors.muted2,
+                        fontFamily: kMonoFamily,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Why an entry can't run from this room, or null when it can. Mirrors the
+  /// Pi's own `scope`/`supported` classification — the app never guesses.
+  static String? _unavailableReason(WireCommand command) {
+    if (command.supported) return null;
+    return switch (command.scope) {
+      CommandScope.tui => 'Pi TUI only',
+      CommandScope.daemon => 'needs a daemon room',
+      _ => 'unavailable here',
+    };
+  }
+}
+
 class _InlineStopButton extends StatelessWidget {
   const _InlineStopButton({required this.onTap});
 

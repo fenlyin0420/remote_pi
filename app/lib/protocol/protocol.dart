@@ -649,7 +649,13 @@ enum ActionName {
   // from Home (new-room button / room delete). Session-agnostic on the
   // Pi side (no Pi session required to answer them).
   roomCreate('room_create'),
-  roomDelete('room_delete');
+  roomDelete('room_delete'),
+  // Command channel — the composer's `/slash` and `!shell` input. `rawAction`
+  // stays available on the replies so a Pi that predates these names still
+  // demultiplexes by `in_reply_to`.
+  commandInvoke('command_invoke'),
+  bashExec('bash_exec'),
+  listCommands('list_commands');
 
   final String wire;
   const ActionName(this.wire);
@@ -840,6 +846,63 @@ class RoomDelete extends ClientMessage {
   };
 }
 
+/// Command channel — a `/slash` line typed in the composer.
+///
+/// [text] travels verbatim, including the leading `/`, and the Pi classifies
+/// it: builtins it can drive itself, extension commands / skills / prompt
+/// templates over its RPC channel, or an `action_error` naming the reason. The
+/// app deliberately doesn't parse or filter names — a Pi upgrade that adds one
+/// needs no app release, and an unknown name is answered by the party that
+/// actually knows the vocabulary.
+class CommandInvoke extends ClientMessage {
+  final String id;
+  final String text;
+  CommandInvoke({required this.id, required this.text});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'command_invoke',
+    'id': id,
+    'text': text,
+  };
+}
+
+/// Command channel — a `!shell` line. Runs in the Pi's own shell and cwd, so
+/// the result is what the desktop would have produced. `excludeFromContext`
+/// mirrors the TUI's `!!`: the output is shown but stays out of the model's
+/// context.
+class BashExec extends ClientMessage {
+  final String id;
+  final String command;
+  final bool excludeFromContext;
+  final int? timeoutMs;
+  BashExec({
+    required this.id,
+    required this.command,
+    this.excludeFromContext = false,
+    this.timeoutMs,
+  });
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'bash_exec',
+    'id': id,
+    'command': command,
+    if (excludeFromContext) 'exclude_from_context': true,
+    if (timeoutMs != null) 'timeout_ms': timeoutMs,
+  };
+}
+
+/// Command channel — asks for the `/` palette's catalogue (builtins the Pi
+/// implements plus its extension commands, skills and prompt templates).
+class ListCommands extends ClientMessage {
+  final String id;
+  ListCommands({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'list_commands', 'id': id};
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -877,6 +940,10 @@ sealed class ServerMessage {
       'action_ok' => ActionOk.fromJson(json),
       'action_error' => ActionError.fromJson(json),
       'models_list' => ModelsList.fromJson(json),
+      // Command channel — the `/` palette's catalogue. Only sent in reply to
+      // `list_commands`; the app renders the entries and greys out the ones
+      // this room can't run (`supported == false`).
+      'commands_list' => CommandsList.fromJson(json),
       // Plan/57 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1527,6 +1594,81 @@ class ModelsList extends ServerMessage {
       current: cur is Map<String, dynamic> ? WireModel.fromJson(cur) : null,
     );
   }
+}
+
+/// Command channel — reply to [ListCommands]: the `/` palette's catalogue.
+class CommandsList extends ServerMessage {
+  final String inReplyTo;
+  final List<WireCommand> commands;
+  CommandsList({required this.inReplyTo, required this.commands});
+
+  factory CommandsList.fromJson(Map<String, dynamic> j) => CommandsList(
+    inReplyTo: j['in_reply_to'] as String,
+    commands: (j['commands'] as List<dynamic>? ?? const <dynamic>[])
+        .map((e) => WireCommand.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
+}
+
+/// One `/` palette entry. `source` is where the name came from; `scope` says
+/// what it needs to run and `supported` says whether THIS room can run it, so
+/// the palette can grey an entry out instead of offering a dead command.
+class WireCommand {
+  final String name;
+  final String? description;
+  final CommandSource source;
+  final CommandScope scope;
+  final bool supported;
+
+  WireCommand({
+    required this.name,
+    this.description,
+    required this.source,
+    required this.scope,
+    required this.supported,
+  });
+
+  factory WireCommand.fromJson(Map<String, dynamic> j) => WireCommand(
+    name: j['name'] as String,
+    description: j['description'] as String?,
+    source: CommandSource.fromWire((j['source'] as String?) ?? ''),
+    scope: CommandScope.fromWire((j['scope'] as String?) ?? ''),
+    supported: (j['supported'] as bool?) ?? false,
+  );
+}
+
+/// Where a palette entry comes from.
+enum CommandSource {
+  builtin('builtin'),
+  extension('extension'),
+  prompt('prompt'),
+  skill('skill'),
+  unknown('');
+
+  final String wire;
+  const CommandSource(this.wire);
+
+  static CommandSource fromWire(String s) => values.firstWhere(
+    (v) => v.wire == s,
+    orElse: () => CommandSource.unknown,
+  );
+}
+
+/// What a palette entry needs: `all` runs anywhere, `daemon` needs the Pi's
+/// RPC channel (a supervisor-spawned daemon), `tui` is desktop-only.
+enum CommandScope {
+  all('all'),
+  daemon('daemon'),
+  tui('tui'),
+  unknown('');
+
+  final String wire;
+  const CommandScope(this.wire);
+
+  static CommandScope fromWire(String s) => values.firstWhere(
+    (v) => v.wire == s,
+    orElse: () => CommandScope.unknown,
+  );
 }
 
 class Bye extends ServerMessage {

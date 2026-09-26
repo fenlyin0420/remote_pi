@@ -96,6 +96,25 @@ abstract class IActionsRepository extends Repository {
   Future<void> setModel(String provider, String modelId);
   Future<void> setThinking(ThinkingLevel level);
 
+  /// Runs a `/slash` line on the Pi. [text] is sent verbatim, including the
+  /// leading `/` — the Pi owns the vocabulary, so a Pi upgrade that adds a
+  /// builtin or an extension command needs no app release. Throws
+  /// [ActionFailure] with the Pi's own reason when the name is unknown, is
+  /// desktop-only, or needs a daemon room.
+  Future<void> runCommand(String text);
+
+  /// Runs a shell command in the Pi's own shell and cwd (the `!` prefix).
+  /// The output comes back as a `bash` tool card on the normal tool stream —
+  /// this Future only reports whether the Pi accepted the command.
+  /// [excludeFromContext] mirrors the desktop's `!!`: the output is shown but
+  /// stays out of the model's context.
+  Future<void> runBash(String command, {bool excludeFromContext = false});
+
+  /// The `/` palette's catalogue: builtins the Pi implements plus this
+  /// session's extension commands, skills and prompt templates, each flagged
+  /// with whether the current room can run it. Cached per (peer, room).
+  Future<List<WireCommand>> listCommands({bool forceRefresh = false});
+
   /// Register (and start) a supervisor daemon for the directory [path].
   /// Throws [ActionFailure] with the exact error string
   /// `'directory_missing'` when the path is absent and [createIfMissing]
@@ -131,6 +150,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
 
   final Map<String, _Pending> _pending = {};
   final Map<String, ModelsCatalogue> _modelsCache = {};
+  final Map<String, List<WireCommand>> _commandsCache = {};
 
   /// Plan/28 Wave D — last model name we observed via `roomsStream`
   /// per session key. Lets us detect "the model changed externally"
@@ -203,6 +223,11 @@ class ActionsRepository extends Repository implements IActionsRepository {
             ModelsCatalogue(models: models, current: current),
           );
         }
+      case CommandsList(:final inReplyTo, :final commands):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) p.completer.complete(commands);
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -317,6 +342,37 @@ class ActionsRepository extends Repository implements IActionsRepository {
   }
 
   @override
+  Future<void> runCommand(String text) async {
+    await _dispatch<void>((id) => CommandInvoke(id: id, text: text));
+  }
+
+  @override
+  Future<void> runBash(String command, {bool excludeFromContext = false}) async {
+    await _dispatch<void>(
+      (id) => BashExec(
+        id: id,
+        command: command,
+        excludeFromContext: excludeFromContext,
+      ),
+    );
+  }
+
+  @override
+  Future<List<WireCommand>> listCommands({bool forceRefresh = false}) async {
+    final key = _sessionKey();
+    if (!forceRefresh) {
+      final cached = _commandsCache[key];
+      if (cached != null) return cached;
+    }
+    // Deliberately NOT cached implicitly: a failed fetch (offline, room gone)
+    // must leave the cache cold so the next palette open retries instead of
+    // showing an empty list forever.
+    final result = await _dispatch<List<WireCommand>>((id) => ListCommands(id: id));
+    _commandsCache[_sessionKey()] = result;
+    return result;
+  }
+
+  @override
   Future<ModelsCatalogue> listModels({bool forceRefresh = false}) async {
     final key = _sessionKey();
     if (!forceRefresh) {
@@ -372,6 +428,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
     _roomsSub?.cancel();
     _failAllPending('disposed');
     _modelsCache.clear();
+    _commandsCache.clear();
     _lastKnownModelName.clear();
     _activeRoomMetaController.close();
     super.dispose();

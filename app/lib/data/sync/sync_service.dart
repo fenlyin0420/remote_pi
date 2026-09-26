@@ -811,6 +811,11 @@ class SyncService extends Service {
       case ActionOk():
       case ActionError():
       case ModelsList():
+      // Command channel: the `/` palette catalogue is consumed by the
+      // ActionsRepository (it asked for it), the action replies with it, and a
+      // `!` shell execution rides the normal tool stream as a `bash` card.
+      // Nothing here belongs in the transcript.
+      case CommandsList():
         break;
     }
   }

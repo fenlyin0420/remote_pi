@@ -490,4 +490,156 @@ void main() {
       s.cm.dispose();
     });
   });
+
+  group('ActionsRepository — command channel', () {
+    test('runCommand() sends the line verbatim, leading slash included', () async {
+      final s = await _setup();
+      final future = s.repo.runCommand('/compact keep the notes');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as CommandInvoke;
+      expect(sent.text, '/compact keep the notes');
+      s.ch.push(
+        ActionOk(
+          inReplyTo: sent.id,
+          action: ActionName.commandInvoke,
+          rawAction: 'command_invoke',
+        ),
+      );
+      await future;
+      s.cm.dispose();
+    });
+
+    test("runCommand() surfaces the Pi's own refusal text", () async {
+      final s = await _setup();
+      final future = s.repo.runCommand('/settings');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as CommandInvoke;
+      s.ch.push(
+        ActionError(
+          inReplyTo: sent.id,
+          action: ActionName.commandInvoke,
+          rawAction: 'command_invoke',
+          error: '/settings is only available in the Pi TUI, not from the app',
+        ),
+      );
+      await expectLater(
+        future,
+        throwsA(
+          isA<ActionFailure>().having(
+            (e) => e.message,
+            'message',
+            contains('only available in the Pi TUI'),
+          ),
+        ),
+      );
+      s.cm.dispose();
+    });
+
+    test('runBash() strips nothing and forwards the exclusion flag', () async {
+      final s = await _setup();
+      final future = s.repo.runBash('git status', excludeFromContext: true);
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as BashExec;
+      expect(sent.command, 'git status');
+      expect(sent.excludeFromContext, isTrue);
+      final json = sent.toJson();
+      expect(json['exclude_from_context'], isTrue);
+      s.ch.push(
+        ActionOk(
+          inReplyTo: sent.id,
+          action: ActionName.bashExec,
+          rawAction: 'bash_exec',
+        ),
+      );
+      await future;
+      s.cm.dispose();
+    });
+
+    test('runBash() omits the flag when the output should reach the model', () async {
+      final s = await _setup();
+      final future = s.repo.runBash('ls');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as BashExec;
+      expect(sent.toJson().containsKey('exclude_from_context'), isFalse);
+      s.ch.push(
+        ActionOk(
+          inReplyTo: sent.id,
+          action: ActionName.bashExec,
+          rawAction: 'bash_exec',
+        ),
+      );
+      await future;
+      s.cm.dispose();
+    });
+
+    test('listCommands() parses the catalogue and caches it per session', () async {
+      final s = await _setup();
+      final first = s.repo.listCommands();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as ListCommands;
+      s.ch.push(
+        CommandsList(
+          inReplyTo: sent.id,
+          commands: [
+            WireCommand(
+              name: 'compact',
+              description: 'Compact the session context',
+              source: CommandSource.builtin,
+              scope: CommandScope.all,
+              supported: true,
+            ),
+            WireCommand(
+              name: 'deploy',
+              description: 'Ship it',
+              source: CommandSource.extension,
+              scope: CommandScope.daemon,
+              supported: false,
+            ),
+          ],
+        ),
+      );
+      final commands = await first;
+      expect(commands.map((c) => c.name), ['compact', 'deploy']);
+      expect(commands.last.supported, isFalse);
+      expect(commands.last.scope, CommandScope.daemon);
+
+      // Second call is a cache hit: no new frame on the wire.
+      final cached = await s.repo.listCommands();
+      expect(cached.map((c) => c.name), ['compact', 'deploy']);
+      expect(s.ch.sent, hasLength(1));
+
+      // …and forceRefresh bypasses it.
+      final refresh = s.repo.listCommands(forceRefresh: true);
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      expect(s.ch.sent, hasLength(2));
+      final second = s.ch.sent.last as ListCommands;
+      s.ch.push(CommandsList(inReplyTo: second.id, commands: const []));
+      expect(await refresh, isEmpty);
+      s.cm.dispose();
+    });
+
+    test('a failed listCommands() leaves the cache cold so the next open retries', () async {
+      final s = await _setup();
+      final first = s.repo.listCommands();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as ListCommands;
+      s.ch.push(
+        ActionError(
+          inReplyTo: sent.id,
+          action: ActionName.listCommands,
+          rawAction: 'list_commands',
+          error: 'offline',
+        ),
+      );
+      await expectLater(first, throwsA(isA<ActionFailure>()));
+
+      final retry = s.repo.listCommands();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      expect(s.ch.sent, hasLength(2), reason: 'the failure must not be cached');
+      final second = s.ch.sent.last as ListCommands;
+      s.ch.push(CommandsList(inReplyTo: second.id, commands: const []));
+      await retry;
+      s.cm.dispose();
+    });
+  });
 }
