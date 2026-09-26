@@ -267,6 +267,14 @@ void main() {
     expect(find.byKey(const Key('command-palette-compact')), findsNothing);
   });
 
+  testWidgets('Enter still submits while the palette is open', (tester) async {
+    final h = await pumpBar(tester, commands: catalogue);
+    await type(tester, '/compact');
+    expect(find.byKey(const Key('command-palette-compact')), findsOneWidget);
+    await submit(tester);
+    expect(h.commands, ['/compact']);
+  });
+
   testWidgets('the palette hides once arguments are typed', (tester) async {
     await pumpBar(tester, commands: catalogue);
     await type(tester, '/compact ');

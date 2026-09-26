@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
@@ -477,34 +479,39 @@ class ChatPage extends StatelessWidget {
       // model: the Pi classifies a slash name (builtin it can drive, extension
       // command / skill / template over its RPC channel, or a refusal it
       // explains), and runs a shell command in its own shell and cwd. Failures
-      // are the Pi's own words, so they are shown verbatim.
+      // are the Pi's own words, so they are shown verbatim — and both callbacks
+      // must swallow them, or a refused `!` would surface as an unhandled async
+      // error instead of a toast.
       onRunCommand: actionsEnabled
-          ? (text) => _runCommand(context, vm, text)
+          ? (text) => unawaited(_invoke(context, () => vm.runCommand(text)))
           : null,
       onRunBash: actionsEnabled
-          ? (command, {excludeFromContext = false}) => vm.runBash(
-                command,
-                excludeFromContext: excludeFromContext,
-              )
+          ? (command, {excludeFromContext = false}) => unawaited(
+              _invoke(
+                context,
+                () => vm.runBash(command, excludeFromContext: excludeFromContext),
+              ),
+            )
           : null,
       commands: isReady ? state.commands : const [],
       onCommandsRequested: actionsEnabled ? vm.refreshCommands : null,
     );
   }
 
-  /// Runs a `/command` and surfaces the Pi's refusal (unknown name, desktop
-  /// only, needs a daemon room) as a toast. Success needs no toast: the command
-  /// either acts on the session (model switch, compaction notice) or answers in
-  /// the transcript.
-  static Future<void> _runCommand(
+  /// Runs one command-channel call and surfaces the Pi's refusal (unknown name,
+  /// desktop only, needs a daemon room, offline) as a toast. Success needs no
+  /// toast: the command either acts on the session (model switch, compaction
+  /// notice) or answers in the transcript — a `!cmd`'s output arrives as a `bash`
+  /// tool card on the normal tool stream.
+  static Future<void> _invoke(
     BuildContext context,
-    ChatViewModel vm,
-    String text,
+    Future<void> Function() call,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await vm.runCommand(text);
+      await call();
     } on ActionFailure catch (e) {
+      if (!context.mounted) return;
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(
         SnackBar(
