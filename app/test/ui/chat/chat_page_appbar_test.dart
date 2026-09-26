@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -74,6 +75,11 @@ class _FakePicker implements IImagePickerService {
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
 
+class _FakeFilePicker implements ITextFilePickerService {
+  @override
+  dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
 void main() {
   late Directory dir;
   setUpAll(() async {
@@ -100,7 +106,7 @@ void main() {
       final actions = ActionsRepository(conn);
       final vm = ChatViewModel(read, sync, conn, prefs, _FakeStorage(), VisibleSession());
       final voice = VoiceInputViewModel(_FakeSpeech());
-      final attach = AttachmentViewModel(_FakePicker(), actions);
+      final attach = AttachmentViewModel(_FakePicker(), _FakeFilePicker(), actions);
       final sel = SessionSelection();
 
       await tester.pumpWidget(

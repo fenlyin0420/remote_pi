@@ -236,6 +236,7 @@ class SyncService extends Service {
   Future<void> sendMessage(
     String text, {
     MessageImage? image,
+    OutgoingFile? file,
     UserMessageStreamingBehavior? streamingBehavior,
   }) async {
     final epk = _activeEpk;
@@ -254,13 +255,21 @@ class SyncService extends Service {
           role: MsgRole.user,
           text: text,
           image: image,
+          // The Pi's path only arrives with the echo; the pending row shows
+          // the name so the bubble reads correctly while it is in flight.
+          file: file == null ? null : MessageFile(name: file.name),
           ts: now,
           pending: true,
           steering: isSteer,
         ),
       );
       if (!isSteer) {
-        _setWorking(t!, true, preview: _preview(text, image), replyTo: id);
+        _setWorking(
+          t!,
+          true,
+          preview: _preview(text, image, _filePreview(file)),
+          replyTo: id,
+        );
       }
       // Arm the no-echo backstop for this row. The timeout is keyed off the
       // row's `ts`, NOT online-ness: an offline "held pending" send is reaped
@@ -286,7 +295,7 @@ class SyncService extends Service {
     if (!isSteer && t != null) {
       _emitStreaming(t, StreamingMessage(inReplyTo: id));
     }
-    debugPrint('[msg-send] id=$id text=${_preview(text, image)}');
+    debugPrint('[msg-send] id=$id text=${_preview(text, image, _filePreview(file))}');
     await ch.send(
       UserMessage(
         id: id,
@@ -295,6 +304,9 @@ class SyncService extends Service {
         images: image == null
             ? null
             : [WireImage(data: image.data, mime: image.mime)],
+        files: file == null
+            ? null
+            : [WireFile(name: file.name, text: file.text)],
       ),
     );
   }
@@ -516,7 +528,13 @@ class SyncService extends Service {
         _applyThinking(t, inReplyTo, delta);
       case AgentDone(:final inReplyTo):
         _applyAgentDone(t, inReplyTo);
-      case UserInput(:final id, :final text, :final streamingBehavior):
+      case UserInput(
+        :final id,
+        :final text,
+        :final image,
+        :final file,
+        :final streamingBehavior,
+      ):
         if (t.queuedMessages.any((item) => item.id == id)) {
           _setQueuedMessages(t, [
             for (final item in t.queuedMessages)
@@ -526,7 +544,12 @@ class SyncService extends Service {
         if (streamingBehavior == UserMessageStreamingBehavior.steer) {
           _setActivity(m.epk, m.roomId, SessionActivity.working, preview: text);
         } else {
-          _setWorking(t, true, preview: _preview(text, null), replyTo: id);
+          _setWorking(
+            t,
+            true,
+            preview: _preview(text, _messageImage(image), _messageFile(file)),
+            replyTo: id,
+          );
           if (t.streaming?.inReplyTo != id) {
             _emitStreaming(t, StreamingMessage(inReplyTo: id));
           }
@@ -628,6 +651,7 @@ class SyncService extends Service {
         :final id,
         :final text,
         :final image,
+        :final file,
         :final streamingBehavior,
       ):
         // Echo dedupes against the optimistic row (same id): confirm it
@@ -646,15 +670,16 @@ class SyncService extends Service {
           MsgRole.user,
           id,
           (seq, existing) => existing != null
-              ? existing.copyWith(pending: false)
+              // The echo is where the Pi reports the path it saved an upload
+              // to, so merge it in rather than keeping the local name-only row.
+              ? existing.copyWith(pending: false, file: _messageFile(file))
               : MessageRecord(
                   id: id,
                   seq: seq,
                   role: MsgRole.user,
                   text: text,
-                  image: image == null
-                      ? null
-                      : MessageImage(data: image.data, mime: image.mime),
+                  image: _messageImage(image),
+                  file: _messageFile(file),
                   ts: DateTime.now(),
                 ),
         );
@@ -894,16 +919,15 @@ class SyncService extends Service {
     var seq = 0;
     for (final e in events) {
       switch (e) {
-        case UserInputEvt(:final id, :final text, :final image):
+        case UserInputEvt(:final id, :final text, :final image, :final file):
           out.add(
             MessageRecord(
               id: id,
               seq: seq++,
               role: MsgRole.user,
               text: text,
-              image: image == null
-                  ? null
-                  : MessageImage(data: image.data, mime: image.mime),
+              image: _messageImage(image),
+              file: _messageFile(file),
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
             ),
           );
@@ -1450,8 +1474,23 @@ class SyncService extends Service {
     return <String, dynamic>{};
   }
 
-  static String _preview(String text, MessageImage? image) {
+  /// Echo/history wire shape → the persisted+rendered shape (the content stays
+  /// on the Pi; only the name and the landed path come back).
+  static MessageFile? _messageFile(WireFile? file) =>
+      file == null ? null : MessageFile(name: file.name, path: file.path);
+
+  static MessageImage? _messageImage(WireImage? image) => image == null
+      ? null
+      : MessageImage(data: image.data, mime: image.mime);
+
+  /// Send-path projection: the preview only needs the name (the content is
+  /// not something we want to keep a second copy of in memory).
+  static MessageFile? _filePreview(OutgoingFile? file) =>
+      file == null ? null : MessageFile(name: file.name);
+
+  static String _preview(String text, MessageImage? image, MessageFile? file) {
     if (text.isEmpty && image != null) return '📷 Image';
+    if (text.isEmpty && file != null) return '📄 ${file.name}';
     return text.length <= 80 ? text : '${text.substring(0, 80)}…';
   }
 

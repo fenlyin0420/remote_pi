@@ -43,6 +43,38 @@ class MessageImage {
   int get hashCode => Object.hash(data, mime);
 }
 
+/// A text file a user message was sent with.
+///
+/// Unlike an image, the content never comes back: the Pi writes the file next
+/// to its own state dir and reports where, so the bubble only needs [path].
+class MessageFile {
+  /// File name as picked on the device.
+  final String name;
+
+  /// Absolute path on the Pi's machine, once it landed the file. Null while
+  /// the message is still pending (or when the Pi could not save it).
+  final String? path;
+
+  const MessageFile({required this.name, this.path});
+
+  @override
+  bool operator ==(Object other) =>
+      other is MessageFile && other.name == name && other.path == path;
+
+  @override
+  int get hashCode => Object.hash(name, path);
+}
+
+/// A text file on its way out: the bytes are read on the device and travel
+/// inline once. Never persisted — the Pi's echo replaces it with the landed
+/// [MessageFile] (name + path).
+class OutgoingFile {
+  final String name;
+  final String text;
+
+  const OutgoingFile({required this.name, required this.text});
+}
+
 /// Android-owned queued follow-up shown above the composer. Protocol-free
 /// domain value; SyncService maps wire items into this shape.
 class QueuedMsg {
@@ -79,12 +111,17 @@ class UserMsg extends ChatMessage {
   /// messages, which is every message before this feature.
   final MessageImage? image;
 
+  /// Optional uploaded text file (one max, never alongside an image). Carries
+  /// the name always and the Pi's path once it landed the file.
+  final MessageFile? file;
+
   const UserMsg({
     required super.id,
     required this.text,
     this.status = UserMsgStatus.confirmed,
     this.steering = false,
     this.image,
+    this.file,
   });
 
   UserMsg copyWith({UserMsgStatus? status, bool? steering}) => UserMsg(
@@ -93,6 +130,7 @@ class UserMsg extends ChatMessage {
     status: status ?? this.status,
     steering: steering ?? this.steering,
     image: image,
+    file: file,
   );
 
   @override
@@ -102,10 +140,11 @@ class UserMsg extends ChatMessage {
       other.text == text &&
       other.status == status &&
       other.steering == steering &&
-      other.image == image;
+      other.image == image &&
+      other.file == file;
 
   @override
-  int get hashCode => Object.hash(id, text, status, steering, image);
+  int get hashCode => Object.hash(id, text, status, steering, image, file);
 }
 
 class AssistantMsg extends ChatMessage {

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
@@ -55,8 +56,9 @@ class InputBar extends StatefulWidget {
   /// settings deep-link.
   final void Function(VoiceHint hint)? onVoiceHint;
 
-  /// Plan/30 — image-attachment ViewModel (preview state + model vision).
-  /// Null in tests / when attachments aren't wired.
+  /// Plan/30 — attachment ViewModel (preview state + model vision). Null in
+  /// tests / when attachments aren't wired. Holds one image **or** one text
+  /// file.
   final AttachmentViewModel? attachment;
 
   /// Plan/30 — open the Camera/Gallery sheet. Null disables the attach
@@ -149,9 +151,9 @@ class _InputBarState extends State<InputBar> {
 
   void _submit() {
     final text = _controller.text.trim();
-    // Plan/30 — an attached image makes an empty-caption send valid.
-    final hasImage = widget.attachment?.hasImage ?? false;
-    if (text.isEmpty && !hasImage) return;
+    // Plan/30 — an attached image or file makes an empty-caption send valid.
+    final hasAttachment = widget.attachment?.hasAttachment ?? false;
+    if (text.isEmpty && !hasAttachment) return;
     _controller.clear();
     widget.onSend(text);
   }
@@ -299,17 +301,20 @@ class _InputBarState extends State<InputBar> {
         voiceState is VoiceUnavailable &&
         voiceState.reason == VoiceUnavailableReason.unsupported;
 
-    // Plan/30 — attachment.
-    final hasImage = attachState is AttachmentAttached;
-    final visionBlocked = attachState?.attachBlockedByVision ?? false;
-    final hasContent = !_empty || hasImage;
+    // Plan/30 — attachment (one image or one text file).
+    final attached = attachState is AttachmentAttached;
+    final hasImage = attachState is AttachmentAttached && attachState.image != null;
+    final attachedFile = attachState is AttachmentAttached ? attachState.file : null;
+    final fileTruncated = attachedFile?.truncated ?? false;
+    final hasContent = !_empty || attached;
+    // Vision never gates the attach button itself: the sheet keeps the file
+    // option live and greys out camera/gallery instead.
     final attachEnabled =
         widget.onOpenAttach != null &&
         canInteract &&
         !widget.streaming &&
         !showStrip &&
-        !visionBlocked &&
-        !hasImage;
+        !attached;
 
     // Stay reachable for the whole turn, including while the agent is
     // working. Nothing in the sheet is blocked by an in-flight turn —
@@ -320,7 +325,7 @@ class _InputBarState extends State<InputBar> {
     // the moment the button vanished.
     final showQuickActions =
         _empty &&
-        !hasImage &&
+        !attached &&
         canInteract &&
         !showStrip &&
         hasQuickActions;
@@ -348,8 +353,14 @@ class _InputBarState extends State<InputBar> {
             children: [
               if (hasImage)
                 _AttachmentPreview(
-                  image: attachState.image,
-                  onRemove: widget.attachment!.removeImage,
+                  image: attachState.image!,
+                  onRemove: widget.attachment!.removeAttachment,
+                ),
+              if (attachedFile != null)
+                _FileAttachmentPreview(
+                  file: attachedFile,
+                  truncated: fileTruncated,
+                  onRemove: widget.attachment!.removeAttachment,
                 ),
               for (final item in widget.queuedMessages)
                 _QueuedMessagePreview(
@@ -401,7 +412,7 @@ class _InputBarState extends State<InputBar> {
                             ? 'Offline…'
                             : widget.streaming
                             ? 'Steer current response…'
-                            : hasImage
+                            : attached
                             ? 'Add a caption…'
                             : 'Send a message…',
                         hintStyle: TextStyle(
@@ -645,6 +656,82 @@ class _AttachButton extends StatelessWidget {
               : context.colors.muted.withValues(alpha: 0.35),
         ),
         onPressed: enabled ? onTap : null,
+      ),
+    );
+  }
+}
+
+/// The composer file preview: name, size, and an "X" to discard before
+/// sending. Sits in the same slot as the image thumbnail — one attachment per
+/// message.
+class _FileAttachmentPreview extends StatelessWidget {
+  const _FileAttachmentPreview({
+    required this.file,
+    required this.truncated,
+    required this.onRemove,
+  });
+
+  final PickedTextFile file;
+  final bool truncated;
+  final VoidCallback onRemove;
+
+  static String _size(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      key: const Key('attach-file-preview'),
+      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+        decoration: BoxDecoration(
+          color: colors.surface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.border),
+        ),
+        child: Row(
+          children: [
+            Icon(LucideIcons.fileText, size: 16, color: colors.accent),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                file.name,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 12,
+                  color: colors.text,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              truncated
+                  ? '${_size(file.byteLength)} · cut at limit'
+                  : _size(file.byteLength),
+              style: TextStyle(
+                fontFamily: kMonoFamily,
+                fontSize: 11,
+                color: colors.muted,
+              ),
+            ),
+            const SizedBox(width: 6),
+            GestureDetector(
+              key: const Key('attach-remove'),
+              onTap: onRemove,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(LucideIcons.x, size: 14, color: colors.muted),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

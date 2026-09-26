@@ -176,11 +176,13 @@ export type ClientMessage =
   | { type: "pair_request"; id: string; token: string; device_name: string }
   // Plan/30: optional `images` carry inline base64 attachments (one today).
   // Omitted entirely on text-only messages — the no-image path is unchanged.
+  // Text-file uploads ride `files` (the Pi lands them on disk).
   | {
       type: "user_message";
       id: string;
       text: string;
       images?: WireImage[];
+      files?: WireFile[];
       streaming_behavior?: StreamingBehavior;
     }
   | { type: "queued_message_set"; id: string; text: string }
@@ -221,6 +223,26 @@ export interface WireImage {
   mime: string;
 }
 
+/**
+ * Text-file upload carried on a `user_message` (app → Pi). The app decides
+ * what counts as text by inspecting the bytes — never the file name — so any
+ * decodable text file travels, extension or not.
+ *
+ * The Pi does not inline the content into the prompt: it writes the file next
+ * to its own state dir and tells the agent the absolute path, so the agent
+ * reads/edits it with its normal tools. The app → Pi leg carries `text`; the
+ * Pi → app legs (echo, history replay) carry `path` instead — the bytes are
+ * already on disk and never travel back.
+ */
+export interface WireFile {
+  /** File name as picked on the device (no directories). */
+  name: string;
+  /** UTF-8 content. App → Pi only. */
+  text?: string;
+  /** Absolute path on the Pi where the file landed. Pi → app only. */
+  path?: string;
+}
+
 export type Usage = { input_tokens: number; output_tokens: number };
 
 export type KnownErrorCode =
@@ -238,7 +260,9 @@ export type ErrorCode = KnownErrorCode | (string & {});
 export type SessionHistoryEvent =
   // Plan/30: `images` replayed in history so a re-sync rebuilds the image
   // bubble (the bytes live in `_messageBuffer`). Omitted on text-only inputs.
-  | { ts: number; type: "user_input"; id: string; text: string; images?: WireImage[] }
+  // `files` is re-derived from the upload notice embedded in the text, so it
+  // also survives a daemon restart (seeded from the session file).
+  | { ts: number; type: "user_input"; id: string; text: string; images?: WireImage[]; files?: WireFile[] }
   | {
       ts: number;
       type: "tool_request";
@@ -306,11 +330,13 @@ export type ServerMessage =
   // and `id` is the sender-provided id — Pi never re-generates it (lets
   // future dedup logic use id as a stable key). See plan/24 W2D fix.
   // Plan/30: `images` echoed back so every owner renders the same image bubble.
+  // `files` echoes back the landing path(s) so every owner shows the same chip.
   | {
       type: "user_message";
       id: string;
       text: string;
       images?: WireImage[];
+      files?: WireFile[];
       streaming_behavior?: StreamingBehavior;
     }
   | { type: "queued_message_state"; id?: string; text?: string; items?: QueuedMessageItem[] }

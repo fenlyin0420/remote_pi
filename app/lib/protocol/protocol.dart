@@ -432,6 +432,47 @@ class WireImage {
   int get hashCode => Object.hash(data, mime);
 }
 
+/// One text file carried on a `user_message`. Mirrors `WireFile` in
+/// `pi-extension/src/protocol/types.ts`.
+///
+/// The app sends `{ name, text }`; the Pi lands the file on its own machine and
+/// answers with `{ name, path }` (echo + history), so the bytes never travel
+/// back. Text-ness is decided app-side from the content — never the name.
+class WireFile {
+  /// File name as picked on the device (no directories).
+  final String name;
+
+  /// UTF-8 content. App → Pi only.
+  final String? text;
+
+  /// Absolute path on the Pi where the file landed. Pi → app only.
+  final String? path;
+
+  const WireFile({required this.name, this.text, this.path});
+
+  factory WireFile.fromJson(Map<String, dynamic> j) => WireFile(
+    name: (j['name'] as String?) ?? '',
+    text: j['text'] as String?,
+    path: j['path'] as String?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    if (text != null) 'text': text,
+    if (path != null) 'path': path,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is WireFile &&
+      other.name == name &&
+      other.text == text &&
+      other.path == path;
+
+  @override
+  int get hashCode => Object.hash(name, text, path);
+}
+
 enum UserMessageStreamingBehavior {
   steer;
 
@@ -463,11 +504,16 @@ class UserMessage extends ClientMessage {
   /// and stay forward-compatible. Omitted entirely when empty (retro-compat).
   final List<WireImage>? images;
 
+  /// Optional attached text files (one today, sent as a list for the same
+  /// forward-compat reason as [images]). Omitted entirely when empty.
+  final List<WireFile>? files;
+
   UserMessage({
     required this.id,
     required this.text,
     this.streamingBehavior,
     this.images,
+    this.files,
   });
 
   @override
@@ -479,6 +525,8 @@ class UserMessage extends ClientMessage {
       'streaming_behavior': streamingBehavior!.wireValue,
     if (images != null && images!.isNotEmpty)
       'images': images!.map((i) => i.toJson()).toList(),
+    if (files != null && files!.isNotEmpty)
+      'files': files!.map((f) => f.toJson()).toList(),
   };
 }
 
@@ -1052,6 +1100,15 @@ WireImage? _firstImage(dynamic raw) {
   return WireImage.fromJson(first.cast<String, dynamic>());
 }
 
+/// Parse an optional `files` array. Same one-per-message projection as
+/// [_firstImage].
+WireFile? _firstFile(dynamic raw) {
+  if (raw is! List || raw.isEmpty) return null;
+  final first = raw.first;
+  if (first is! Map) return null;
+  return WireFile.fromJson(first.cast<String, dynamic>());
+}
+
 class QueuedMessageItem {
   final String id;
   final String text;
@@ -1131,11 +1188,15 @@ class UserInput extends ServerMessage {
   /// Plan/30 — echoed-back attached image (the Pi rebroadcasts `images`).
   final WireImage? image;
 
+  /// Echoed-back uploaded file — name plus where the Pi landed it.
+  final WireFile? file;
+
   UserInput({
     required this.id,
     required this.text,
     this.streamingBehavior,
     this.image,
+    this.file,
   });
 
   factory UserInput.fromJson(Map<String, dynamic> j) => UserInput(
@@ -1145,6 +1206,7 @@ class UserInput extends ServerMessage {
       j['streaming_behavior'] as String?,
     ),
     image: _firstImage(j['images']),
+    file: _firstFile(j['files']),
   );
 }
 
@@ -1229,6 +1291,7 @@ sealed class SessionHistoryEvent {
         id: j['id'] as String,
         text: j['text'] as String,
         image: _firstImage(j['images']),
+        file: _firstFile(j['files']),
       ),
       'tool_request' => ToolRequestEvt(
         ts: ts,
@@ -1277,11 +1340,16 @@ class UserInputEvt extends SessionHistoryEvent {
   /// travel, so the bubble reconstructs on cold start / reconnect).
   final WireImage? image;
 
+  /// Text file replayed from history — name plus the Pi's path (the content
+  /// never leaves the Pi, so there is nothing else to replay).
+  final WireFile? file;
+
   const UserInputEvt({
     required super.ts,
     required this.id,
     required this.text,
     this.image,
+    this.file,
   });
 }
 

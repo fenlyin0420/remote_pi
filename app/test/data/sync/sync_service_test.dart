@@ -180,6 +180,93 @@ void main() {
     },
   );
 
+  test('a text file rides the wire as {name,text}, and the pending row shows the name', () async {
+    final s = await setup();
+    await s.sync.sendMessage(
+      'summarise',
+      file: const OutgoingFile(name: 'notes.md', text: '# hi'),
+    );
+    await _settle();
+
+    final frame = s.ch.sent.whereType<UserMessage>().single;
+    expect(frame.images, isNull);
+    expect(frame.files, hasLength(1));
+    expect(frame.files!.single.name, 'notes.md');
+    expect(frame.files!.single.text, '# hi');
+    expect(frame.files!.single.path, isNull, reason: 'the Pi decides the path');
+
+    final row = messages(s.epk).single;
+    expect(row.file?.name, 'notes.md');
+    expect(row.file?.path, isNull);
+    expect(row.pending, isTrue);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('the echo of an upload lands the Pi path on the same row (no duplicate)', () async {
+    final s = await setup();
+    await s.sync.sendMessage(
+      'summarise',
+      file: const OutgoingFile(name: 'notes.md', text: '# hi'),
+    );
+    await _settle();
+
+    final id = s.ch.sent.whereType<UserMessage>().last.id;
+    s.ch.push(
+      UserInput(
+        id: id,
+        text: 'summarise',
+        file: const WireFile(
+          name: 'notes.md',
+          path: '/home/p/.pi/remote/uploads/main/notes.md',
+        ),
+      ),
+    );
+    await _settle();
+
+    final m = messages(s.epk);
+    expect(m, hasLength(1), reason: 'echo dedupes by id');
+    expect(m.single.pending, isFalse);
+    expect(
+      m.single.file?.path,
+      '/home/p/.pi/remote/uploads/main/notes.md',
+      reason: 'the bubble can show where the file went',
+    );
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('session_history replays an upload as a name+path row', () async {
+    final s = await setup();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'sync1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(
+            ts: 10,
+            id: 'u1',
+            text: 'summarise',
+            file: WireFile(
+              name: 'report.csv',
+              path: '/home/p/.pi/remote/uploads/main/report.csv',
+            ),
+          ),
+          AgentMessageEvt(ts: 11, inReplyTo: 'u1', text: 'done'),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+
+    final user = messages(s.epk).firstWhere((m) => m.role == MsgRole.user);
+    expect(user.text, 'summarise');
+    expect(user.file?.name, 'report.csv');
+    expect(user.file?.path, '/home/p/.pi/remote/uploads/main/report.csv');
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test('optimistic send + echo dedupe → exactly one record', () async {
     final s = await setup();
     await s.sync.sendMessage('hello');

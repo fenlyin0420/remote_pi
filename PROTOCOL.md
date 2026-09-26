@@ -369,6 +369,58 @@ aceito nesta fatia por usar imagem comprimida (~150–400 KB). Histórico/
 
 ---
 
+## Arquivos de texto (upload)
+
+`user_message` aceita também um arquivo de texto (um por mensagem hoje),
+opcional e retrocompatível. O que conta como "texto" é decidido **pelo
+conteúdo, nunca pelo nome**: sem byte NUL e decodificável como UTF-8 (BOM
+opcional) ou UTF-16 (BOM obrigatório). `Makefile`, `id_rsa.pub`, `.log`,
+`.gitignore` ou config sem extensão valem; um `.txt` binário não. Teto de
+256 KB por arquivo (o app corta e marca o conteúdo).
+
+Ao contrário da imagem, o arquivo **não vira conteúdo do prompt**: o Pi grava
+no disco e passa ao agente o caminho absoluto, para ele ler/editar com as
+ferramentas normais (arquivo grande não custa token até ser aberto).
+
+### Wire
+
+ClientMessage `user_message` ganha `files?`:
+
+```jsonc
+{ "type": "user_message", "id": "msg-1", "text": "resume isto",
+  "files": [{ "name": "notas.md", "text": "# olá" }] }
+```
+
+`WireFile = { name: string, text?: string, path?: string }` — `text` só no
+sentido App→Pi; `path` só no sentido Pi→App (o conteúdo nunca volta). O echo
+ServerMessage `user_message` carrega `files` com o nome + caminho, e o evento
+`user_input` do `session_history` também, pra cada device renderizar o mesmo
+chip.
+
+### Mapeamento pro modelo
+
+O Pi grava cada arquivo em `<home>/.pi/remote/uploads/<room_id>/<nome>` (nome
+sanitizado a um único segmento; reenvio idêntico reusa o arquivo, nome
+diferente ganha sufixo `-1`, `-2`, …) e monta o content do SDK na ordem
+**avisos de upload → imagem(ns) → texto**:
+
+```text
+[Uploaded file: notas.md → /Users/p/.pi/remote/uploads/<room>/notas.md]
+```
+
+O aviso é a única fonte de verdade: o mapper de histórico o extrai de volta
+para `files` e o remove do texto, então um re-sync (ou um restart do daemon
+que semeia o espelho do arquivo de sessão) reconstrói o mesmo chip sem
+estado paralelo.
+
+### Capacidade do modelo
+
+Nenhuma: `vision` gateia só imagem. Arquivo de texto funciona em qualquer
+modelo, então o app mantém o anexo alcançável e desabilita apenas as opções
+Câmera / Galeria quando o modelo ativo não aceita imagem.
+
+---
+
 ## Mensagem enfileirada durante turn ativo
 
 Fila curta **Pi-side, em memória**, de propriedade do Android: enquanto há turn

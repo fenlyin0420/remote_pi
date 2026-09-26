@@ -1,5 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
+import 'package:app/ui/chat/widgets/file_bubble.dart';
 import 'package:app/ui/chat/widgets/image_bubble.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
@@ -23,8 +24,10 @@ class UserBubble extends StatelessWidget {
     final isFailed = message.status == UserMsgStatus.failed;
     final isSteering = message.steering;
     // Plan/30 — when an image is attached the bubble becomes an ImageBubble
-    // (thumbnail + caption); otherwise the existing text card.
+    // (thumbnail + caption); an uploaded text file gets a name+path card.
+    // Otherwise the existing text card.
     final image = message.image;
+    final file = message.file;
     final colors = context.colors;
     final typo = context.typo;
     return Align(
@@ -39,6 +42,12 @@ class UserBubble extends StatelessWidget {
               child: image != null
                   ? ImageBubble(
                       image: image,
+                      caption: message.text,
+                      isFailed: isFailed,
+                    )
+                  : file != null
+                  ? FileBubble(
+                      file: file,
                       caption: message.text,
                       isFailed: isFailed,
                     )

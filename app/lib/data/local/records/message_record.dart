@@ -17,6 +17,11 @@ class MessageRecord {
   /// Plan/30 — attached image (user messages only).
   final MessageImage? image;
 
+  /// Uploaded text file (user messages only): the name, plus the path the Pi
+  /// landed it at once the echo (or history) reported it. The content is not
+  /// persisted — it lives on the Pi.
+  final MessageFile? file;
+
   /// Tool request+result collapsed into one row (tool messages only).
   final ToolEventData? tool;
   final DateTime ts;
@@ -40,6 +45,7 @@ class MessageRecord {
     required this.role,
     this.text = '',
     this.image,
+    this.file,
     this.tool,
     required this.ts,
     this.pending = false,
@@ -52,6 +58,7 @@ class MessageRecord {
     int? seq,
     String? text,
     MessageImage? image,
+    MessageFile? file,
     ToolEventData? tool,
     bool? pending,
     bool? steering,
@@ -61,6 +68,7 @@ class MessageRecord {
     role: role,
     text: text ?? this.text,
     image: image ?? this.image,
+    file: file ?? this.file,
     tool: tool ?? this.tool,
     ts: ts,
     pending: pending ?? this.pending,
@@ -75,6 +83,8 @@ class MessageRecord {
     'role': role.name,
     'text': text,
     if (image != null) 'image': {'data': image!.data, 'mime': image!.mime},
+    if (file != null)
+      'file': {'name': file!.name, if (file!.path != null) 'path': file!.path},
     if (tool != null) 'tool': tool!.toJson(),
     'ts': ts.millisecondsSinceEpoch,
     'pending': pending,
@@ -85,6 +95,7 @@ class MessageRecord {
 
   factory MessageRecord.fromJson(Map<String, dynamic> j) {
     final imageRaw = j['image'];
+    final fileRaw = j['file'];
     final toolRaw = j['tool'];
     return MessageRecord(
       id: j['id'] as String,
@@ -98,6 +109,12 @@ class MessageRecord {
           ? MessageImage(
               data: imageRaw['data'] as String,
               mime: imageRaw['mime'] as String,
+            )
+          : null,
+      file: fileRaw is Map
+          ? MessageFile(
+              name: (fileRaw['name'] as String?) ?? '',
+              path: fileRaw['path'] as String?,
             )
           : null,
       tool: toolRaw is Map
@@ -121,6 +138,7 @@ class MessageRecord {
           status: pending ? UserMsgStatus.pending : UserMsgStatus.confirmed,
           steering: steering,
           image: image,
+          file: file,
         );
       case MsgRole.assistant:
         return AssistantMsg(id: id, text: text);

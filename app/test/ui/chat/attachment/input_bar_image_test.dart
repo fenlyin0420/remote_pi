@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
@@ -25,6 +26,16 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> pickFromCamera() async => next;
   @override
   Future<PickedImage?> pickFromGallery() async => next;
+}
+
+class _FakeFilePicker implements ITextFilePickerService {
+  PickedTextFile? next = const PickedTextFile(
+    name: 'server.log',
+    text: 'line1\n',
+    byteLength: 6,
+  );
+  @override
+  Future<PickedTextFile?> pickTextFile() async => next;
 }
 
 class _FakeActions implements IActionsRepository {
@@ -60,7 +71,7 @@ void main() {
   setUp(() {
     picker = _FakePicker();
     actions = _FakeActions();
-    vm = AttachmentViewModel(picker, actions);
+    vm = AttachmentViewModel(picker, _FakeFilePicker(), actions);
   });
 
   tearDown(() => vm.dispose());
@@ -93,19 +104,24 @@ void main() {
     expect(btn.onPressed, isNotNull);
   });
 
-  testWidgets('vision=false disables the attach button (#9)', (tester) async {
+  testWidgets('vision=false keeps the attach button live — only the image sources grey out (#9)', (
+    tester,
+  ) async {
     actions.catalogue = ModelsCatalogue(
       models: [_m(false)],
       current: _m(false),
     );
     // Recreate after the catalogue is set so the VM resolves vision=false.
-    vm = AttachmentViewModel(picker, actions);
+    vm = AttachmentViewModel(picker, _FakeFilePicker(), actions);
     await pumpBar(tester);
     await tester.pump(); // resolve vision
     final btn = tester.widget<IconButton>(
       find.byKey(const Key('input-bar-attach')),
     );
-    expect(btn.onPressed, isNull);
+    // A text file is fine on any model, so the entry point stays reachable;
+    // the sheet greys out Camera / Photo Library.
+    expect(btn.onPressed, isNotNull);
+    expect(vm.imageBlockedByVision, isTrue);
   });
 
   testWidgets('offline (null onOpenAttach) disables the attach button', (
@@ -141,6 +157,49 @@ void main() {
     await tester.tap(find.byKey(const Key('attach-remove')));
     await tester.pump();
     expect(find.byKey(const Key('attach-preview')), findsNothing);
+  });
+
+  testWidgets('a picked text file previews as a chip and is dispatchable', (
+    tester,
+  ) async {
+    MessageImage? sentImage;
+    OutgoingFile? sentFile;
+    String? sentText;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.bottomCenter,
+            child: InputBar(
+              attachment: vm,
+              onOpenAttach: () {},
+              onSend: (text) {
+                sentText = text;
+                sentImage = vm.takeImageForSend(); // mirrors chat_page wiring
+                sentFile = vm.takeFileForSend();
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await vm.pickTextFile();
+    await tester.pump();
+
+    expect(find.byKey(const Key('attach-file-preview')), findsOneWidget);
+    expect(find.text('server.log'), findsOneWidget);
+    expect(find.byKey(const Key('attach-preview')), findsNothing);
+
+    await tester.tap(find.byIcon(LucideIcons.send600));
+    await tester.pump();
+
+    expect(sentText, '');
+    expect(sentImage, isNull);
+    expect(sentFile?.name, 'server.log');
+    expect(sentFile?.text, 'line1\n');
+    expect(find.byKey(const Key('attach-file-preview')), findsNothing);
   });
 
   testWidgets(

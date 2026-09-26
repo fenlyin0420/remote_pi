@@ -453,30 +453,40 @@ class ChatPage extends StatelessWidget {
       // so a read() is enough here.
       voice: context.read<VoiceInputViewModel>(),
       onVoiceHint: (hint) => _handleVoiceHint(context, hint),
-      // Plan/30 — image attachments. takeImageForSend() reads + clears the
-      // attached image so the inline image rides along with the (optionally
-      // empty) caption. Attach-button gating by vision / already-attached is
-      // internal to InputBar; the host only gates by channel availability.
+      // Plan/30 — attachments: one image or one text file.
+      // takeImageForSend()/takeFileForSend() read + clear the attachment so it
+      // rides along with the (optionally empty) caption. Attach-button gating
+      // by vision / already-attached is internal to InputBar; the host only
+      // gates by channel availability.
       attachment: context.read<AttachmentViewModel>(),
       onOpenAttach: actionsEnabled
           ? () => _openAttach(context, context.read<AttachmentViewModel>())
           : null,
       onSend: (text) {
-        final image = context.read<AttachmentViewModel>().takeImageForSend();
-        vm.sendMessage(text, image: image);
+        final attachments = context.read<AttachmentViewModel>();
+        // Only one of the two is ever set (the attach button is disabled once
+        // something is attached).
+        vm.sendMessage(
+          text,
+          image: attachments.takeImageForSend(),
+          file: attachments.takeFileForSend(),
+        );
       },
     );
   }
 
-  /// Open the Camera/Gallery sheet and drive the picker. Captures the
-  /// messenger up front so a permission-denied hint can deep-link to Settings
-  /// after the async pick.
+  /// Open the Camera / Photo Library / File sheet and drive the picker.
+  /// Captures the messenger up front so a permission-denied hint can
+  /// deep-link to Settings after the async pick.
   static Future<void> _openAttach(
     BuildContext context,
     AttachmentViewModel vm,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
-    final source = await showAttachSheet(context);
+    final source = await showAttachSheet(
+      context,
+      imageBlocked: vm.imageBlockedByVision,
+    );
     if (source == null) return;
     AttachHint? hint;
     final sub = vm.hints.listen((h) => hint = h);
@@ -485,6 +495,8 @@ class ChatPage extends StatelessWidget {
         await vm.pickFromCamera();
       case AttachSource.gallery:
         await vm.pickFromGallery();
+      case AttachSource.file:
+        await vm.pickTextFile();
     }
     await Future<void>.delayed(Duration.zero); // flush the hint microtask
     await sub.cancel();
@@ -511,10 +523,20 @@ class ChatPage extends StatelessWidget {
             ),
           ),
         );
+      case AttachHint.notTextFile:
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'That file is not text — pick a text file (any name or extension).',
+            ),
+            duration: Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       case AttachHint.pickFailed:
         messenger.showSnackBar(
           const SnackBar(
-            content: Text("Couldn't attach that image."),
+            content: Text("Couldn't attach that file."),
             duration: Duration(seconds: 3),
             behavior: SnackBarBehavior.floating,
           ),

@@ -250,6 +250,7 @@ const {
   _handleControl,
   _routeClientMessageFrom,
   _deliverMeshMessageToAgentForTest,
+  _setUploadDirForTest,
   CTRL_PREFIX,
 } = indexModule;
 const { acquireCwdLock } = await import("./session/cwd_lock.js");
@@ -1985,6 +1986,112 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(echo?.inner).toMatchObject({ type: "user_message", id: "msg-txt", text: "hi" });
     expect(echo?.inner).not.toHaveProperty("images");
     expect(echo?.inner).not.toHaveProperty("streaming_behavior");
+  });
+
+  test("upload: a text file lands on disk, the agent gets its path, the echo carries the name+path", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const dir = mkdtempSync(join(tmpdir(), "pi-upload-test-"));
+    _setUploadDirForTest(dir);
+    try {
+      const sentToAgent: unknown[] = [];
+      _setPiForTest({
+        sendUserMessage: (c: unknown) => { sentToAgent.push(c); },
+        sendMessage: () => undefined,
+      });
+      const sendsBefore = relayRef.current!.send.mock.calls.length;
+      relayRef.current!.emit("message", JSON.stringify({
+        peer: "ownerA__1234567890",
+        ct: Buffer.from(JSON.stringify({
+          type: "user_message",
+          id: "msg-file",
+          text: "summarise this",
+          files: [{ name: "notes.md", text: "# hi\nthere" }],
+        })).toString("base64"),
+      }));
+      await new Promise<void>((r) => setImmediate(r));
+
+      // The notice precedes the caption, and the file really is on disk.
+      expect(sentToAgent).toHaveLength(1);
+      const content = sentToAgent[0] as Array<{ type: string; text?: string }>;
+      expect(content).toHaveLength(2);
+      expect(content[0].type).toBe("text");
+      expect(content[1]).toEqual({ type: "text", text: "summarise this" });
+      const notice = content[0].text ?? "";
+      const path = /→ (.+)\]$/.exec(notice.trimEnd())?.[1] ?? "";
+      expect(notice).toBe(`[Uploaded file: notes.md → ${path}]\n`);
+      expect(path.startsWith(dir)).toBe(true);
+      expect(readFileSync(path, "utf8")).toBe("# hi\nthere");
+
+      const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt);
+      const echo = sent.find((d) => d.inner.type === "user_message");
+      expect(echo?.inner).toMatchObject({
+        type: "user_message",
+        id: "msg-file",
+        text: "summarise this",
+        files: [{ name: "notes.md", path }],
+      });
+      // The bytes stay on the Pi — never echoed back on the wire.
+      expect(JSON.stringify(echo?.inner)).not.toContain("# hi");
+    } finally {
+      _setUploadDirForTest(undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload: name is sanitised to one path segment and a differing re-send gets a new file", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const dir = mkdtempSync(join(tmpdir(), "pi-upload-test-"));
+    _setUploadDirForTest(dir);
+    try {
+      _setPiForTest({ sendUserMessage: () => undefined, sendMessage: () => undefined });
+      const send = (id: string, name: string, text: string) => {
+        relayRef.current!.emit("message", JSON.stringify({
+          peer: "ownerA__1234567890",
+          ct: Buffer.from(JSON.stringify({
+            type: "user_message", id, text: "", files: [{ name, text }],
+          })).toString("base64"),
+        }));
+      };
+      send("up-1", "../../etc/passwd", "one");
+      await new Promise<void>((r) => setImmediate(r));
+      const roomDir = join(dir, readdirSync(dir)[0]!);
+      expect(readFileSync(join(roomDir, "passwd"), "utf8")).toBe("one");
+
+      // Same content again → idempotent (no duplicate file).
+      send("up-2", "passwd", "one");
+      await new Promise<void>((r) => setImmediate(r));
+      expect(readdirSync(roomDir)).toEqual(["passwd"]);
+
+      // Different content under the same name → suffixed, nothing overwritten.
+      send("up-3", "passwd", "two");
+      await new Promise<void>((r) => setImmediate(r));
+      expect(readFileSync(join(roomDir, "passwd-1"), "utf8")).toBe("two");
+      expect(readFileSync(join(roomDir, "passwd"), "utf8")).toBe("one");
+    } finally {
+      _setUploadDirForTest(undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("upload: history replay rebuilds the file list from the notice and strips it from the text", () => {
+    const path = "/home/p/.pi/remote/uploads/room1/report.csv";
+    const events = _mapAgentMessagesToEvents([
+      {
+        role: "user",
+        timestamp: 1700000000000,
+        content: [
+          { type: "text", text: `[Uploaded file: report.csv → ${path}]\n` },
+          { type: "text", text: "what changed?" },
+        ],
+      },
+    ] as never);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "user_input",
+      text: "what changed?",
+      files: [{ name: "report.csv", path }],
+    });
   });
 
   test(

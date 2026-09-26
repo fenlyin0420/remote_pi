@@ -16,6 +16,7 @@ import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
+import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
@@ -121,6 +122,10 @@ Future<void> setupDependencies() async {
   // dispose hook needed.
   _injector.addOther<IImagePickerService>(() => ImagePickerService());
 
+  // Text-file uploads — picks any file (never filtered by name) and keeps it
+  // only when its content is text. Stateless.
+  _injector.addOther<ITextFilePickerService>(() => TextFilePickerService());
+
   // Plan 31 — SSOT writer + read-only repos. SyncService is the SINGLE
   // mutator of the message/index/runtime boxes; the read repos only watch.
   _injector.addService<SyncService>(
@@ -189,11 +194,12 @@ Future<void> setupDependencies() async {
   _injector.addViewModel<VoiceInputViewModel>(
     () => VoiceInputViewModel(_injector.get<SpeechService>()),
   );
-  // Plan 30 — image attachment. New instance per chat mount; resolves model
+  // Plan 30 — attachments. New instance per chat mount; resolves model
   // vision via the shared ActionsRepository catalogue cache.
   _injector.addViewModel<AttachmentViewModel>(
     () => AttachmentViewModel(
       _injector.get<IImagePickerService>(),
+      _injector.get<ITextFilePickerService>(),
       _injector.get<IActionsRepository>(),
     ),
   );

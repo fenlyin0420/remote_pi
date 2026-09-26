@@ -65,6 +65,7 @@ import type {
   ServerMessage,
   SessionHistoryEvent,
   ThinkingLevel,
+  WireFile,
   WireImage,
   QueuedMessageItem,
 } from "./protocol/types.js";
@@ -649,23 +650,147 @@ function _filterInternalMessagesFromContext<T>(messages: T[] | undefined): T[] {
     : [];
 }
 
-function _contentFromUserMessage(
-  msg: ClientUserMessage,
-): Parameters<ExtensionAPI["sendUserMessage"]>[0] {
-  return msg.images && msg.images.length > 0
-    ? [
-        ...msg.images.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mime })),
-        { type: "text" as const, text: msg.text },
-      ]
-    : msg.text;
+// ── Uploaded text files (app → Pi) ───────────────────────────────────────────
+//
+// The app may attach a text file to a message. The Pi lands it under its own
+// state dir and hands the agent the absolute path — the content is NOT inlined
+// into the prompt, so the agent reads/edits it with its normal tools and a big
+// file costs nothing until it is actually opened.
+//
+// The notice is part of the agent's content, which means it also reaches the
+// session file. That is deliberate: the history mapper re-derives the `files`
+// list (and strips the notice out of the replayed text) from it, so a re-sync —
+// or a daemon restart that seeds the mirror from the session file — rebuilds
+// the same file bubble without any side-channel state. Keep the format and
+// UPLOAD_NOTICE_RE in sync.
+
+const UPLOAD_NOTICE_PREFIX = "[Uploaded file: ";
+const UPLOAD_NOTICE_RE = /^\[Uploaded file: (.+?) → (.+)\]\r?\n?/gm;
+
+/** `<home>/.pi/remote/uploads` — sibling of config.json / peers.json. */
+function _uploadRootDir(): string {
+  const dir = _uploadDirOverride ?? join(homedir(), ".pi", "remote", "uploads");
+  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { /* exists */ }
+  return dir;
 }
 
-function _echoUserMessage(msg: ClientUserMessage, forceSteer = false): void {
+let _uploadDirOverride: string | undefined;
+
+/** Test seam: land uploads in a temp dir instead of `~/.pi/remote/uploads`. */
+export function _setUploadDirForTest(dir?: string): void {
+  _uploadDirOverride = dir;
+}
+
+/**
+ * Reduce an app-supplied name to a single safe path segment: no directories
+ * (a leading `../` must never escape the upload dir), no control characters,
+ * no leading dots (`.`, `..`, hidden files), bounded length. The extension is
+ * preserved as-is — the app accepts files by content, not by name.
+ */
+function _safeUploadName(raw: unknown): string {
+  const base = typeof raw === "string" ? raw.split(/[\\/]/).pop() ?? "" : "";
+  const cleaned = base
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/^[.\s]+/, "")
+    .replace(/[\s]+$/, "");
+  return cleaned.slice(0, 120) || "uploaded-file";
+}
+
+/**
+ * Target path for an upload with a `text` payload: reuse the existing file
+ * when the content is byte-identical (a re-send after a reconnect is then
+ * idempotent instead of piling up duplicates), otherwise add `-1`, `-2`, …
+ */
+function _uniqueUploadPath(dir: string, name: string, text: string): string {
+  const first = join(dir, name);
+  if (!existsSync(first)) return first;
+  try {
+    if (readFileSync(first, "utf8") === text) return first;
+  } catch { /* unreadable → fall through and pick a fresh name */ }
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  for (let i = 1; i < 1000; i += 1) {
+    const candidate = join(dir, `${stem}-${i}${ext}`);
+    if (!existsSync(candidate)) return candidate;
+  }
+  return join(dir, `${stem}-${Date.now()}${ext}`);
+}
+
+/**
+ * Write every `files[]` entry of an incoming message to disk. Returns the
+ * landed `{ name, path }` pairs (the shape both the echo and the history
+ * replay speak). Throws when a write fails — the caller answers the app with
+ * an `error` frame instead of silently dropping the attachment.
+ */
+function _landUploadedFiles(msg: ClientUserMessage): WireFile[] {
+  const files = Array.isArray(msg.files) ? msg.files : [];
+  if (files.length === 0) return [];
+  const room = _myRoomId ?? "main";
+  const dir = join(_uploadRootDir(), room);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const landed: WireFile[] = [];
+  for (const file of files) {
+    if (!file || typeof file.text !== "string") {
+      console.error(`[remote-pi] skipped malformed upload id=${msg.id}`);
+      continue;
+    }
+    const name = _safeUploadName(file.name);
+    const path = _uniqueUploadPath(dir, name, file.text);
+    writeFileSync(path, file.text, { encoding: "utf8", mode: 0o600 });
+    landed.push({ name, path });
+  }
+  return landed;
+}
+
+function _uploadNotice(file: WireFile): string {
+  return `${UPLOAD_NOTICE_PREFIX}${file.name} → ${file.path ?? ""}]\n`;
+}
+
+/**
+ * Split the upload notices back out of a user message's text. Used by the
+ * history mapper (and the steer matcher, which must compare the text the user
+ * actually typed) so a replayed turn shows a file chip plus the caption
+ * instead of the raw notice line.
+ */
+function _splitUploadNotices(text: string): { text: string; files: WireFile[] } {
+  if (!text.includes(UPLOAD_NOTICE_PREFIX)) return { text, files: [] };
+  const files: WireFile[] = [];
+  const stripped = text.replace(UPLOAD_NOTICE_RE, (_match, name: string, path: string) => {
+    files.push({ name, path });
+    return "";
+  });
+  return { text: stripped, files };
+}
+
+function _contentFromUserMessage(
+  msg: ClientUserMessage,
+  landedFiles: WireFile[] = [],
+): Parameters<ExtensionAPI["sendUserMessage"]>[0] {
+  const notices = landedFiles.map(_uploadNotice);
+  const hasImages = !!msg.images && msg.images.length > 0;
+  // Text-only, no upload: hand over the bare string (byte-identical to before).
+  if (notices.length === 0 && !hasImages) return msg.text;
+  return [
+    ...notices.map((text) => ({ type: "text" as const, text })),
+    ...(hasImages
+      ? msg.images!.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mime }))
+      : []),
+    { type: "text" as const, text: msg.text },
+  ];
+}
+
+function _echoUserMessage(
+  msg: ClientUserMessage,
+  forceSteer = false,
+  landedFiles: WireFile[] = [],
+): void {
   _broadcastToActive({
     type: "user_message",
     id: msg.id,
     text: msg.text,
     ...(msg.images && msg.images.length > 0 ? { images: msg.images } : {}),
+    ...(landedFiles.length > 0 ? { files: landedFiles } : {}),
     ...(forceSteer || msg.streaming_behavior === "steer"
       ? { streaming_behavior: "steer" as const }
       : {}),
@@ -676,6 +801,7 @@ async function _deliverImageUserMessage(
   sender: PlainPeerChannel,
   msg: ClientUserMessage,
   shouldSteer: boolean,
+  landedFiles: WireFile[] = [],
 ): Promise<void> {
   const previewDelivery: ReceivedImagePreviewDelivery =
     shouldSteer || _currentTurnId !== null || _myRoomMeta?.working === true
@@ -702,7 +828,7 @@ async function _deliverImageUserMessage(
   if (seededTurnId) _currentTurnId = msg.id;
 
   const wake = _wakeAgent(
-    _contentFromUserMessage(msg),
+    _contentFromUserMessage(msg, landedFiles),
     `app user_message id=${msg.id} (+${msg.images?.length ?? 0} image)`,
     "steer",
   );
@@ -718,7 +844,7 @@ async function _deliverImageUserMessage(
   }
 
   if (shouldSteer) _trackPendingSteer(msg.id, msg.text);
-  _echoUserMessage(msg, shouldSteer);
+  _echoUserMessage(msg, shouldSteer, landedFiles);
 }
 
 // ── Cross-PC mesh wiring (plan/25 Wave B/C) ───────────────────────────────────
@@ -940,7 +1066,10 @@ function _consumePendingSteerForStartedUser(text: string): string | null {
 }
 
 function _broadcastConsumedSteerForUserContent(content: unknown): void {
-  const text = _stringifyContent(content);
+  // Upload notices are Pi-injected, not typed: compare the text the user
+  // actually sent, or a steered message carrying a file would never match its
+  // pending steer entry.
+  const text = _splitUploadNotices(_stringifyContent(content)).text;
   if (_lastConsumedSteerText === text) {
     _lastConsumedSteerText = null;
     return;
@@ -4685,6 +4814,22 @@ export function _routeClientMessageFrom(
       const requestedSteer = msg.streaming_behavior === "steer";
       const inferredBusySteer = !requestedSteer && _myRoomMeta?.working === true;
       const shouldSteer = requestedSteer || inferredBusySteer;
+      // Text-file uploads land on disk BEFORE the agent is woken, so the
+      // notice it receives can point at a file that already exists.
+      let landedFiles: WireFile[] = [];
+      try {
+        landedFiles = _landUploadedFiles(msg);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[remote-pi] failed landing uploaded file id=${msg.id}: ${detail}`);
+        sender.send({
+          type: "error",
+          code: "internal_error",
+          in_reply_to: msg.id,
+          message: `Could not save the uploaded file: ${detail}`,
+        });
+        break;
+      }
       // A reconnecting app can correctly send `steer` while our mirror has no
       // turn id (for example, the turn started while no owner was attached).
       // Also be defensive for clients that send a plain user_message while the
@@ -4692,7 +4837,7 @@ export function _routeClientMessageFrom(
       // rejects the message as a normal busy prompt. Seed a fallback id so
       // later chunks/done have a target instead of being dropped.
       if (msg.images && msg.images.length > 0) {
-        void _deliverImageUserMessage(sender, msg, shouldSteer).catch((error) => {
+        void _deliverImageUserMessage(sender, msg, shouldSteer, landedFiles).catch((error) => {
           const detail = error instanceof Error ? error.message : String(error);
           console.error(`[remote-pi] failed delivering image message id=${msg.id}: ${detail}`);
         });
@@ -4709,7 +4854,7 @@ export function _routeClientMessageFrom(
       // already running. This avoids a race where Remote Pi's mirror has not
       // seen turn_start/currentTurnId yet but the SDK is already busy.
       const wake = _wakeAgent(
-        msg.text,
+        _contentFromUserMessage(msg, landedFiles),
         `app user_message id=${msg.id}`,
         "steer",
       );
@@ -4724,7 +4869,7 @@ export function _routeClientMessageFrom(
         break;
       }
       if (shouldSteer) _trackPendingSteer(msg.id, msg.text);
-      _echoUserMessage(msg, shouldSteer);
+      _echoUserMessage(msg, shouldSteer, landedFiles);
       break;
     }
     case "approve_tool":
@@ -5318,13 +5463,18 @@ export function _mapAgentMessagesToEvents(
       // bytes are already in _messageBuffer; only attach `images` when present
       // so the text-only path stays byte-identical (no `images` key).
       const images = _imagesFromContent(m.content);
+      // Text-file uploads: the notice lives in the content (that is what the
+      // agent saw, and what the session file persisted), so the file list is
+      // re-derived from it and stripped out of the caption.
+      const split = _splitUploadNotices(_stringifyContent(m.content));
       const ev: SessionHistoryEvent = {
         ts,
         type: "user_input",
         id,
-        text: _stringifyContent(m.content),
+        text: split.text,
       };
       if (images.length > 0) ev.images = images;
+      if (split.files.length > 0) ev.files = split.files;
       events.push(ev);
     } else if (m.role === "assistant") {
       const content = Array.isArray(m.content) ? m.content : [];
