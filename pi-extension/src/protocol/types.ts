@@ -216,6 +216,12 @@ export type ClientMessage =
   | { type: "command_invoke"; id: string; text: string }
   | { type: "bash_exec"; id: string; command: string; exclude_from_context?: boolean; timeout_ms?: number }
   | { type: "list_commands"; id: string }
+  // Sent by `pi-supervisord`, not by a phone. The supervisor reads the daemon's
+  // stdout, where Pi prints an extension's notifications (the
+  // `extension_ui_request` frames of `ctx.ui.notify()`), and hands them back in
+  // so remote-pi can forward them to the paired owners. Only `method:"notify"`
+  // is ever bridged: a dialog needs an answer this channel cannot carry.
+  | { type: "rpc_ui_request"; id: string; method?: string; message?: string; notifyType?: "info" | "warning" | "error" }
   // Plan/57 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -403,6 +409,17 @@ export type ServerMessage =
   // (extension commands, prompt templates, skills). Additive: a client that
   // predates this type simply never asks for it.
   | { type: "commands_list"; in_reply_to: string; commands: WireCommand[] }
+  // Output of a command the phone asked for, on the channel extensions use to
+  // speak when they are not the TUI (`ctx.ui.notify()`), forwarded back by the
+  // supervisor. Deliberately the SAME shape as plan/57's extension_ui_request,
+  // so the app renders both through one path.
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "notify";
+      message: string;
+      notify_type?: "info" | "warning" | "error";
+    }
   // Plan/57 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.

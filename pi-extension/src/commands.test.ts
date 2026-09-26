@@ -602,3 +602,32 @@ describe("command_invoke — feedback", () => {
     }
   });
 });
+
+describe("rpc_ui_request — the supervisor's notify bridge", () => {
+  // The broadcast itself is covered by the extension suite's peer tests; what
+  // matters here is that the frame is accepted (no unsupported-message log, no
+  // error reply) with no owner attached either.
+  test("a bridged notify is accepted without an owner attached", () => {
+    const sender = makeSender();
+    route(
+      { type: "rpc_ui_request", id: "ui-1", method: "notify", message: "MCP: 3 servers ok" },
+      sender,
+    );
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  test("notify_type rides through when the extension set one", () => {
+    const sender = makeSender();
+    route(
+      { type: "rpc_ui_request", id: "ui-2", method: "notify", message: "careful", notifyType: "warning" },
+      sender,
+    );
+    expect(sender.sent).toHaveLength(0);
+  });
+
+  test("a notify with no message still maps to an empty frame", () => {
+    const sender = makeSender();
+    route({ type: "rpc_ui_request", id: "ui-3", method: "notify" }, sender);
+    expect(sender.sent).toHaveLength(0);
+  });
+});

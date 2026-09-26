@@ -155,6 +155,44 @@ export function busyTransition(line: string): boolean | null {
   return null;
 }
 
+/** A notification the child sent on Pi's extension-UI channel.
+ *
+ * `ctx.ui.notify()` is how extension commands answer when they are not the TUI
+ * (there it prints in the footer). The SDK marks it "fire and forget", so the
+ * daemon is the only place that can carry it back out: nothing else in the
+ * chain looks at the child's stdout. */
+export interface RpcUiEvent {
+  /** The request's own id (`crypto.randomUUID()` for a notify). */
+  id?: string;
+  method?: string;
+  message?: string;
+  notifyType?: "info" | "warning" | "error";
+}
+
+/**
+ * Maps an RPC stdout line to an extension-UI event, or null. Only the fields a
+ * consumer forwards are read; a malformed line is ignored like any other.
+ *
+ * `timeoutMs` is dropped on purpose: a notify needs no answer, and a dialog
+ * request is the wrong thing to surface as a notification.
+ */
+export function parseUiEventLine(line: string): RpcUiEvent | null {
+  let obj: unknown;
+  try { obj = JSON.parse(line); } catch { return null; }
+  const o = obj as {
+    type?: unknown; id?: unknown; method?: unknown; message?: unknown; notifyType?: unknown;
+  };
+  if (o.type !== "extension_ui_request") return null;
+  const ev: RpcUiEvent = {};
+  if (typeof o.id === "string") ev.id = o.id;
+  if (typeof o.method === "string") ev.method = o.method;
+  if (typeof o.message === "string") ev.message = o.message;
+  if (o.notifyType === "info" || o.notifyType === "warning" || o.notifyType === "error") {
+    ev.notifyType = o.notifyType;
+  }
+  return ev;
+}
+
 /** Parses an RPC `response` line into its id + the forwarded payload.
  *  Returns null for anything that isn't a response (events dominate the
  *  stream), so the id-correlation path stays cheap. */
@@ -437,7 +475,10 @@ export class RpcChild extends EventEmitter {
         pending.resolve(resp.response);
       }
     }
-    this.emit("stdout", line);
+    // The child's side of Pi's extension-UI channel rides the same stream:
+    // consumers that care (the supervisor's stdout bridge) get it as a second
+    // argument, everyone else keeps ignoring it.
+    this.emit("stdout", line, parseUiEventLine(line) ?? undefined);
   }
 
   /**

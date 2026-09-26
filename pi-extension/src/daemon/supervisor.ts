@@ -6,7 +6,7 @@ import { addDaemon, listDaemons, migrateRegistryNames, removeDaemon } from "./re
 import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
-import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
+import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions, type RpcUiEvent } from "./rpc_child.js";
 import {
   type ControlReply,
   type ControlRequest,
@@ -653,6 +653,25 @@ export class Supervisor {
     this.children.set(id, slot);
 
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
+    // Bridge the child's extension-UI notifications into its OWN stdin, where
+    // the extension (remote-pi) turns them into frames for the paired phone.
+    // The chain: an extension command calls `ctx.ui.notify()` → the child prints
+    // `extension_ui_request` on stdout → this sends it back in as
+    // `rpc_ui_request` → remote-pi broadcasts it to the owners. Nobody else
+    // reads the child's stdout, so a notification that stops here is lost the
+    // way the phone saw it: a command that answers nothing.
+    child.on("stdout", (_line: string, ui?: RpcUiEvent) => {
+      if (!ui) return;
+      if (ui.method === "notify") {
+        child.sendCommand({ type: "rpc_ui_request", ...ui });
+        return;
+      }
+      // A dialog needs a real answer and this channel has no way back, so it is
+      // refused out loud rather than left hanging.
+      process.stderr.write(
+        `[${cwd}] [remote-pi-supervisord] refused extension UI request "${ui.method ?? "?"}" (only notify can be forwarded)\n`,
+      );
+    });
     child.spawn();
   }
 

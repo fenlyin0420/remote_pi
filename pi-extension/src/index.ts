@@ -4799,6 +4799,21 @@ export function _routeClientMessageFrom(
     _handleListCommands(sender, msg);
     return;
   }
+  // The daemon's own extension output, bridged back in by the supervisor (see
+  // its stdout hook). Broadcast rather than answered: it is a notification
+  // about work already done, not a reply. No `_pi` need — this path is exactly
+  // what makes a command answer in a room whose session is otherwise idle.
+  if (msg.type === "rpc_ui_request") {
+    console.error(`[remote-pi] notify → app: ${(msg.message ?? "").slice(0, 120)}`);
+    _broadcastToActive({
+      type: "extension_ui_request",
+      id: msg.id,
+      method: "notify",
+      message: msg.message ?? "",
+      ...(msg.notifyType === undefined ? {} : { notify_type: msg.notifyType }),
+    });
+    return;
+  }
   if (!_pi) return;
   switch (msg.type) {
     case "queued_message_set": {
