@@ -21,6 +21,7 @@ vi.mock("./daemon/client.js", () => ({
 }));
 
 const indexModule = await import("./index.js");
+const { createUiNotifyCapture } = await import("./ui_notify_capture.js");
 const {
   BUILTIN_COMMANDS,
   BASH_OUTPUT_MAX_CHARS,
@@ -32,8 +33,6 @@ const {
   _setPiForTest,
   _setMessageBufferForTest,
   _getMessageBufferForTest,
-  _parseNotifyMessage,
-  NOTIFY_MARKER,
 } = indexModule;
 
 // ── Harness ───────────────────────────────────────────────────────────────────
@@ -83,30 +82,6 @@ function route(msg: unknown, sender: Sent, ctx: unknown = CTX): void {
   );
 }
 
-/**
- * Captures the handlers the extension registers for one event, so the branch
- * under test can be driven directly (the pure-function level of the notify
- * swallow).
- */
-function captureHandlers(event: "input") {
-  const handlers: Array<(e: unknown, ctx?: unknown) => unknown> = [];
-  const pi = {
-    on: (name: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
-      if (name === event) handlers.push(handler);
-    },
-    registerCommand: () => undefined,
-    registerTool: () => undefined,
-    registerShortcut: () => undefined,
-    registerFlag: () => undefined,
-    getFlag: () => undefined,
-    registerMessageRenderer: () => undefined,
-    sendMessage: () => undefined,
-    sendUserMessage: () => undefined,
-  } as unknown as Parameters<typeof indexModule.default>[0];
-  indexModule.default(pi);
-  return handlers;
-}
-
 beforeEach(() => {
   h.callSupervisor.mockReset();
   h.callSupervisor.mockResolvedValue({ id: "daemon-1", delivered: true });
@@ -116,6 +91,88 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env["REMOTE_PI_DAEMON"];
+});
+
+describe("notify capture — other extensions' notifications", () => {
+  /** Build a pi whose handlers for one event we can drive directly. */
+  function harness(send: (m: unknown) => void) {
+    const handlers: Array<(e: unknown, ctx: unknown) => unknown> = [];
+    const pi = {
+      on: (_n: string, h: (e: unknown, ctx: unknown) => unknown) => {
+        handlers.push(h);
+        return () => undefined;
+      },
+    };
+    const capture = createUiNotifyCapture(pi as never, send as never);
+    return { handlers, capture };
+  }
+
+  test("a notification from another extension is relayed and still reaches the desktop", () => {
+    const sent: unknown[] = [];
+    const desktop: string[] = [];
+    const ui = { notify: (m: string) => { desktop.push(m); } };
+    const { handlers } = harness((m) => sent.push(m));
+    handlers[0]!({}, { ui });
+    // Another extension now calls notify through the shared context.
+    ui.notify("MCP Server Status: ok", "info");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "extension_ui_request",
+      method: "notify",
+      message: "MCP Server Status: ok",
+      notify_type: "info",
+    });
+    // The desktop UI must not lose its notification to the relay.
+    expect(desktop).toEqual(["MCP Server Status: ok"]);
+  });
+
+  test("arming is idempotent — repeated contexts do not double-send", () => {
+    const sent: unknown[] = [];
+    const ui = { notify: () => undefined };
+    const { handlers, capture } = harness((m) => sent.push(m));
+    for (const h of handlers) h({}, { ui });
+    ui.notify("once", "info");
+    expect(sent).toHaveLength(1);
+    expect(capture!.forwardedCount).toBe(1);
+  });
+
+  test("an unknown notify level degrades to info, never an unrenderable frame", () => {
+    const sent: Array<{ notify_type?: string }> = [];
+    const ui = { notify: () => undefined };
+    const { handlers } = harness((m) => sent.push(m as { notify_type?: string }));
+    handlers[0]!({}, { ui });
+    ui.notify("odd", "chartreuse");
+    expect(sent[0]?.notify_type).toBe("info");
+  });
+
+  test("a relay failure never swallows the desktop notification", () => {
+    const desktop: string[] = [];
+    const ui = { notify: (m: string) => { desktop.push(m); } };
+    const { handlers } = harness(() => { throw new Error("relay down"); });
+    handlers[0]!({}, { ui });
+    expect(() => ui.notify("still visible", "info")).not.toThrow();
+    expect(desktop).toEqual(["still visible"]);
+  });
+
+  test("dispose restores the original notify", () => {
+    const sent: unknown[] = [];
+    const ui = { notify: () => undefined };
+    const { handlers, capture } = harness((m) => sent.push(m));
+    handlers[0]!({}, { ui });
+    capture!.dispose();
+    ui.notify("after dispose", "info");
+    expect(sent).toHaveLength(0);
+  });
+
+  test("inert when the context exposes no notify (no throw, nothing sent)", () => {
+    const sent: unknown[] = [];
+    const { handlers, capture } = harness((m) => sent.push(m));
+    handlers[0]!({}, { ui: {} });
+    handlers[0]!({}, { ui: undefined });
+    handlers[0]!({}, {});
+    expect(sent).toHaveLength(0);
+    expect(capture!.armed).toBe(false);
+  });
 });
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -629,69 +686,3 @@ describe("command_invoke — feedback", () => {
   });
 });
 
-describe("notify bridge — the supervisor's marker", () => {
-  const marker = `${NOTIFY_MARKER}abc-123\nwarning\nthe output`;
-
-  test("a marked message is recognised, with its id, level and text", () => {
-    expect(_parseNotifyMessage({ type: "user_message", id: "m1", text: marker })).toEqual({
-      id: "abc-123",
-      level: "warning",
-      text: "the output",
-    });
-  });
-
-  test("an empty level is fine (notify without a type)", () => {
-    const raw = `${NOTIFY_MARKER}n1\n\nplain`;
-    expect(_parseNotifyMessage({ type: "user_message", id: "m2", text: raw })).toEqual({
-      id: "n1",
-      text: "plain",
-    });
-  });
-
-  test("multi-line output survives intact", () => {
-    const raw = `${NOTIFY_MARKER}n1\ninfo\nline1\nline2\nline3`;
-    expect(_parseNotifyMessage({ type: "user_message", id: "m3", text: raw })?.text)
-      .toBe("line1\nline2\nline3");
-  });
-
-  test("ordinary input is not a notify", () => {
-    expect(_parseNotifyMessage({ type: "user_message", id: "m4", text: "hello" })).toBeNull();
-    expect(_parseNotifyMessage({ type: "user_message", id: "m5", text: "" })).toBeNull();
-    expect(_parseNotifyMessage({ type: "ping", id: "m6" })).toBeNull();
-  });
-
-  test("a trailing marker with no fields still yields an empty notice", () => {
-    expect(_parseNotifyMessage({ type: "user_message", id: "m7", text: NOTIFY_MARKER }))
-      .toEqual({ id: "", text: "" });
-  });
-
-  test("it routes to the owners as extension_ui_request, and is not a reply", () => {
-    const sender = makeSender();
-    route({ type: "user_message", id: "m8", text: marker }, sender);
-    // No owner attached in this harness → nothing to send, and above all no
-    // action_error: a notify is broadcast, never answered.
-    expect(sender.sent).toHaveLength(0);
-  });
-});
-
-describe("notify bridge — the input handler swallows it", () => {
-  test("a marked prompt never reaches the model", async () => {
-    // This is the half that matters for correctness: without it the notify is
-    // delivered as a normal user message and the agent answers /mcp's output.
-    const handlers = captureHandlers("input");
-    const result = handlers[0]!(
-      { type: "input", text: `${NOTIFY_MARKER}n1\ninfo\nMCP Server Status: ok`, source: "rpc" },
-      { abort: () => undefined },
-    );
-    expect(result).toEqual({ action: "handled" });
-  });
-
-  test("ordinary input still falls through to the normal path", () => {
-    const handlers = captureHandlers("input");
-    const result = handlers[0]!(
-      { type: "input", text: "hello", source: "rpc" },
-      { abort: () => undefined },
-    );
-    expect(result).toBeUndefined();
-  });
-});

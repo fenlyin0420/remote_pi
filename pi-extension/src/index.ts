@@ -77,6 +77,7 @@ import {
   createExtensionUiBridge,
   type ExtensionUiBridge,
 } from "./extension_ui_bridge.js";
+import { createUiNotifyCapture as _createUiNotifyCapture, type UiNotifyCapture as _UiNotifyCapture } from "./ui_notify_capture.js";
 import { roomIdFor } from "./rooms.js";
 import { registerAgentTools } from "./session/tools.js";
 import { formatPeerInventory } from "./session/peer_inventory.js";
@@ -102,13 +103,11 @@ import { addDaemon, listDaemons, removeDaemon } from "./daemon/registry.js";
 import { daemonIdForCwd } from "./daemon/id.js";
 import { callSupervisor, supervisorOnline, SupervisorOfflineError } from "./daemon/client.js";
 import {
-  NOTIFY_MARKER,
   type ControlRequest,
   type DaemonInfo,
   type RpcCommandWire,
   type RpcResponseWire,
 } from "./daemon/control_protocol.js";
-export { NOTIFY_MARKER };
 import { EXIT_DAEMON_FRESH_SESSION } from "./daemon/rpc_child.js";
 import { installService, uninstallService, linkCliBinaries, unlinkCliBinaries, LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK_NAME } from "./daemon/install.js";
 import {
@@ -1262,6 +1261,13 @@ let _pi: ExtensionAPI | null = null;
 // extension factory wires it (and null if the SDK exposes no events bus).
 let _extensionUiBridge: ExtensionUiBridge | null = null;
 
+/**
+ * Captures `ctx.ui.notify()` calls made by OTHER extensions in this process and
+ * relays them to the paired app. See `ui_notify_capture.ts` for why this is done
+ * in-process rather than over the daemon's stdio.
+ */
+let _uiNotifyCapture: _UiNotifyCapture | null = null;
+
 let _stopAutoListener: (() => void) | null = null;
 
 // Cached keypair (loaded once, reused across start/pair cycles)
@@ -2367,6 +2373,15 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   _extensionUiBridge?.dispose();
   _extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
 
+  // Command output reaches the phone through here: extensions answer a slash
+  // command with `ctx.ui.notify(...)` rather than by printing, and that output
+  // used to die inside the daemon. Wrap the session's shared UI context so those
+  // calls are mirrored to the app (and still shown on the desktop).
+  _uiNotifyCapture?.dispose();
+  _uiNotifyCapture = _createUiNotifyCapture(pi, _broadcastToActive, (text) => {
+    console.error(`[remote-pi] notify → app: ${text.slice(0, 120)}`);
+  });
+
   // Plano 19: ensure ~/.pi/remote/{sessions,skills}/ exist and deploy the
   // agent-network skill on first load. resources_discover lets Pi find it.
   try {
@@ -2411,14 +2426,6 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // Checked first, before the peer-broadcast path, and regardless of source.
     if (event.text.startsWith(CTRL_PREFIX)) {
       void _handleControl(event.text.slice(CTRL_PREFIX.length).trim());
-      return { action: "handled" } as const;
-    }
-    // A daemon notification the supervisor injected (see NOTIFY_MARKER). It has
-    // already been broadcast to the owners by the time the prompt gets here, so
-    // this only has to keep it out of the model and out of the transcript:
-    // swallowing it is what stops an output like `/mcp`'s from becoming a turn
-    // the agent answers.
-    if (event.text.startsWith(NOTIFY_MARKER)) {
       return { action: "handled" } as const;
     }
     if (!_anyPeerActive()) return;
@@ -2679,6 +2686,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // bridge here; fresh-module hosts already created theirs in the factory.
     if (!_extensionUiBridge) {
       _extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
+      _uiNotifyCapture = _createUiNotifyCapture(pi, _broadcastToActive, (text) => {
+        console.error(`[remote-pi] notify → app: ${text.slice(0, 120)}`);
+      });
     }
     // Rearm a reused-but-disposed instance. The session_shutdown teardown (below)
     // sets _disposed=true assuming the host re-evaluates THIS module fresh for the
@@ -2782,6 +2792,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // module instances create their bridge in the factory.
     _extensionUiBridge?.dispose();
     _extensionUiBridge = null;
+    _uiNotifyCapture?.dispose();
+    _uiNotifyCapture = null;
     // Drop captured ctxs immediately. On module-reuse hosts the same instance
     // survives session replacement; leaving `_lastCtx` pointing at the now-
     // stale command ctx is what crashed pi in _refreshFooter on peer reconnect
@@ -4748,32 +4760,6 @@ function _abortCurrentTurn(
   return false;
 }
 
-/**
- * Recognises a notify the supervisor injected (see {@link NOTIFY_MARKER}).
- *
- * Shape: `<marker><id>\n<level or empty>\n<text>`. The id is the notify's own,
- * so the app can dedupe/settle frames the way it does for ask-user ones.
- * Returns null for anything else, including ordinary user text.
- */
-export function _parseNotifyMessage(
-  msg: ClientMessage,
-): { id: string; text: string; level?: "info" | "warning" | "error" } | null {
-  if (msg.type !== "user_message") return null;
-  const raw = msg.text;
-  if (!raw.startsWith(NOTIFY_MARKER)) return null;
-  const rest = raw.slice(NOTIFY_MARKER.length);
-  const firstBreak = rest.indexOf("\n");
-  const id = firstBreak === -1 ? rest : rest.slice(0, firstBreak);
-  const afterId = firstBreak === -1 ? "" : rest.slice(firstBreak + 1);
-  const secondBreak = afterId.indexOf("\n");
-  const levelRaw = secondBreak === -1 ? afterId : afterId.slice(0, secondBreak);
-  const text = secondBreak === -1 ? "" : afterId.slice(secondBreak + 1);
-  const level = levelRaw === "info" || levelRaw === "warning" || levelRaw === "error"
-    ? levelRaw
-    : undefined;
-  return level === undefined ? { id, text } : { id, text, level };
-}
-
 export function _routeClientMessageFrom(
   sender: PlainPeerChannel,
   msg: ClientMessage,
@@ -4839,22 +4825,6 @@ export function _routeClientMessageFrom(
   }
   if (msg.type === "list_commands") {
     _handleListCommands(sender, msg);
-    return;
-  }
-  // The daemon's own extension output, bridged back in by the supervisor as a
-  // MARKED user message (NOTIFY_MARKER). Handled here, before the pi-binding
-  // guard and before the user_message case, because a room with no live session
-  // is exactly when a command's output still has to reach the phone.
-  const notify = _parseNotifyMessage(msg);
-  if (notify !== null) {
-    console.error(`[remote-pi] notify → app: ${notify.text.slice(0, 120)}`);
-    _broadcastToActive({
-      type: "extension_ui_request",
-      id: notify.id,
-      method: "notify",
-      message: notify.text,
-      ...(notify.level === undefined ? {} : { notify_type: notify.level }),
-    });
     return;
   }
   if (!_pi) return;

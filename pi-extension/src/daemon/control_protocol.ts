@@ -15,24 +15,6 @@
 import type { CronJob } from "./cron_registry.js";
 import type { CronLogEntry } from "./cron_log.js";
 
-/**
- * Marks a `user_message` that carries a daemon's own `ctx.ui.notify()` output
- * rather than something a person typed.
- *
- * Lives in the shared contract because both sides need it: the supervisor (which
- * injects the message — the only door a process has into its `pi --mode rpc`
- * child is stdin, and the only command that reaches an extension from there is
- * `prompt`) and remote-pi itself (which recognises the marker and consumes it,
- * so the notification is shown to the phone and never reaches the model).
- *
- * A self-made RPC verb is NOT an option: Pi answers anything outside its own
- * command list with "Unknown command", which is how the first version of this
- * bridge silently did nothing.
- *
- * Leading NUL so it cannot collide with real input.
- */
-export const NOTIFY_MARKER = "\x00remote-pi-notify:";
-
 /** Per-daemon runtime state observable through the supervisor. */
 export type DaemonState = "running" | "stopped" | "starting" | "crashed";
 

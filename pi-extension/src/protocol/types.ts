@@ -177,11 +177,6 @@ export type ClientMessage =
   // Plan/30: optional `images` carry inline base64 attachments (one today).
   // Omitted entirely on text-only messages — the no-image path is unchanged.
   // Text-file uploads ride `files` (the Pi lands them on disk).
-  // `text` may carry remote-pi's own notify marker (`NOTIFY_MARKER`): the
-  // supervisor injects a daemon's `ctx.ui.notify()` output this way, because a
-  // process can only hand its child a message Pi will parse — and remote-pi's
-  // `input` handler consumes the marker so it is shown to the owners and never
-  // reaches the model.
   | {
       type: "user_message";
       id: string;
