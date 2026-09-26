@@ -69,6 +69,20 @@ class ChatViewModel extends ViewModel<ChatState> {
   // / resolved). Surfaced to the modal so the user can retry instead of staring
   // at a closed/dismissed flow that's still blocked on desktop.
   String? _pendingUiError;
+
+  /// Stand-alone `ctx.ui.notify()` messages from the Pi — the output of
+  /// extension commands that answer on the notify channel. The page renders
+  /// them as a transient notice; they are not part of the transcript (they are
+  /// transient by definition and the Pi keeps no history of them).
+  final _noticeController = StreamController<String>.broadcast();
+  Stream<String> get notices => _noticeController.stream;
+
+  /// Dismiss hook for the notice strip. The text itself lives in the widget's
+  /// state; nothing here is persisted, so this only clears the VM's side (a
+  /// late duplicate from the Pi would still surface — correct, since it really
+  /// did arrive again).
+  void dismissNotice() {}
+
   RuntimeRecord _runtime = const RuntimeRecord();
   bool _pairingRevoked = false;
   String? _peerOfflineReason;
@@ -282,6 +296,12 @@ class ChatViewModel extends ViewModel<ChatState> {
   ///  - a submit-result warning (notify_type warning/error) → keep the modal
   ///    open and surface the message so the user can retry.
   /// Any non-notify request opens/replaces the modal (and clears a prior error).
+  ///
+  /// A **stand-alone** `notify` (no modal waiting on its id) is the Pi speaking
+  /// on its own: `ctx.ui.notify()` from an extension command, which in the TUI
+  /// is how those commands answer — `/mcp`, `/rp list`, `/todos` and friends
+  /// print their output that way. Dropping it made every one of them look like
+  /// a command that silently did nothing on the phone.
   void _onExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
       final matchesOpen =
@@ -297,8 +317,10 @@ class ChatViewModel extends ViewModel<ChatState> {
           _pendingUiRequest = null;
           _pendingUiError = null;
         }
+      } else {
+        final text = req.message ?? '';
+        if (text.isNotEmpty) _noticeController.add(text);
       }
-      // Unmatched notifies (stand-alone notices) are ignored in v1.
     } else {
       _pendingUiRequest = req;
       _pendingUiError = null;
@@ -453,6 +475,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _queuedSub?.cancel();
     _eventSub?.cancel();
     _uiReqSub?.cancel();
+    unawaited(_noticeController.close());
     _roomsSub?.cancel();
     _statusSub?.cancel();
     super.dispose();

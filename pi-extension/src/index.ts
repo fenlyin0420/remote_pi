@@ -5475,7 +5475,7 @@ async function _handleCommandInvoke(
   // trace at all — the journal only had generic frame logs, which is why "no
   // reaction on the phone" was hard to pin down.
   const trace = (outcome: string) =>
-    console.error(`[remote-pi] command_invoke ${msg.text.trim()} → ${outcome}`);
+    console.error(`[remote-pi] command_invoke ${msg.text.trim().split(/\s/)[0]} → ${outcome}`);
 
   const builtin = BUILTIN_COMMANDS.find((c) => c.name === parsed.name.toLowerCase());
   if (builtin && builtin.scope === "tui") {
@@ -5549,7 +5549,14 @@ async function _handleCommandInvoke(
         `/${parsed.name} needs a supervised daemon room: only a daemon has the Pi RPC channel that runs extension commands, skills and prompt templates`,
       );
     }
-    await _callDaemonRpc({ type: "prompt", message: msg.text, streamingBehavior: "steer" });
+    // Forwarded whole, not rewritten: expansion (and therefore what the command
+    // even means) is the child's business. The split is dropped so the
+    // acknowledgement can name the command the user typed.
+    await _callDaemonRpc({
+      type: "prompt",
+      message: msg.text,
+      streamingBehavior: "steer",
+    });
     trace("ok (rpc)");
     return done();
   } catch (err) {
