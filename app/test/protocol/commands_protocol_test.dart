@@ -4,7 +4,6 @@
 // drives the real InputBar so the prefix routing and the `/` palette are
 // exercised through the widget the user touches, not a replica.
 
-import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:flutter/material.dart';
