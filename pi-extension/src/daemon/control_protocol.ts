@@ -39,6 +39,11 @@ export type ControlRequest =
   | { op: "restart_all" }
   | { op: "restart"; id: string }
   | { op: "send"; id: string; text: string }
+  // Generic Pi-RPC passthrough. `send` is the fire-and-forget special case of
+  // this for `prompt`; `rpc` carries any other Pi RPC command (see
+  // `dist/modes/rpc/rpc-types.d.ts`) and, when the caller cares, waits for the
+  // matching `response` line so the child's own error text can travel back.
+  | { op: "rpc"; id: string; command: RpcCommandWire; timeout_ms?: number }
   | { op: "register"; cwd: string }
   | { op: "unregister"; id: string }
   // ── cron (plan/39) ──
@@ -68,6 +73,7 @@ export interface ControlReplyShapes {
   restart_all: { restarted: string[] };
   restart: { id: string; state: DaemonState; restarted: boolean };
   send: { id: string; delivered: boolean };
+  rpc: { id: string; delivered: boolean; response?: RpcResponseWire };
   register: { id: string; cwd: string };
   unregister: { removed: boolean; cwd?: string };
   // ── cron (plan/39) ──
@@ -77,6 +83,21 @@ export interface ControlReplyShapes {
   cron_enable: { job_id: string; enabled: boolean; updated: boolean };
   cron_run: { job_id: string; result: string };
   cron_log: { entries: CronLogEntry[] };
+}
+
+/** A Pi RPC command as it travels over the control socket. Deliberately
+ *  untyped beyond `type`: the supervisor whitelists the types it forwards
+ *  (see `_opRpc`) rather than mirroring the SDK's whole RpcCommand union,
+ *  which would drift on every Pi bump. */
+export type RpcCommandWire = { type: string } & Record<string, unknown>;
+
+/** The subset of Pi's RPC `response` line the supervisor forwards. Same
+ *  reasoning as {@link RpcCommandWire}: only what a caller acts on. */
+export interface RpcResponseWire {
+  command?: string;
+  success?: boolean;
+  data?: unknown;
+  error?: string;
 }
 
 /** A cron job plus its computed `next_run` (ISO), for `cron list`. */

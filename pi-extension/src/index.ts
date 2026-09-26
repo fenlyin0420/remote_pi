@@ -37,7 +37,7 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { SettingsManager, convertToPng } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, convertToPng, getShellConfig } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
 import { buildQRUri, qrSession, renderQRAscii, clampPairTtlMs, TOKEN_TTL_MS } from "./pairing/qr.js";
 import {
@@ -60,6 +60,7 @@ import {
 import { SelfRevoke } from "./mesh/self_revoke.js";
 import type { MeshTopologySnapshot } from "./mesh/siblings.js";
 import type {
+  ActionName,
   ClientMessage,
   PairErrorCode,
   ServerMessage,
@@ -68,6 +69,7 @@ import type {
   WireFile,
   WireImage,
   QueuedMessageItem,
+  WireCommand,
 } from "./protocol/types.js";
 import { RelayClient, RoomAlreadyOpenError } from "./transport/relay_client.js";
 import { PlainPeerChannel } from "./transport/peer_channel.js";
@@ -98,7 +100,7 @@ import { acquireCwdLock, type AcquiredLock } from "./session/cwd_lock.js";
 import { addDaemon, listDaemons, removeDaemon } from "./daemon/registry.js";
 import { daemonIdForCwd } from "./daemon/id.js";
 import { callSupervisor, supervisorOnline, SupervisorOfflineError } from "./daemon/client.js";
-import type { ControlRequest, DaemonInfo } from "./daemon/control_protocol.js";
+import type { ControlRequest, DaemonInfo, RpcCommandWire, RpcResponseWire } from "./daemon/control_protocol.js";
 import { EXIT_DAEMON_FRESH_SESSION } from "./daemon/rpc_child.js";
 import { installService, uninstallService, linkCliBinaries, unlinkCliBinaries, LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK_NAME } from "./daemon/install.js";
 import {
@@ -4781,6 +4783,21 @@ export function _routeClientMessageFrom(
     void _handleRoomDelete(sender, msg);
     return;
   }
+  // Command channel — also handled before the pi-binding guard so a room with
+  // no live session gets a real `action_error` instead of a silent drop (which
+  // the app can only report as a 15s timeout).
+  if (msg.type === "command_invoke") {
+    void _handleCommandInvoke(sender, msg, ctx);
+    return;
+  }
+  if (msg.type === "bash_exec") {
+    void _handleBashExec(sender, msg, ctx);
+    return;
+  }
+  if (msg.type === "list_commands") {
+    _handleListCommands(sender, msg);
+    return;
+  }
   if (!_pi) return;
   switch (msg.type) {
     case "queued_message_set": {
@@ -4899,74 +4916,7 @@ export function _routeClientMessageFrom(
       handleSessionCompact((_lastEventCtx ?? _lastCtx) as ActionCtx | null, sender, msg);
       break;
     case "session_new": {
-      const actionCtx = _lastCtx as ActionCtx | null;
-      const daemonMode = process.env["REMOTE_PI_DAEMON"] === "1";
-      // Fresh Pi session via the supervisor: ack, clear remote-pi's mirror, then
-      // exit with the private code so the supervisor relaunches without
-      // --continue → a genuinely fresh session. Used when there's NO command ctx
-      // AND as recovery when the captured _lastCtx has gone STALE after an
-      // external session replacement (compact, a /new typed in the TUI,
-      // reload/resume). Reusing a stale ctx throws "stale after session
-      // replacement", which previously surfaced to the app as a hard failure
-      // ("session_new failed") and left New Context wedged.
-      const restartFresh = () => {
-        sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
-        _resetSessionForNew(msg.id);
-        setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 100);
-      };
-      if (!actionCtx?.newSession) {
-        if (daemonMode) {
-          restartFresh();
-          break;
-        }
-        sender.send({
-          type: "action_error",
-          in_reply_to: msg.id,
-          action: "session_new",
-          error: "newSession unavailable (no command ctx yet)",
-        });
-        break;
-      }
-      // Fast path: drive newSession in-process on the (hopefully fresh) command
-      // ctx, re-capturing the replacement ctx via withSession so later command
-      // ops target the current session. If the ctx turns out stale, recover by
-      // restarting fresh (daemon) instead of failing the action.
-      // Capture the method past the guard above: TS drops the `!actionCtx?.newSession`
-      // narrowing inside the async closure, so bind it to a local const first.
-      const newSession = actionCtx.newSession;
-      void (async () => {
-        try {
-          const result = await newSession({
-            withSession: async (freshCtx) => {
-              _lastCtx = freshCtx as unknown as typeof _lastCtx;
-            },
-          });
-          if (result?.cancelled) {
-            sender.send({
-              type: "action_error",
-              in_reply_to: msg.id,
-              action: "session_new",
-              error: "cancelled by extension hook",
-            });
-            return;
-          }
-          sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
-          _resetSessionForNew(msg.id);
-        } catch (e) {
-          const emsg = String((e as Error)?.message ?? e ?? "");
-          const stale = /stale|session replacement or reload/i.test(emsg);
-          if (daemonMode && stale) {
-            restartFresh();
-            return;
-          }
-          sender.send({
-            type: "action_error",
-            in_reply_to: msg.id,
-            action: "session_new",
-            error: emsg || "session_new failed",
-          });
-        }
-      })();
+      _handleSessionNew(sender, msg.id);
       break;
     }
     case "model_set":
@@ -5082,6 +5032,500 @@ async function _handleRoomDelete(
       action: "room_delete",
       error: emsg,
     });
+  }
+}
+
+/**
+ * `session_new` — start a fresh session, also reached as `/new`.
+ *
+ * Extracted from the message switch so the slash router and the typed action
+ * share one implementation (and one recovery story). The reply carries the
+ * caller's `action` so the app can correlate whichever request it made.
+ */
+function _handleSessionNew(
+  sender: PlainPeerChannel,
+  id: string,
+  action: ActionName = "session_new",
+): void {
+  const actionCtx = _lastCtx as ActionCtx | null;
+  const daemonMode = _commandChannelAvailable();
+  // Fresh Pi session via the supervisor: ack, clear remote-pi's mirror, then
+  // exit with the private code so the supervisor relaunches without
+  // --continue → a genuinely fresh session. Used when there's NO command ctx
+  // AND as recovery when the captured _lastCtx has gone STALE after an
+  // external session replacement (compact, a /new typed in the TUI,
+  // reload/resume). Reusing a stale ctx throws "stale after session
+  // replacement", which previously surfaced to the app as a hard failure
+  // ("session_new failed") and left New Context wedged.
+  const restartFresh = () => {
+    sender.send({ type: "action_ok", in_reply_to: id, action });
+    _resetSessionForNew(id);
+    setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 100);
+  };
+  if (!actionCtx?.newSession) {
+    if (daemonMode) {
+      restartFresh();
+      return;
+    }
+    sender.send({
+      type: "action_error",
+      in_reply_to: id,
+      action,
+      error: "newSession unavailable (no command ctx yet)",
+    });
+    return;
+  }
+  // Fast path: drive newSession in-process on the (hopefully fresh) command
+  // ctx, re-capturing the replacement ctx via withSession so later command
+  // ops target the current session. If the ctx turns out stale, recover by
+  // restarting fresh (daemon) instead of failing the action.
+  // Capture the method past the guard above: TS drops the `!actionCtx?.newSession`
+  // narrowing inside the async closure, so bind it to a local const first.
+  const newSession = actionCtx.newSession;
+  void (async () => {
+    try {
+      const result = await newSession({
+        withSession: async (freshCtx) => {
+          _lastCtx = freshCtx as unknown as typeof _lastCtx;
+        },
+      });
+      if (result?.cancelled) {
+        sender.send({
+          type: "action_error",
+          in_reply_to: id,
+          action,
+          error: "cancelled by extension hook",
+        });
+        return;
+      }
+      sender.send({ type: "action_ok", in_reply_to: id, action });
+      _resetSessionForNew(id);
+    } catch (e) {
+      const emsg = String((e as Error)?.message ?? e ?? "");
+      const stale = /stale|session replacement or reload/i.test(emsg);
+      if (daemonMode && stale) {
+        restartFresh();
+        return;
+      }
+      sender.send({
+        type: "action_error",
+        in_reply_to: id,
+        action,
+        error: emsg || "session_new failed",
+      });
+    }
+  })();
+}
+
+// ── Phone command channel (`/slash` and `!shell`) ─────────────────────────────
+//
+// Why this exists at all: a `user_message` goes through `pi.sendUserMessage`,
+// which the SDK implements as `AgentSession.prompt(text, {expandPromptTemplates:
+// false})`. That flag is what makes app-authored text a plain prompt — it also
+// skips extension commands, `/skill:name` and prompt templates, so a `/foo`
+// typed on the phone would otherwise reach the model as literal text.
+//
+// So the phone's commands arrive on their own message types and remote-pi does
+// the classification:
+//
+//   - a builtin it can implement with an SDK call it already has → run it here
+//     (works in EVERY room: TUI-hosted and daemon alike);
+//   - an extension command / skill / prompt template → forward to Pi's RPC
+//     stdin, the one door that reaches `AgentSession.prompt` with expansion on.
+//     Only a supervisor-spawned daemon has that channel (see plan/26);
+//   - anything else → `action_error` naming the reason. Never a silent drop:
+//     the phone shows it, the model never sees it.
+//
+// `!cmd` stays local: the daemon runs it through its own shell and pushes a
+// `bash` tool card, so shell execution works in TUI rooms too.
+
+/** Where a slash command can run. `tui` = recognised but not reachable from
+ *  the phone, listed only so the app's palette can say so honestly. */
+export type CommandScope = "all" | "daemon" | "tui";
+
+export interface BuiltinCommand {
+  name: string;
+  description: string;
+  scope: CommandScope;
+}
+
+/**
+ * Pi's builtin slash commands, annotated with what remote-pi does about each,
+ * plus one addition.
+ *
+ * The 22 `BUILTIN_SLASH_COMMANDS` the TUI ships are all here, so a name a user
+ * knows from the desktop always gets a real answer rather than "unknown".
+ * `/thinking` is remote-pi's own entry: the TUI reaches that setting with a
+ * keybinding, but the app already drives the same typed action from its
+ * segmented control, so refusing the name would be gratuitous.
+ *
+ * Scope `all` means the phone can run it in any room — those are exactly the
+ * SDK surfaces the app already drives as typed actions (`session_compact`,
+ * `session_new`, `model_set`, `thinking_set`). `/clone` and `/export` would
+ * work over RPC but produce server-side objects the phone can't act on, and
+ * `/quit`, `/login`, `/settings`… are TUI surfaces; all of those are `tui`.
+ */
+export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
+  { name: "compact", description: "Compact the session context (optional instructions)", scope: "all" },
+  { name: "new", description: "Start a new session", scope: "all" },
+  { name: "model", description: "Switch model (provider/model-id, or just model-id)", scope: "all" },
+  { name: "name", description: "Set the session display name", scope: "all" },
+  { name: "thinking", description: "Set the thinking level (remote-pi; Ctrl+T in the TUI)", scope: "all" },
+  { name: "settings", description: "Open the settings menu", scope: "tui" },
+  { name: "scoped-models", description: "Pick the models Ctrl+P cycles through", scope: "tui" },
+  { name: "export", description: "Export the session to a file on the Pi", scope: "tui" },
+  { name: "import", description: "Import and resume a session from a JSONL file", scope: "tui" },
+  { name: "share", description: "Share the session as a secret gist", scope: "tui" },
+  { name: "copy", description: "Copy the last agent message (desktop clipboard)", scope: "tui" },
+  { name: "session", description: "Show session info and stats", scope: "tui" },
+  { name: "changelog", description: "Show changelog entries", scope: "tui" },
+  { name: "hotkeys", description: "Show keyboard shortcuts", scope: "tui" },
+  { name: "fork", description: "Fork from a previous user message", scope: "tui" },
+  { name: "clone", description: "Duplicate the session at the current position", scope: "tui" },
+  { name: "tree", description: "Navigate the session tree", scope: "tui" },
+  { name: "trust", description: "Save the project trust decision", scope: "tui" },
+  { name: "login", description: "Configure provider authentication", scope: "tui" },
+  { name: "logout", description: "Remove provider authentication", scope: "tui" },
+  { name: "resume", description: "Resume a different session", scope: "tui" },
+  { name: "reload", description: "Reload extensions, skills, prompts and themes", scope: "tui" },
+  { name: "quit", description: "Quit Pi", scope: "tui" },
+];
+
+const COMMAND_THINKING_LEVELS: readonly ThinkingLevel[] = [
+  "off", "minimal", "low", "medium", "high", "xhigh",
+];
+
+/** Default ceiling for an app-triggered shell command. The app may lower it
+ *  per request; it can't raise it past this without a new build of the Pi. */
+const BASH_DEFAULT_TIMEOUT_MS = 120_000;
+/** Hard cap on the shell output we mirror. The relay frame budget is shared
+ *  with the whole session, so an accidental `cat` of a huge file must not
+ *  starve it. */
+export const BASH_OUTPUT_MAX_CHARS = 64_000;
+
+/** Splits "/name some args" into its parts. Null when the text isn't a slash
+ *  command, is a bare "/", or carries no name at all. Exported for tests. */
+export function _splitSlashCommand(text: string): { name: string; args: string } | null {
+  if (typeof text !== "string" || !text.startsWith("/")) return null;
+  const rest = text.slice(1).trim();
+  if (!rest) return null;
+  const spaceAt = rest.search(/\s/);
+  const name = spaceAt === -1 ? rest : rest.slice(0, spaceAt);
+  const args = spaceAt === -1 ? "" : rest.slice(spaceAt + 1).trim();
+  // A name made only of punctuation ("//", "/!!") is a typo, not a command.
+  return /[\p{L}\p{N}_]/u.test(name) ? { name, args } : null;
+}
+
+/** True when this Pi runs under the supervisor (`pi --mode rpc`), the only
+ *  configuration with a writable RPC stdin. */
+function _commandChannelAvailable(): boolean {
+  return process.env["REMOTE_PI_DAEMON"] === "1";
+}
+
+/**
+ * Forwards one Pi RPC command to this process's own stdin, via the supervisor
+ * that spawned it, and surfaces the child's own rejection text. Only called
+ * when {@link _commandChannelAvailable} is true.
+ *
+ * Why RPC and not the in-process shortcut: `AgentSession.sendUserMessage` takes
+ * an (undocumented on `ExtensionAPI`) `expandPromptTemplates` option that,
+ * forwarded whole by the runtime, would dispatch extension commands, skills and
+ * templates without any of this plumbing. It is deliberately NOT used — the type
+ * the SDK hands an extension omits it, so relying on the passthrough means a
+ * future bump could silently turn a phone `/skill:x` back into a literal
+ * message to the model. `RpcCommand.prompt` is the documented door, and it is
+ * the same one cron already delivers prompts through (plan/39).
+ */
+async function _callDaemonRpc(command: RpcCommandWire): Promise<RpcResponseWire | undefined> {
+  const id = daemonIdForCwd(process.cwd());
+  const data = await callSupervisor({ op: "rpc", id, command });
+  if (!data.delivered) throw new Error("the daemon process is not accepting commands");
+  const response = data.response;
+  if (response && response.success === false && response.error) throw new Error(response.error);
+  return response;
+}
+
+/** Names this session can invoke through Pi's expanded prompt path. */
+function _sessionCommandNames(): Set<string> {
+  const names = new Set<string>();
+  try {
+    for (const cmd of _pi?.getCommands() ?? []) names.add(cmd.name);
+  } catch {
+    // getCommands throws before the runner binds; an empty set degrades to
+    // "unknown command", which is the honest answer at that point anyway.
+  }
+  return names;
+}
+
+/** Everything the app may offer in its `/` palette, with per-room support. */
+export function _commandsForSession(daemonMode = _commandChannelAvailable()): WireCommand[] {
+  const out: WireCommand[] = BUILTIN_COMMANDS.map((c) => ({
+    name: c.name,
+    description: c.description,
+    source: "builtin" as const,
+    scope: c.scope,
+    supported: c.scope !== "tui",
+  }));
+  try {
+    for (const cmd of _pi?.getCommands() ?? []) {
+      const source = cmd.source === "prompt" || cmd.source === "skill" ? cmd.source : "extension";
+      out.push({
+        name: cmd.name,
+        description: cmd.description,
+        source,
+        scope: "daemon",
+        supported: daemonMode,
+      });
+    }
+  } catch {
+    // Same as _sessionCommandNames: no runner yet, so only builtins are known.
+  }
+  return out;
+}
+
+/**
+ * Strips what would break the app's text layout out of shell output: C0/C1
+ * control characters (keeping tab/newline/return), DEL, and unpaired
+ * surrogates. Pi's own bash tool sanitizes the same way before rendering;
+ * the helper isn't part of the SDK's public entry, so this is a local copy of
+ * the rules that matter for a text card.
+ */
+export function _sanitizeShellOutput(text: string): string {
+  return text
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "")
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+}
+
+/**
+ * Renders a finished shell command as the text of its `bash` card. stdout and
+ * stderr are merged in arrival order like Pi's own bash output, and a non-zero
+ * exit (or a killed process) gets a trailer so the phone can see the outcome
+ * without a second field on the wire.
+ */
+export function _formatBashResult(
+  stdout: string,
+  stderr: string,
+  code: number,
+  killed: boolean,
+): string {
+  const parts: string[] = [];
+  const out = _sanitizeShellOutput(stdout).trim();
+  const err = _sanitizeShellOutput(stderr).trim();
+  if (out) parts.push(out);
+  if (err) parts.push(err);
+  let body = parts.join("\n");
+  if (!body) body = "(no output)";
+  const status = killed ? "[killed]" : code !== 0 ? `[exit ${code}]` : "";
+  const full = status ? `${body}\n${status}` : body;
+  return full.length > BASH_OUTPUT_MAX_CHARS
+    ? `${full.slice(0, BASH_OUTPUT_MAX_CHARS)}\n[output truncated]`
+    : full;
+}
+
+/**
+ * `list_commands` — powers the app's `/` palette. Answered even when no Pi is
+ * bound (builtins still apply), so the app never has to guess.
+ */
+function _handleListCommands(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "list_commands" }>,
+): void {
+  try {
+    sender.send({ type: "commands_list", in_reply_to: msg.id, commands: _commandsForSession() });
+  } catch (err) {
+    sender.send({
+      type: "action_error",
+      in_reply_to: msg.id,
+      action: "list_commands",
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * Picks the context a slash command should act on. The ctx `routeClientMessage`
+ * received is the one resolved from the live session when the frame arrived
+ * (see `_liveCtx()`), so it wins; `_lastEventCtx`/`_lastCtx` are the fallback for
+ * callers that only have the module-level state. `compact` is the sentinel —
+ * every real `ExtensionContext` has it, the no-op placeholder does not.
+ */
+function _preferredActionCtx(preferred: unknown): ActionCtx | null {
+  const candidate = preferred as ActionCtx | null;
+  if (candidate?.compact) return candidate;
+  return (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
+}
+
+/**
+ * `bash_exec` — the phone's `!cmd`. Runs in the Pi's own shell and cwd, so the
+ * result is the same one the terminal would produce.
+ *
+ * The execution reaches the app as a `bash` tool card (request → result) and
+ * the model as a custom message, which matches how a TUI `!` behaves: the
+ * output is part of the conversation the next turn can reason about. The
+ * synthetic pair is also pushed onto `_messageBuffer`, so a `session_sync`
+ * replays the same card instead of losing it until the next restart.
+ */
+async function _handleBashExec(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "bash_exec" }>,
+  ctx: unknown,
+): Promise<void> {
+  const command = typeof msg.command === "string" ? msg.command.trim() : "";
+  const fail = (error: string) =>
+    sender.send({ type: "action_error", in_reply_to: msg.id, action: "bash_exec", error });
+  if (!command) return fail("command is required");
+  const pi = _pi;
+  if (!pi) return fail("no Pi session bound yet");
+  // Prefer the session's cwd: a session switch can move it, and a phone command
+  // must land where the agent is actually working.
+  const cwd = (ctx as { cwd?: string } | null)?.cwd ?? process.cwd();
+
+  const toolCallId = `bash_${msg.id}`;
+  const startedAt = Date.now();
+  _broadcastToActive({
+    type: "tool_request",
+    tool_call_id: toolCallId,
+    tool: "bash",
+    args: { command },
+  });
+  _messageBuffer.push({
+    role: "assistant",
+    timestamp: startedAt,
+    content: [{ type: "toolCall", id: toolCallId, name: "bash", arguments: { command } }],
+  });
+
+  try {
+    const { shell, args } = getShellConfig();
+    const result = await pi.exec(shell, [...args, command], {
+      cwd,
+      timeout: msg.timeout_ms ?? BASH_DEFAULT_TIMEOUT_MS,
+    });
+    const text = _formatBashResult(result.stdout, result.stderr, result.code, result.killed);
+    // `killed` is the only failure the CARD reports: a non-zero exit still
+    // produced real output worth reading, and its code already rides in `text`.
+    _broadcastToActive({
+      type: "tool_result",
+      tool_call_id: toolCallId,
+      ...(result.killed ? { error: text } : { result: text }),
+    });
+    _messageBuffer.push({
+      role: "toolResult",
+      timestamp: Date.now(),
+      toolCallId,
+      toolName: "bash",
+      content: text,
+      isError: result.killed,
+    });
+    if (msg.exclude_from_context !== true) {
+      // Same shape Pi records for a TUI `!`: what ran, and what it printed.
+      // `display: false` keeps it out of the TUI transcript; the customType is
+      // deliberately NOT `remote-pi:`-prefixed so it survives
+      // `_filterInternalMessagesFromContext` and the model can see it.
+      try {
+        pi.sendMessage(
+          { customType: "bash-exec", content: `$ ${command}\n${text}`, display: false },
+          { triggerTurn: false },
+        );
+      } catch {
+        // Context injection is best-effort; the user still gets the card.
+      }
+    }
+    sender.send({ type: "action_ok", in_reply_to: msg.id, action: "bash_exec" });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    _broadcastToActive({ type: "tool_result", tool_call_id: toolCallId, error: detail });
+    fail(detail);
+  }
+}
+
+/**
+ * `command_invoke` — the phone's `/slash`. See the section comment above for
+ * the three-way classification; the reply is always `action_ok` (dispatched)
+ * or `action_error` (with a reason the app can show verbatim).
+ */
+async function _handleCommandInvoke(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "command_invoke" }>,
+  ctx: unknown,
+): Promise<void> {
+  const fail = (error: string) =>
+    sender.send({ type: "action_error", in_reply_to: msg.id, action: "command_invoke", error });
+  const done = () =>
+    sender.send({ type: "action_ok", in_reply_to: msg.id, action: "command_invoke" });
+
+  const parsed = _splitSlashCommand(msg.text ?? "");
+  if (!parsed) return fail("not a slash command");
+  const pi = _pi;
+  if (!pi) return fail("no Pi session bound yet");
+  const ctxArg = ctx;
+
+  const builtin = BUILTIN_COMMANDS.find((c) => c.name === parsed.name.toLowerCase());
+  if (builtin && builtin.scope === "tui") {
+    return fail(`/${builtin.name} is only available in the Pi TUI, not from the app`);
+  }
+
+  try {
+    switch (builtin?.name) {
+      case "compact": {
+        const ctx = _preferredActionCtx(ctxArg);
+        if (!ctx?.compact) throw new Error("compact unavailable (no active session ctx)");
+        const english = "Always write the compaction summary in English, even if the conversation is in another language.";
+        ctx.compact({ customInstructions: parsed.args ? `${parsed.args}\n${english}` : english });
+        return done();
+      }
+      case "new":
+        _handleSessionNew(sender, msg.id, "command_invoke");
+        return;
+      case "model": {
+        if (!parsed.args) {
+          throw new Error("usage: /model <provider/model-id> (or use the model picker)");
+        }
+        const ctx = _preferredActionCtx(ctxArg);
+        const reg = ctx?.modelRegistry ?? ensureModelRegistry(ctx);
+        reg.refresh();
+        const slashAt = parsed.args.indexOf("/");
+        const model = slashAt > 0
+          ? reg.find(parsed.args.slice(0, slashAt), parsed.args.slice(slashAt + 1))
+          : reg.getAvailable().find((m) => m.id === parsed.args);
+        if (!model) throw new Error(`unknown model: ${parsed.args}`);
+        const applied = await pi.setModel(model as Parameters<ExtensionAPI["setModel"]>[0]);
+        if (!applied) throw new Error("no auth configured for this model");
+        // Mirror the typed `model_set` path: the live switch alone reverts on
+        // the next restart (see _persistModelDefault).
+        _persistModelDefault(model.provider, model.id);
+        return done();
+      }
+      case "thinking": {
+        const level = parsed.args.toLowerCase() as ThinkingLevel;
+        if (!COMMAND_THINKING_LEVELS.includes(level)) {
+          throw new Error(`usage: /thinking <${COMMAND_THINKING_LEVELS.join("|")}>`);
+        }
+        pi.setThinkingLevel(level);
+        return done();
+      }
+      case "name": {
+        if (!parsed.args) throw new Error("usage: /name <session name>");
+        pi.setSessionName(parsed.args);
+        return done();
+      }
+    }
+
+    // Not a builtin: an extension command, a skill (/skill:name) or a prompt
+    // template. All three expand inside `AgentSession.prompt`, which only the
+    // RPC channel can reach. Check the name first so an unrecognised `/foo`
+    // can't be shipped to the model as a literal message.
+    if (!_sessionCommandNames().has(parsed.name)) {
+      throw new Error(`unknown command: /${parsed.name}`);
+    }
+    if (!_commandChannelAvailable()) {
+      throw new Error(
+        `/${parsed.name} needs a supervised daemon room: only a daemon has the Pi RPC channel that runs extension commands, skills and prompt templates`,
+      );
+    }
+    await _callDaemonRpc({ type: "prompt", message: msg.text, streamingBehavior: "steer" });
+    return done();
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
   }
 }
 

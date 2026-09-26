@@ -2,7 +2,7 @@ import { ChildProcess, execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { DaemonState } from "./control_protocol.js";
+import type { DaemonState, RpcCommandWire, RpcResponseWire } from "./control_protocol.js";
 import { defaultAgentName, loadLocalConfig, type LocalConfig } from "../session/local_config.js";
 
 /**
@@ -155,6 +155,24 @@ export function busyTransition(line: string): boolean | null {
   return null;
 }
 
+/** Parses an RPC `response` line into its id + the forwarded payload.
+ *  Returns null for anything that isn't a response (events dominate the
+ *  stream), so the id-correlation path stays cheap. */
+export function parseResponseLine(
+  line: string,
+): { id?: string; response: RpcResponseWire } | null {
+  let obj: unknown;
+  try { obj = JSON.parse(line); } catch { return null; }
+  const o = obj as { type?: unknown; id?: unknown; command?: unknown; success?: unknown; data?: unknown; error?: unknown };
+  if (o.type !== "response") return null;
+  const response: RpcResponseWire = {};
+  if (typeof o.command === "string") response.command = o.command;
+  if (typeof o.success === "boolean") response.success = o.success;
+  if (o.data !== undefined) response.data = o.data;
+  if (typeof o.error === "string") response.error = o.error;
+  return { id: typeof o.id === "string" ? o.id : undefined, response };
+}
+
 /** Parses a `get_state` RPC response line, returning its id + isStreaming. */
 function parseGetStateResponse(line: string): { id?: string; isStreaming?: boolean } | null {
   let obj: unknown;
@@ -230,6 +248,8 @@ export class RpcChild extends EventEmitter {
   private _busy = false;
   /** In-flight `get_state` requests, keyed by request id. */
   private readonly _statePending = new Map<string, { resolve: (b: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+  /** In-flight awaited RPC commands, keyed by request id (see `awaitCommand`). */
+  private readonly _commandPending = new Map<string, { resolve: (res: RpcResponseWire | null) => void }>();
 
   constructor(private readonly opts: RpcChildOptions) {
     super();
@@ -318,14 +338,51 @@ export class RpcChild extends EventEmitter {
    * Returns false if the child isn't running (caller decides how to report).
    */
   sendPrompt(text: string, requestId?: string): boolean {
+    return this.sendCommand({ type: "prompt", message: text }, requestId);
+  }
+
+  /**
+   * Sends any Pi RPC command to the child's stdin. Fire-and-forget; returns
+   * false when the child isn't running. Use {@link awaitCommand} when the
+   * caller needs the child's own answer (e.g. a command that may be rejected
+   * by preflight).
+   */
+  sendCommand(command: RpcCommandWire, requestId?: string): boolean {
     if (!this.child || !this.child.stdin || this._state !== "running") return false;
-    const cmd = { id: requestId ?? `sv-${Date.now()}`, type: "prompt", message: text };
+    const id = requestId ?? `sv-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
     try {
-      this.child.stdin.write(JSON.stringify(cmd) + "\n");
+      this.child.stdin.write(JSON.stringify({ id, ...command }) + "\n");
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Sends a Pi RPC command and resolves with the matching `response` line
+   * (correlated by the id we stamped). Resolves `null` on timeout, on a dead
+   * child, or if the child exits first — callers treat "no answer" as
+   * "delivered, unknown outcome" rather than a hard failure.
+   */
+  async awaitCommand(command: RpcCommandWire, timeoutMs = 5000): Promise<RpcResponseWire | null> {
+    if (!this.child || !this.child.stdin || this._state !== "running") return null;
+    const id = `sv-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    return new Promise<RpcResponseWire | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this._commandPending.delete(id);
+        resolve(null);
+      }, timeoutMs);
+      this._commandPending.set(id, {
+        resolve: (res) => { clearTimeout(timer); resolve(res); },
+      });
+      try {
+        this.child!.stdin!.write(JSON.stringify({ id, ...command }) + "\n");
+      } catch {
+        clearTimeout(timer);
+        this._commandPending.delete(id);
+        resolve(null);
+      }
+    });
   }
 
   /**
@@ -370,6 +427,14 @@ export class RpcChild extends EventEmitter {
         this._statePending.delete(gs.id);
         if (typeof gs.isStreaming === "boolean") this._busy = gs.isStreaming;
         pending.resolve(this._busy);
+      }
+    }
+    const resp = parseResponseLine(line);
+    if (resp && resp.id) {
+      const pending = this._commandPending.get(resp.id);
+      if (pending) {
+        this._commandPending.delete(resp.id);
+        pending.resolve(resp.response);
       }
     }
     this.emit("stdout", line);
@@ -422,6 +487,8 @@ export class RpcChild extends EventEmitter {
       p.resolve(false);
     }
     this._statePending.clear();
+    for (const p of this._commandPending.values()) p.resolve(null);
+    this._commandPending.clear();
     this.emit("exit", { code, signal, isCrash } satisfies RpcChildExitEvent);
   }
 

@@ -12,6 +12,7 @@ import {
   type ControlRequest,
   type CronJobView,
   type DaemonInfo,
+  type RpcCommandWire,
   encodeReply,
   parseRequest,
 } from "./control_protocol.js";
@@ -56,6 +57,33 @@ const SUPERVISOR_SOCK_NAME = "supervisor.sock";
  *  child stays in `crashed` state until manual `restart_all` or fresh
  *  registry add. Keeps logs sane when the agent dies on every boot. */
 const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
+
+/**
+ * Pi RPC verbs the supervisor forwards through `op: "rpc"`.
+ *
+ * Allow-list rather than deny-list on purpose: this is a remote-controlled
+ * door into a live agent process, so a caller bug must not be able to reach
+ * verbs nobody vetted. Every verb here is either session inspection or a
+ * session-shaping action the mobile app already exposes elsewhere. Long-running
+ * verbs (`bash`) are deliberately absent — they need a streaming channel, not a
+ * request/response round-trip.
+ */
+const RPC_PASSTHROUGH: ReadonlySet<string> = new Set([
+  "prompt",
+  "compact",
+  "new_session",
+  "clone",
+  "set_session_name",
+  "get_state",
+  "get_commands",
+  "get_session_stats",
+]);
+
+/** How long `op: "rpc"` waits for the child's `response` line by default.
+ *  Every allowed verb answers at preflight (the agent's own output streams on
+ *  the relay), so a few seconds is generous. */
+const RPC_DEFAULT_TIMEOUT_MS = 4_000;
+const RPC_MAX_TIMEOUT_MS = 30_000;
 
 function supervisorSockPath(): string {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
@@ -240,6 +268,7 @@ export class Supervisor {
       case "restart_all":  return this._opRestartAll();
       case "restart":      return this._opRestart(req.id);
       case "send":         return this._opSend(req.id, req.text);
+      case "rpc":          return this._opRpc(req.id, req.command, req.timeout_ms);
       case "register":     return this._opRegister(req.cwd);
       case "unregister":   return this._opUnregister(req.id);
       case "cron_add":     return this._opCronAdd(req);
@@ -380,6 +409,44 @@ export class Supervisor {
     }
     const ok = slot.child.sendPrompt(text);
     return { ok: true, data: { id, delivered: ok } };
+  }
+
+  /**
+   * Forwards one Pi RPC command to a daemon's stdin and (by default) waits for
+   * the child's matching `response` line, so a rejection (unknown RPC type,
+   * preflight failure such as "no model selected") travels back to the caller
+   * as real text instead of a silent no-op.
+   *
+   * `RPC_PASSTHROUGH` is the whole authority model here: the supervisor only
+   * forwards commands on that list, so a bug in one caller cannot reach
+   * destructive RPC verbs (e.g. exit paths) through this door. Long-running
+   * commands are intentionally absent — they belong on a streaming channel,
+   * not on a request/response round-trip.
+   */
+  private async _opRpc(
+    id: string,
+    command: RpcCommandWire,
+    timeoutMs?: number,
+  ): Promise<ControlReply<unknown>> {
+    const type = typeof command?.type === "string" ? command.type : "";
+    if (!RPC_PASSTHROUGH.has(type)) {
+      return { ok: false, error: `rpc command not allowed: ${type || "(missing type)"}` };
+    }
+    const slot = this.children.get(id);
+    if (!slot) return { ok: false, error: `daemon ${id} not running` };
+    if (slot.child.state !== "running") {
+      return { ok: false, error: `daemon ${id} state is ${slot.child.state}` };
+    }
+    const wait = Math.min(Math.max(timeoutMs ?? RPC_DEFAULT_TIMEOUT_MS, 100), RPC_MAX_TIMEOUT_MS);
+    if (command.await === false) {
+      const delivered = slot.child.sendCommand(command);
+      return { ok: true, data: { id, delivered } };
+    }
+    const response = await slot.child.awaitCommand(command, wait);
+    return {
+      ok: true,
+      data: response === null ? { id, delivered: true } : { id, delivered: true, response },
+    };
   }
 
   private _opRegister(rawCwd: string): ControlReply<unknown> {

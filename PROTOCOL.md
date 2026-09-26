@@ -219,7 +219,9 @@ Detalhes em `plan/24-mesh-membership.md`.
 
 ## App actions
 
-Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão do Pi pareado. **Não é** um picker genérico de slash commands — cada ação tem payload estruturado e mapeia pra uma API pública do SDK. Pi-extension lida; app não parseia nada.
+Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão do Pi pareado. Cada ação tem payload estruturado e mapeia pra uma API pública do SDK. Pi-extension lida; app não parseia nada.
+
+O **canal de comandos** (`/slash` e `!shell`) é um caminho irmão, não uma exceção a este desenho: o app manda a linha crua e quem classifica é o Pi (que é quem conhece o vocabulário). Os dois convivem — as ações tipadas continuam sendo o que a UI estruturada usa, e `/` existe pro que só tem nome.
 
 | Action | ClientMessage | SDK call no pi-extension |
 |---|---|---|
@@ -256,6 +258,50 @@ Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão d
   "current": { "id": "claude-opus-4-7", "name": "Claude Opus 4.7", "...": "..." }
 }
 ```
+
+### Canal de comandos (`/slash` e `!shell`)
+
+O composer aceita comandos direto. `text` viaja **verbatim** (com a barra inicial): o app não mantém lista de nomes, então um Pi que ganha um builtin ou uma extensão nova não precisa de release do app.
+
+```json
+// Palette do `/` — catálogo do que ESTA sala pode rodar
+{ "type": "list_commands", "id": "<uuid>" }
+{
+  "type": "commands_list", "in_reply_to": "<uuid>",
+  "commands": [
+    { "name": "compact", "description": "Compact the session context",
+      "source": "builtin", "scope": "all", "supported": true },
+    { "name": "deploy", "description": "Ship it",
+      "source": "extension", "scope": "daemon", "supported": true },
+    { "name": "login", "description": "Configure provider authentication",
+      "source": "builtin", "scope": "tui", "supported": false }
+  ]
+}
+```
+
+```json
+// Linha `/...` (com a barra) → roteada pelo Pi
+{ "type": "command_invoke", "id": "<uuid>", "text": "/compact manter as notas de migração" }
+{ "type": "action_ok", "in_reply_to": "<uuid>", "action": "command_invoke" }
+{ "type": "action_error", "in_reply_to": "<uuid>", "action": "command_invoke",
+  "error": "/login is only available in the Pi TUI, not from the app" }
+
+// `!cmd` (sem o `!`) → shell no Pi; saída volta como card `bash`
+{ "type": "bash_exec", "id": "<uuid>", "command": "git status -sb",
+  "exclude_from_context": false, "timeout_ms": 120000 }
+```
+
+Três destinos possíveis, decididos no Pi:
+
+| Tipo de nome | Caminho | Onde funciona |
+|---|---|---|
+| `/compact` `/new` `/model` `/thinking` `/name` | Chamadas SDK que a extensão já tem (mesmas das ações tipadas) | Qualquer sala |
+| Comando de extensão (`pi.registerCommand`), `/skill:name`, prompt template | RPC stdin do Pi (`AgentSession.prompt` com expansão ligada) | Só sala **daemon** (supervisor, `pi --mode rpc`) |
+| Resto (`/login`, `/settings`, `/tree`, `/share`, …) | Recusado pelo nome | — |
+
+Por que o split: `user_message` passa por `pi.sendUserMessage`, que o SDK implementa como `AgentSession.prompt(text, {expandPromptTemplates: false})` — esse flag é o que faz texto do app ser texto. Ele também pula comandos de extensão, skills e templates. E builtins não têm API programática: as 22 vivem no loop do TUI. Então o Pi classifica (nunca o app), e o que ele não consegue rodar ele **recusa explicando** em vez de deixar a linha virar mensagem literal pro modelo.
+
+`bash_exec` não usa RPC: a extensão roda no shell e no cwd do próprio Pi e publica o resultado como um card `bash` normal (mais uma mensagem `custom` — `customType: "bash-exec"`, `display: false` — pro modelo ver a saída no próximo turno, igual ao `!` do TUI; `!!`/`exclude_from_context: true` mantém fora do contexto). Assim `!` funciona em TUI-hosted e daemon.
 
 ### Thinking levels (enum fixo)
 
@@ -326,9 +372,13 @@ Os replies (`action_ok` / `models_list`) só confirmam dispatch. Efeitos visíve
 - Modelo trocado → evento `model_select` broadcast pra todos os owners conectados
 - Nova sessão → `pair_ok` (ou equivalente) com novo `session_started_at`
 
-### Por que ações tipadas em vez de picker genérico
+### Por que ações tipadas *e* `/` em vez de só um dos dois
 
-O SDK `@mariozechner/pi-coding-agent` não expõe API genérica de invocação dos slash commands builtin (`/compact`, `/model`, `/fork`, `/copy`, etc.) — apenas alguns têm equivalente em `ExtensionContextActions`. Tentar espelhar o picker do TUI exigiria mirror manual da lista builtin + matriz de invocabilidade + UX de chip canonizado, com vários comandos sendo só hint informativo. Vocabulário tipado é mais simples, mais honesto, e cobre 100% das ações que fazem sentido em mobile. Padrão validado pelo adapter `pi-telegram` (mesmo abordagem: vocabulário curado, sem picker genérico).
+O SDK (`@earendil-works/pi-coding-agent`) não expõe API genérica de invocação dos slash commands builtin (`/compact`, `/model`, `/fork`, `/copy`, etc.) — apenas alguns têm equivalente em `ExtensionContextActions`. Um picker que só oferecesse o que tem chamada pronta seria um mirror manual da lista builtin, com matriz de invocabilidade pra manter a cada bump.
+
+As ações tipadas continuam sendo o caminho da UI estruturada (payload com sentido, `action_ok`/`action_error` casados por `in_reply_to`). O canal de comandos cobre o resto sem mirror: a lista vem do `pi.getCommands()` (extensões, templates, skills) mais uma tabela de builtins que só declara **o que a extensão sabe fazer**, e o que ela não sabe recusa por nome em vez de virar mensagem literal. O que viabilizou isso não foi o SDK mudar: foi existir um canal RPC (plan/26) por onde `AgentSession.prompt` é alcançável.
+
+Limite explícito: `/login`, `/settings`, `/tree` e companhia **não** entram — vivem no loop do TUI e aparecem na palette como `scope: "tui"`, desabilitados. O adapter `pi-telegram` segue o padrão de vocabulário curado.
 
 Detalhes em `plan/28-pi-commands.md`.
 

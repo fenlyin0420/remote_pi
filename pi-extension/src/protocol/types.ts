@@ -204,6 +204,18 @@ export type ClientMessage =
   // Session-agnostic: no `_pi`/ctx dependency, handled straight in index.ts.
   | { type: "room_create"; id: string; path: string; create_if_missing?: boolean }
   | { type: "room_delete"; id: string; path: string }
+  // Phone-side command channel — the app's `/slash` and `!shell` input.
+  //
+  // `text` is the raw submitted line INCLUDING the leading `/`: the Pi owns
+  // the parsing, so the app never needs to know which names exist. This is
+  // deliberately NOT a generic slash-command picker — the Pi classifies the
+  // name and either maps it onto an SDK call it already has, forwards it to
+  // the RPC channel (extension commands / skills / templates), or answers
+  // with `action_error` saying why it can't run here. `bash_exec` carries the
+  // command without its `!`.
+  | { type: "command_invoke"; id: string; text: string }
+  | { type: "bash_exec"; id: string; command: string; exclude_from_context?: boolean; timeout_ms?: number }
+  | { type: "list_commands"; id: string }
   // Plan/57 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -386,6 +398,11 @@ export type ServerMessage =
   | { type: "action_ok"; in_reply_to: string; action: ActionName }
   | { type: "action_error"; in_reply_to: string; action: ActionName; error: string }
   | { type: "models_list"; in_reply_to: string; models: WireModel[]; current?: WireModel }
+  // Reply to `list_commands` — the app's `/` palette. Builtins remote-pi
+  // implements itself, plus whatever the SDK reports for this session
+  // (extension commands, prompt templates, skills). Additive: a client that
+  // predates this type simply never asks for it.
+  | { type: "commands_list"; in_reply_to: string; commands: WireCommand[] }
   // Plan/57 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.
@@ -402,7 +419,35 @@ export type ActionName =
   | "model_set"
   | "thinking_set"
   | "room_create"
-  | "room_delete";
+  | "room_delete"
+  | "command_invoke"
+  | "bash_exec"
+  | "list_commands";
+
+/**
+ * One entry of the app's `/` palette (reply to `list_commands`).
+ *
+ * `source` says where the name came from; `scope` and `supported` say
+ * whether THIS room can actually run it, so the app greys a dead entry out
+ * instead of offering it and failing.
+ *
+ * `scope: "daemon"` marks the names that need Pi's RPC stdin channel, which
+ * only a supervisor-spawned daemon has. A TUI-hosted Pi has no equivalent: an
+ * extension cannot reach `AgentSession.prompt`, so extension commands, skills
+ * and prompt templates are unreachable there — remote-pi says so instead of
+ * letting the text fall through to the model as a literal message.
+ */
+export interface WireCommand {
+  /** Name without the leading slash. E.g. `"compact"`, `"skill:review"`. */
+  name: string;
+  /** Shown as the palette subtitle. Absent for names the SDK didn't describe. */
+  description?: string;
+  source: "builtin" | "extension" | "prompt" | "skill";
+  scope: "all" | "daemon" | "tui";
+  /** False when remote-pi recognises the name but has no implementation here
+   *  (a TUI-only builtin). The app renders it disabled. */
+  supported: boolean;
+}
 
 /**
  * Plan/28 — Mirror of the SDK's `ThinkingLevel` (defined in

@@ -203,3 +203,72 @@ describe("RpcChild — isBusy", () => {
     expect(await child.refreshBusy(200)).toBe(false);
   });
 });
+
+/**
+ * Generic RPC passthrough (the phone command channel's transport). The stub
+ * answers only `set_session_name` so the id-correlation path can be tested
+ * against a real stdin/stdout round-trip, and the timeout path against a verb
+ * the stub deliberately ignores.
+ */
+describe("RpcChild — sendCommand / awaitCommand", () => {
+  let dir: string;
+  afterEach(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  const stubSource =
+    "#!/usr/bin/env node\n" +
+    "process.stdin.setEncoding('utf8');let b='';" +
+    "process.stdin.on('data',c=>{b+=c;let n;while((n=b.indexOf('\\n'))>=0){const l=b.slice(0,n);b=b.slice(n+1);" +
+    "try{const m=JSON.parse(l);if(m.type==='set_session_name')" +
+    "process.stdout.write(JSON.stringify({type:'response',command:'set_session_name',id:m.id,success:true,data:{name:m.name}})+'\\n');}catch{}}});" +
+    "setInterval(()=>{},1e9);\n";
+
+  function spawnStub(): RpcChild {
+    dir = mkdtempSync(join(tmpdir(), "pi-rpc-cmd-"));
+    const stub = join(dir, "stub.mjs");
+    writeFileSync(stub, stubSource);
+    chmodSync(stub, 0o755);
+    const child = new RpcChild({ piBin: stub, extensionPath: "/x", cwd: dir });
+    child.spawn();
+    return child;
+  }
+
+  test("parse: nonsense and events are not responses", async () => {
+    const { parseResponseLine } = await import("./rpc_child.js");
+    expect(parseResponseLine("not json")).toBeNull();
+    expect(parseResponseLine('{"type":"message_start"}')).toBeNull();
+    expect(parseResponseLine('{"type":"response","command":"prompt","id":"s1","success":true}'))
+      .toEqual({ id: "s1", response: { command: "prompt", success: true } });
+    expect(parseResponseLine('{"type":"response","id":"s2","success":false,"error":"nope"}'))
+      .toEqual({ id: "s2", response: { success: false, error: "nope" } });
+  });
+
+  test("sendCommand is fire-and-forget and reports a dead child", () => {
+    const child = new RpcChild({ piBin: "/usr/bin/true", extensionPath: "/x", cwd: mkdtempSync(join(tmpdir(), "pi-rpc-dead-")) });
+    expect(child.sendCommand({ type: "prompt", message: "hi" })).toBe(false);
+  });
+
+  // POSIX-only: the stub is a shebang script, which Windows can't spawn directly.
+  test.skipIf(process.platform === "win32")("awaitCommand resolves with the matching response", async () => {
+    const child = spawnStub();
+    await new Promise((r) => setTimeout(r, 80)); // let it exec
+    const res = await child.awaitCommand({ type: "set_session_name", name: "nightly" }, 1500);
+    expect(res).toMatchObject({ command: "set_session_name", success: true });
+    await child.stop();
+  });
+
+  test.skipIf(process.platform === "win32")("awaitCommand resolves null when the child never answers", async () => {
+    const child = spawnStub();
+    await new Promise((r) => setTimeout(r, 80));
+    // The stub ignores `compact`, so the caller gets "delivered, unknown
+    // outcome" instead of hanging the supervisor's request.
+    expect(await child.awaitCommand({ type: "compact" }, 120)).toBeNull();
+    await child.stop();
+  });
+
+  test.skipIf(process.platform === "win32")("awaitCommand resolves null when the child isn't running", async () => {
+    const child = new RpcChild({ piBin: "/usr/bin/true", extensionPath: "/x", cwd: mkdtempSync(join(tmpdir(), "pi-rpc-null-")) });
+    expect(await child.awaitCommand({ type: "compact" }, 50)).toBeNull();
+  });
+});
