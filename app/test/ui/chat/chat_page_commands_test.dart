@@ -290,6 +290,33 @@ void main() {
     shutdown(app);
   });
 
+  // Args make the text a "finished" command, which keeps this test on the
+  // acknowledgement path instead of the palette's async re-fetch: the harness
+  // has no live runtime row, so opening the palette flips the composer to
+  // offline (a harness artifact, see pumpChat).
+  testWidgets('a dispatched /command is acknowledged on screen', (tester) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+    await submitLine(tester, '/name nightly');
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(actions.commands, ['/name nightly']);
+    expect(
+      find.text('/name nightly · sent to the Pi'),
+      findsOneWidget,
+      reason: 'a command with no visible side effect must still show something',
+    );
+    shutdown(app);
+  });
+
+  testWidgets('a !command is not acknowledged twice (its bash card is the reply)', (tester) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+    await submitLine(tester, '!git status');
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byType(SnackBar), findsNothing);
+    shutdown(app);
+  });
+
   // One shared presenter serves both prefixes, so a refusal from either shows
   // up the same way. This drives it through `!` because the composer is built
   // asynchronously with a volatile runtime row, which makes the `/`-only path

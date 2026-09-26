@@ -483,7 +483,7 @@ class ChatPage extends StatelessWidget {
       // must swallow them, or a refused `!` would surface as an unhandled async
       // error instead of a toast.
       onRunCommand: actionsEnabled
-          ? (text) => unawaited(_invoke(context, () => vm.runCommand(text)))
+          ? (text) => unawaited(_invoke(context, () => vm.runCommand(text), label: text))
           : null,
       onRunBash: actionsEnabled
           ? (command, {excludeFromContext = false}) => unawaited(
@@ -498,18 +498,31 @@ class ChatPage extends StatelessWidget {
     );
   }
 
-  /// Runs one command-channel call and surfaces the Pi's refusal (unknown name,
-  /// desktop only, needs a daemon room, offline) as a toast. Success needs no
-  /// toast: the command either acts on the session (model switch, compaction
-  /// notice) or answers in the transcript — a `!cmd`'s output arrives as a `bash`
-  /// tool card on the normal tool stream.
+  /// Runs one command-channel call and surfaces the outcome as a toast.
+  ///
+  /// A failure shows the Pi's own words (unknown name, desktop only, needs a
+  /// daemon room, offline). A success shows a short acknowledgement **when
+  /// [label] is set** — i.e. for `/` commands, several of which (`/name`,
+  /// `/thinking`, a no-op `/compact`) leave nothing on screen, so silence was
+  /// indistinguishable from a button that does nothing. `!cmd` passes no label:
+  /// its output arrives as a `bash` tool card within the same round-trip.
   static Future<void> _invoke(
     BuildContext context,
-    Future<void> Function() call,
-  ) async {
+    Future<void> Function() call, {
+    String? label,
+  }) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await call();
+      if (label == null || !context.mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('$label · sent to the Pi'),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     } on ActionFailure catch (e) {
       if (!context.mounted) return;
       messenger.hideCurrentSnackBar();

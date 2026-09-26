@@ -542,3 +542,63 @@ describe("bash_exec", () => {
     });
   });
 });
+
+// ── feedback: a command that can't do anything must say so ────────────────────
+
+describe("command_invoke — feedback", () => {
+  test('a refused /compact is pushed back, not swallowed', async () => {
+    _setPiForTest(makePi());
+    const sender = makeSender();
+    // `ctx.compact()` is fire-and-forget: it reports the refusal through
+    // `onError`, and before this was wired a small session made /compact look
+    // like a dead button (the phone showed nothing at all).
+    const compact = vi.fn((options?: { onError?: (e: Error) => void }) => {
+      options?.onError?.(new Error("Nothing to compact (session too small)"));
+    });
+    route(
+      { type: "command_invoke", id: "f1", text: "/compact" },
+      sender,
+      makeCtx({ compact }),
+    );
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(2));
+    // Order is the fake's business (a real refusal lands after the ack); both
+    // frames must exist: the ack proves dispatch, the error proves the user is
+    // told why nothing happened.
+    expect(sender.sent).toContainEqual(
+      expect.objectContaining({ type: "action_ok", action: "command_invoke" }),
+    );
+    expect(sender.sent).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        code: "command_failed",
+        message: "/compact failed: Nothing to compact (session too small)",
+      }),
+    );
+  });
+
+  test("a successful /compact still acks without a failure frame", async () => {
+    _setPiForTest(makePi());
+    const sender = makeSender();
+    const compact = vi.fn();
+    route({ type: "command_invoke", id: "f2", text: "/compact" }, sender, makeCtx({ compact }));
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.sent[0]).toMatchObject({ type: "action_ok", action: "command_invoke" });
+    // The compaction notice itself comes from the SDK's session_compact event.
+    expect(compact).toHaveBeenCalledTimes(1);
+  });
+
+  test("every command path is traced to stderr", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      _setPiForTest(makePi());
+      const sender = makeSender();
+      route({ type: "command_invoke", id: "f3", text: "/nosuchthing" }, sender);
+      await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+      expect(spy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+        "command_invoke /nosuchthing → error: unknown command: /nosuchthing",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

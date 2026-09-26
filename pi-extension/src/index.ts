@@ -86,6 +86,7 @@ import {
   handleModelSet,
   handleThinkingSet,
   handleListModels,
+  reportCompactFailure,
   type ActionCtx,
 } from "./actions/handlers.js";
 import { ensureModelRegistry } from "./actions/registry.js";
@@ -4940,6 +4941,17 @@ export function _routeClientMessageFrom(
         msg,
       );
       break;
+    default: {
+      // A frame nothing here handles used to vanish without a trace, which is
+      // indistinguishable from "the app never sent it" — and it is exactly what
+      // an older extension looks like from the phone (the request just times
+      // out). Say so in the journal instead.
+      const type = (msg as { type?: unknown }).type;
+      if (typeof type === "string" && type !== "approve_tool") {
+        console.error(`[remote-pi] ignoring unsupported client message: ${type}`);
+      }
+      break;
+    }
   }
 }
 
@@ -5458,6 +5470,12 @@ async function _handleCommandInvoke(
   const pi = _pi;
   if (!pi) return fail("no Pi session bound yet");
   const ctxArg = ctx;
+  // Every command funnels through here, so this is the one place that can say
+  // "the Pi saw it, and did X". Without it a dropped or refused command left no
+  // trace at all — the journal only had generic frame logs, which is why "no
+  // reaction on the phone" was hard to pin down.
+  const trace = (outcome: string) =>
+    console.error(`[remote-pi] command_invoke ${msg.text.trim()} → ${outcome}`);
 
   const builtin = BUILTIN_COMMANDS.find((c) => c.name === parsed.name.toLowerCase());
   if (builtin && builtin.scope === "tui") {
@@ -5470,17 +5488,23 @@ async function _handleCommandInvoke(
         const ctx = _preferredActionCtx(ctxArg);
         if (!ctx?.compact) throw new Error("compact unavailable (no active session ctx)");
         const english = "Always write the compaction summary in English, even if the conversation is in another language.";
-        ctx.compact({ customInstructions: parsed.args ? `${parsed.args}\n${english}` : english });
+        ctx.compact({
+          customInstructions: parsed.args ? `${parsed.args}\n${english}` : english,
+          // The ack below only means "dispatched" (compaction runs async), so a
+          // refusal has to arrive as a pushed frame or the user sees nothing.
+          onError: (err) => reportCompactFailure(sender, err),
+        });
+        trace("ok");
         return done();
       }
       case "new":
         _handleSessionNew(sender, msg.id, "command_invoke");
+        trace("ok");
         return;
       case "model": {
         if (!parsed.args) {
           throw new Error("usage: /model <provider/model-id> (or use the model picker)");
-        }
-        const ctx = _preferredActionCtx(ctxArg);
+        }        const ctx = _preferredActionCtx(ctxArg);
         const reg = ctx?.modelRegistry ?? ensureModelRegistry(ctx);
         reg.refresh();
         const slashAt = parsed.args.indexOf("/");
@@ -5493,6 +5517,7 @@ async function _handleCommandInvoke(
         // Mirror the typed `model_set` path: the live switch alone reverts on
         // the next restart (see _persistModelDefault).
         _persistModelDefault(model.provider, model.id);
+        trace(`ok (${model.provider}/${model.id})`);
         return done();
       }
       case "thinking": {
@@ -5501,11 +5526,13 @@ async function _handleCommandInvoke(
           throw new Error(`usage: /thinking <${COMMAND_THINKING_LEVELS.join("|")}>`);
         }
         pi.setThinkingLevel(level);
+        trace("ok");
         return done();
       }
       case "name": {
         if (!parsed.args) throw new Error("usage: /name <session name>");
         pi.setSessionName(parsed.args);
+        trace("ok");
         return done();
       }
     }
@@ -5523,9 +5550,12 @@ async function _handleCommandInvoke(
       );
     }
     await _callDaemonRpc({ type: "prompt", message: msg.text, streamingBehavior: "steer" });
+    trace("ok (rpc)");
     return done();
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err));
+    const detail = err instanceof Error ? err.message : String(err);
+    trace(`error: ${detail}`);
+    return fail(detail);
   }
 }
 
