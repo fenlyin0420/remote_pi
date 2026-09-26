@@ -6,12 +6,14 @@ in-place. Deliberately tiny: Python stdlib only, no dependencies, no
 framework — the files are static and the traffic is one user.
 
 Layout under ROOT (default /var/lib/remote-pi-downloads):
-    app/latest.json     the update manifest the app polls
-    app/RemotePi.apk    the signed release APK
+    app/latest.json       the update manifest the released app polls
+    app/RemotePi.apk      the signed release APK
+    app-beta/latest.json  the manifest the BETA app polls (separate channel)
+    app-beta/RemotePiBeta.apk
 
 Routes:
-    GET /healthz                 -> 200 "ok"
-    GET /downloads/app/<file>    -> file from ROOT/app/
+    GET /healthz                    -> 200 "ok"
+    GET /downloads/<product>/<file> -> file from ROOT/<product>/
 
 Security: only files directly under the configured product directories are
 served (no traversal), a strict allow-list of names is enforced for the
@@ -54,8 +56,13 @@ PORT = _env_port()
 HOST = os.environ.get("REMOTE_PI_DOWNLOADS_HOST", "0.0.0.0")  # noqa: S104
 
 # product -> directory under ROOT. Add a row when another product ships.
+# `app-beta` is a separate CHANNEL, not a separate product: the beta APK has its
+# own applicationId, so it installs alongside the released app and updates from
+# its own manifest. Two channels mean an unreviewed build never reaches the
+# released install.
 PRODUCTS = {
     "app": ROOT / "app",
+    "app-beta": ROOT / "app-beta",
 }
 
 CONTENT_TYPES = {
@@ -68,6 +75,7 @@ CONTENT_TYPES = {
 # the directory (editor backup, .swp, a previous release) stays unreachable.
 ALLOWED = {
     "app": {"latest.json", "RemotePi.apk", "SHA256SUMS"},
+    "app-beta": {"latest.json", "RemotePiBeta.apk", "SHA256SUMS"},
 }
 
 

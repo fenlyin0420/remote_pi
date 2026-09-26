@@ -98,6 +98,30 @@ android {
         versionName = flutter.versionName
     }
 
+    // Two channels, two installable apps.
+    //
+    // `beta` carries its own applicationId, so a beta build installs ALONGSIDE
+    // the released app instead of replacing it (same signing key, different
+    // package → two launcher entries, two data sets, and each updates from its
+    // own manifest). That is what makes "try it, then ship it" possible without
+    // putting an unreviewed build in front of the released one. The label is a
+    // resource so the launcher tells them apart.
+    //
+    // Named `beta`, not `test`: Gradle refuses flavor names starting with
+    // "test" (reserved for the test source set).
+    flavorDimensions += "channel"
+    productFlavors {
+        create("prod") {
+            dimension = "channel"
+            resValue("string", "app_name", "Remote Pi")
+        }
+        create("beta") {
+            dimension = "channel"
+            applicationIdSuffix = ".beta"
+            resValue("string", "app_name", "Remote Pi Beta")
+        }
+    }
+
     signingConfigs {
         if (hasReleaseKeystore) {
             create("release") {
