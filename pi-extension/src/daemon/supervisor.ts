@@ -8,6 +8,7 @@ import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions, type RpcUiEvent } from "./rpc_child.js";
 import {
+  NOTIFY_MARKER,
   type ControlReply,
   type ControlRequest,
   type CronJobView,
@@ -656,17 +657,28 @@ export class Supervisor {
     // Bridge the child's extension-UI notifications into its OWN stdin, where
     // the extension (remote-pi) turns them into frames for the paired phone.
     // The chain: an extension command calls `ctx.ui.notify()` → the child prints
-    // `extension_ui_request` on stdout → this sends it back in as
-    // `rpc_ui_request` → remote-pi broadcasts it to the owners. Nobody else
-    // reads the child's stdout, so a notification that stops here is lost the
-    // way the phone saw it: a command that answers nothing.
+    // `extension_ui_request` on stdout → this feeds it back in as a marked
+    // `prompt` → remote-pi's `input` handler consumes the marker, broadcasts the
+    // notification and swallows the input. Nobody else reads the child's stdout,
+    // so a notification that stops here is lost exactly the way the phone saw
+    // it: a command that answers nothing.
+    //
+    // `prompt` and not a bespoke RPC verb: Pi answers anything outside its own
+    // command list with "Unknown command", which is how the first version of
+    // this bridge silently did nothing. A prompt is also the only route that
+    // reaches an extension at all — it is parsed into a user message and then
+    // raised as the `input` event.
     child.on("stdout", (_line: string, ui?: RpcUiEvent) => {
       if (!ui) return;
       if (ui.method === "notify") {
-        child.sendCommand({ type: "rpc_ui_request", ...ui });
+        child.sendCommand({
+          type: "prompt",
+          message: `${NOTIFY_MARKER}${ui.id ?? ""}\n${ui.notifyType ?? ""}\n${ui.message ?? ""}`,
+          streamingBehavior: "steer",
+        });
         return;
       }
-      // A dialog needs a real answer and this channel has no way back, so it is
+      // A dialog needs a real answer and this pipe only goes one way, so it is
       // refused out loud rather than left hanging.
       process.stderr.write(
         `[${cwd}] [remote-pi-supervisord] refused extension UI request "${ui.method ?? "?"}" (only notify can be forwarded)\n`,

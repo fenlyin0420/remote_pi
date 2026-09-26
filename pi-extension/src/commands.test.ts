@@ -32,6 +32,8 @@ const {
   _setPiForTest,
   _setMessageBufferForTest,
   _getMessageBufferForTest,
+  _parseNotifyMessage,
+  NOTIFY_MARKER,
 } = indexModule;
 
 // ── Harness ───────────────────────────────────────────────────────────────────
@@ -79,6 +81,30 @@ function route(msg: unknown, sender: Sent, ctx: unknown = CTX): void {
     msg as never,
     ctx as never,
   );
+}
+
+/**
+ * Captures the handlers the extension registers for one event, so the branch
+ * under test can be driven directly (the pure-function level of the notify
+ * swallow).
+ */
+function captureHandlers(event: "input") {
+  const handlers: Array<(e: unknown, ctx?: unknown) => unknown> = [];
+  const pi = {
+    on: (name: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
+      if (name === event) handlers.push(handler);
+    },
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+    registerShortcut: () => undefined,
+    registerFlag: () => undefined,
+    getFlag: () => undefined,
+    registerMessageRenderer: () => undefined,
+    sendMessage: () => undefined,
+    sendUserMessage: () => undefined,
+  } as unknown as Parameters<typeof indexModule.default>[0];
+  indexModule.default(pi);
+  return handlers;
 }
 
 beforeEach(() => {
@@ -603,31 +629,69 @@ describe("command_invoke — feedback", () => {
   });
 });
 
-describe("rpc_ui_request — the supervisor's notify bridge", () => {
-  // The broadcast itself is covered by the extension suite's peer tests; what
-  // matters here is that the frame is accepted (no unsupported-message log, no
-  // error reply) with no owner attached either.
-  test("a bridged notify is accepted without an owner attached", () => {
-    const sender = makeSender();
-    route(
-      { type: "rpc_ui_request", id: "ui-1", method: "notify", message: "MCP: 3 servers ok" },
-      sender,
-    );
-    expect(sender.sent).toHaveLength(0);
+describe("notify bridge — the supervisor's marker", () => {
+  const marker = `${NOTIFY_MARKER}abc-123\nwarning\nthe output`;
+
+  test("a marked message is recognised, with its id, level and text", () => {
+    expect(_parseNotifyMessage({ type: "user_message", id: "m1", text: marker })).toEqual({
+      id: "abc-123",
+      level: "warning",
+      text: "the output",
+    });
   });
 
-  test("notify_type rides through when the extension set one", () => {
-    const sender = makeSender();
-    route(
-      { type: "rpc_ui_request", id: "ui-2", method: "notify", message: "careful", notifyType: "warning" },
-      sender,
-    );
-    expect(sender.sent).toHaveLength(0);
+  test("an empty level is fine (notify without a type)", () => {
+    const raw = `${NOTIFY_MARKER}n1\n\nplain`;
+    expect(_parseNotifyMessage({ type: "user_message", id: "m2", text: raw })).toEqual({
+      id: "n1",
+      text: "plain",
+    });
   });
 
-  test("a notify with no message still maps to an empty frame", () => {
+  test("multi-line output survives intact", () => {
+    const raw = `${NOTIFY_MARKER}n1\ninfo\nline1\nline2\nline3`;
+    expect(_parseNotifyMessage({ type: "user_message", id: "m3", text: raw })?.text)
+      .toBe("line1\nline2\nline3");
+  });
+
+  test("ordinary input is not a notify", () => {
+    expect(_parseNotifyMessage({ type: "user_message", id: "m4", text: "hello" })).toBeNull();
+    expect(_parseNotifyMessage({ type: "user_message", id: "m5", text: "" })).toBeNull();
+    expect(_parseNotifyMessage({ type: "ping", id: "m6" })).toBeNull();
+  });
+
+  test("a trailing marker with no fields still yields an empty notice", () => {
+    expect(_parseNotifyMessage({ type: "user_message", id: "m7", text: NOTIFY_MARKER }))
+      .toEqual({ id: "", text: "" });
+  });
+
+  test("it routes to the owners as extension_ui_request, and is not a reply", () => {
     const sender = makeSender();
-    route({ type: "rpc_ui_request", id: "ui-3", method: "notify" }, sender);
+    route({ type: "user_message", id: "m8", text: marker }, sender);
+    // No owner attached in this harness → nothing to send, and above all no
+    // action_error: a notify is broadcast, never answered.
     expect(sender.sent).toHaveLength(0);
+  });
+});
+
+describe("notify bridge — the input handler swallows it", () => {
+  test("a marked prompt never reaches the model", async () => {
+    // This is the half that matters for correctness: without it the notify is
+    // delivered as a normal user message and the agent answers /mcp's output.
+    const handlers = captureHandlers("input");
+    const result = handlers[0]!(
+      { type: "input", text: `${NOTIFY_MARKER}n1\ninfo\nMCP Server Status: ok`, source: "rpc" },
+      { abort: () => undefined },
+    );
+    expect(result).toEqual({ action: "handled" });
+  });
+
+  test("ordinary input still falls through to the normal path", () => {
+    const handlers = captureHandlers("input");
+    const result = handlers[0]!(
+      { type: "input", text: "hello", source: "rpc" },
+      { abort: () => undefined },
+    );
+    expect(result).toBeUndefined();
   });
 });

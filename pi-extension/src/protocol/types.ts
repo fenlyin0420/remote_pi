@@ -177,6 +177,11 @@ export type ClientMessage =
   // Plan/30: optional `images` carry inline base64 attachments (one today).
   // Omitted entirely on text-only messages — the no-image path is unchanged.
   // Text-file uploads ride `files` (the Pi lands them on disk).
+  // `text` may carry remote-pi's own notify marker (`NOTIFY_MARKER`): the
+  // supervisor injects a daemon's `ctx.ui.notify()` output this way, because a
+  // process can only hand its child a message Pi will parse — and remote-pi's
+  // `input` handler consumes the marker so it is shown to the owners and never
+  // reaches the model.
   | {
       type: "user_message";
       id: string;
@@ -216,12 +221,6 @@ export type ClientMessage =
   | { type: "command_invoke"; id: string; text: string }
   | { type: "bash_exec"; id: string; command: string; exclude_from_context?: boolean; timeout_ms?: number }
   | { type: "list_commands"; id: string }
-  // Sent by `pi-supervisord`, not by a phone. The supervisor reads the daemon's
-  // stdout, where Pi prints an extension's notifications (the
-  // `extension_ui_request` frames of `ctx.ui.notify()`), and hands them back in
-  // so remote-pi can forward them to the paired owners. Only `method:"notify"`
-  // is ever bridged: a dialog needs an answer this channel cannot carry.
-  | { type: "rpc_ui_request"; id: string; method?: string; message?: string; notifyType?: "info" | "warning" | "error" }
   // Plan/57 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.

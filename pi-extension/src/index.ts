@@ -101,7 +101,14 @@ import { acquireCwdLock, type AcquiredLock } from "./session/cwd_lock.js";
 import { addDaemon, listDaemons, removeDaemon } from "./daemon/registry.js";
 import { daemonIdForCwd } from "./daemon/id.js";
 import { callSupervisor, supervisorOnline, SupervisorOfflineError } from "./daemon/client.js";
-import type { ControlRequest, DaemonInfo, RpcCommandWire, RpcResponseWire } from "./daemon/control_protocol.js";
+import {
+  NOTIFY_MARKER,
+  type ControlRequest,
+  type DaemonInfo,
+  type RpcCommandWire,
+  type RpcResponseWire,
+} from "./daemon/control_protocol.js";
+export { NOTIFY_MARKER };
 import { EXIT_DAEMON_FRESH_SESSION } from "./daemon/rpc_child.js";
 import { installService, uninstallService, linkCliBinaries, unlinkCliBinaries, LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK_NAME } from "./daemon/install.js";
 import {
@@ -162,6 +169,7 @@ let _lastRelayStatus: RelayConnectivity | null = null;
  *  transcript entry. Starts with NUL so it can't collide with real user input
  *  and doesn't begin with "/" (which would route to the command parser). */
 export const CTRL_PREFIX = "\x00remote-pi-ctrl:";
+
 let _relayUrl: string | null = null;  // URL used by current _relay connection
 /**
  * Owners currently connected via the relay. Key = app peer pubkey (Ed25519,
@@ -2403,6 +2411,14 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // Checked first, before the peer-broadcast path, and regardless of source.
     if (event.text.startsWith(CTRL_PREFIX)) {
       void _handleControl(event.text.slice(CTRL_PREFIX.length).trim());
+      return { action: "handled" } as const;
+    }
+    // A daemon notification the supervisor injected (see NOTIFY_MARKER). It has
+    // already been broadcast to the owners by the time the prompt gets here, so
+    // this only has to keep it out of the model and out of the transcript:
+    // swallowing it is what stops an output like `/mcp`'s from becoming a turn
+    // the agent answers.
+    if (event.text.startsWith(NOTIFY_MARKER)) {
       return { action: "handled" } as const;
     }
     if (!_anyPeerActive()) return;
@@ -4732,6 +4748,32 @@ function _abortCurrentTurn(
   return false;
 }
 
+/**
+ * Recognises a notify the supervisor injected (see {@link NOTIFY_MARKER}).
+ *
+ * Shape: `<marker><id>\n<level or empty>\n<text>`. The id is the notify's own,
+ * so the app can dedupe/settle frames the way it does for ask-user ones.
+ * Returns null for anything else, including ordinary user text.
+ */
+export function _parseNotifyMessage(
+  msg: ClientMessage,
+): { id: string; text: string; level?: "info" | "warning" | "error" } | null {
+  if (msg.type !== "user_message") return null;
+  const raw = msg.text;
+  if (!raw.startsWith(NOTIFY_MARKER)) return null;
+  const rest = raw.slice(NOTIFY_MARKER.length);
+  const firstBreak = rest.indexOf("\n");
+  const id = firstBreak === -1 ? rest : rest.slice(0, firstBreak);
+  const afterId = firstBreak === -1 ? "" : rest.slice(firstBreak + 1);
+  const secondBreak = afterId.indexOf("\n");
+  const levelRaw = secondBreak === -1 ? afterId : afterId.slice(0, secondBreak);
+  const text = secondBreak === -1 ? "" : afterId.slice(secondBreak + 1);
+  const level = levelRaw === "info" || levelRaw === "warning" || levelRaw === "error"
+    ? levelRaw
+    : undefined;
+  return level === undefined ? { id, text } : { id, text, level };
+}
+
 export function _routeClientMessageFrom(
   sender: PlainPeerChannel,
   msg: ClientMessage,
@@ -4799,18 +4841,19 @@ export function _routeClientMessageFrom(
     _handleListCommands(sender, msg);
     return;
   }
-  // The daemon's own extension output, bridged back in by the supervisor (see
-  // its stdout hook). Broadcast rather than answered: it is a notification
-  // about work already done, not a reply. No `_pi` need — this path is exactly
-  // what makes a command answer in a room whose session is otherwise idle.
-  if (msg.type === "rpc_ui_request") {
-    console.error(`[remote-pi] notify → app: ${(msg.message ?? "").slice(0, 120)}`);
+  // The daemon's own extension output, bridged back in by the supervisor as a
+  // MARKED user message (NOTIFY_MARKER). Handled here, before the pi-binding
+  // guard and before the user_message case, because a room with no live session
+  // is exactly when a command's output still has to reach the phone.
+  const notify = _parseNotifyMessage(msg);
+  if (notify !== null) {
+    console.error(`[remote-pi] notify → app: ${notify.text.slice(0, 120)}`);
     _broadcastToActive({
       type: "extension_ui_request",
-      id: msg.id,
+      id: notify.id,
       method: "notify",
-      message: msg.message ?? "",
-      ...(msg.notifyType === undefined ? {} : { notify_type: msg.notifyType }),
+      message: notify.text,
+      ...(notify.level === undefined ? {} : { notify_type: notify.level }),
     });
     return;
   }
