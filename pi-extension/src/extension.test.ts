@@ -246,6 +246,7 @@ const {
   _hasMeshNodeForTest,
   _getLockedNameForTest,
   _resetCwdLockForTest,
+  _hasPendingLockWaitForTest,
   _handleControl,
   _routeClientMessageFrom,
   _deliverMeshMessageToAgentForTest,
@@ -4952,9 +4953,57 @@ describe("same-folder same-name → #N suffix (no refusal)", () => {
         expect.stringContaining("Daemon not started"),
         "warning",
       );
+      // …but not a dead end: the lock-wait retry is armed.
+      expect(_hasPendingLockWaitForTest()).toBe(true);
     } finally {
       if (first.ok) first.release();
       delete process.env["REMOTE_PI_DAEMON"];
+      delete process.env["REMOTE_PI_DIRECT_CONFIG"];
+      _resetCwdLockForTest();
+    }
+  });
+
+  // The reported field case: a TUI Pi started in that folder first, so the
+  // supervised daemon lost the (cwd, name) lock at boot. The daemon must not sit
+  // there as a zombie (process alive, supervisor says "running", app shows the
+  // room offline forever) — it retries and comes online by itself once the TUI
+  // exits.
+  test("a supervised daemon starts on its own after the lock holder exits", async () => {
+    process.env["REMOTE_PI_DAEMON"] = "1";
+    process.env["REMOTE_PI_LOCK_RETRY_MS"] = "25";
+    process.env["REMOTE_PI_DIRECT_CONFIG"] = JSON.stringify({
+      agent_name: "Backoffice",
+      auto_start_relay: false,
+    });
+    const cwd = "/home/user/projects/remote_pi";
+    const tui = await acquireCwdLock(cwd, "Backoffice");
+    expect(tui.ok).toBe(true);
+    try {
+      const root = captureHandler("remote-pi");
+      const ctx = makeMockCtx(cwd);
+      await root("", ctx);
+      expect(_hasMeshNodeForTest()).toBe(false); // refused while the TUI holds it
+
+      if (tui.ok) tui.release(); // the TUI exits → the lock is free
+      const deadline = Date.now() + 5000;
+      while (
+        Date.now() < deadline &&
+        !(_getLockedNameForTest() === "Backoffice" && _hasMeshNodeForTest())
+      ) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      expect(_getLockedNameForTest()).toBe("Backoffice");
+      expect(_hasMeshNodeForTest()).toBe(true);
+      expect(_hasPendingLockWaitForTest()).toBe(false);
+      // The wait warning is logged once per episode, not once per retry tick.
+      const waits = ctx.ui.notify.mock.calls.filter((c) =>
+        String(c[0]).includes("Daemon not started"),
+      );
+      expect(waits.length).toBe(1);
+    } finally {
+      delete process.env["REMOTE_PI_DAEMON"];
+      delete process.env["REMOTE_PI_LOCK_RETRY_MS"];
       delete process.env["REMOTE_PI_DIRECT_CONFIG"];
       _resetCwdLockForTest();
     }

@@ -1026,6 +1026,7 @@ export function _resetCwdLockForTest(): void {
   try { _cwdLock?.release(); } catch { /* ignored */ }
   _cwdLock = null;
   _lockedName = null;
+  _cancelLockWait();
 }
 
 /**
@@ -1145,6 +1146,44 @@ let _cwdLock: AcquiredLock | null = null;
 // registers under this name; the broker confirms it (and may bump it again under
 // a live race). Null until the lock is acquired.
 let _lockedName: string | null = null;
+
+// LOCAL PATCH (fenlyin) — daemon lock-wait retry.
+// A supervised daemon that cannot take its (cwd,name) lock MUST NOT just return:
+// it would stay alive as a zombie (supervisor reports "running", the app shows
+// the room offline forever, and nothing ever retries). The realistic cause is a
+// TUI Pi started in the same folder first; when it exits, the lock frees and the
+// daemon has to notice on its own. So the daemon keeps the process up and re-runs
+// the root startup on this interval until the lock is free — intentionally still
+// ONE attempt per tick, never the interactive `#N` auto-suffix.
+const DAEMON_LOCK_RETRY_DEFAULT_MS = 15_000;
+let _lockWaitTimer: ReturnType<typeof setTimeout> | null = null;
+let _lockWaitLogged = false;
+
+/** Retry cadence for the daemon lock-wait. `REMOTE_PI_LOCK_RETRY_MS` overrides
+ *  it (same escape hatch style as `REMOTE_PI_SYNC_LIMIT`) so tests don't have to
+ *  wait out the real 15 s. */
+function _daemonLockRetryMs(): number {
+  const raw = Number(process.env["REMOTE_PI_LOCK_RETRY_MS"]);
+  return Number.isFinite(raw) && raw > 0 ? raw : DAEMON_LOCK_RETRY_DEFAULT_MS;
+}
+
+function _cancelLockWait(): void {
+  if (_lockWaitTimer !== null) {
+    clearTimeout(_lockWaitTimer);
+    _lockWaitTimer = null;
+  }
+  _lockWaitLogged = false;
+}
+
+function _formatLockRetryMs(): string {
+  const ms = _daemonLockRetryMs();
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`;
+}
+
+/** Test-only: exposes pending lock-wait timer state. */
+export function _hasPendingLockWaitForTest(): boolean {
+  return _lockWaitTimer !== null;
+}
 
 // ── Session sync limit (mirror cache cap) ─────────────────────────────────────
 //
@@ -2618,6 +2657,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     let meshClose: Promise<void> | null = null;
     try { meshClose = meshNode?.close() ?? null; } catch { /* best-effort */ }
 
+    _cancelLockWait();
     if (_cwdLock) {
       try { _cwdLock.release(); } catch { /* best-effort */ }
       _cwdLock = null;
@@ -2889,14 +2929,40 @@ async function _cmdRootInner(
         }
         return;
       }
-      if (result.ok) { _cwdLock = result; _lockedName = candidate; break; }
+      if (result.ok) {
+        _cwdLock = result;
+        _lockedName = candidate;
+        _cancelLockWait();
+        break;
+      }
     }
     if (_cwdLock === null) {
       if (!_isCurrentRootLifecycle(rootLifecycleGeneration)) return;
+      if (isDaemon) {
+        // LOCAL PATCH (fenlyin): wait + retry instead of becoming a zombie.
+        // Told once per wait episode — the headless ui forwards warnings to
+        // stderr, and a warning every 15s would flood the supervisor journal.
+        if (!_lockWaitLogged) {
+          _lockWaitLogged = true;
+          ctx.ui.notify(
+            `[remote-pi] Daemon not started: another live agent already owns "${requestedName}" in this folder. Retrying the lock every ${_formatLockRetryMs()} and starting automatically once it exits.`,
+            "warning",
+          );
+        }
+        if (_lockWaitTimer === null) {
+          _lockWaitTimer = setTimeout(() => {
+            _lockWaitTimer = null;
+            if (!_isCurrentRootLifecycle(rootLifecycleGeneration)) return;
+            void _cmdRoot(ctx, { rootLifecycleGeneration });
+          }, _daemonLockRetryMs());
+          // Don't pin the event loop on our own account: in daemon mode the
+          // supervisor's stdio pipes keep the process up anyway.
+          _lockWaitTimer.unref?.();
+        }
+        return;
+      }
       ctx.ui.notify(
-        process.env["REMOTE_PI_DAEMON"] === "1"
-          ? `[remote-pi] Daemon not started: another live agent already owns "${requestedName}" in this folder. Stop the old Pi process, then restart the daemon.`
-          : `[remote-pi] Could not start: too many agents named "${requestedName}" already running in this folder.`,
+        `[remote-pi] Could not start: too many agents named "${requestedName}" already running in this folder.`,
         "warning",
       );
       return;
