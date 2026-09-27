@@ -104,6 +104,36 @@ class _RoomTransport implements PeerTransport, IRoomFrameLink {
       'type': 'agent_done',
       'in_reply_to': inReplyTo,
     },
+    final ExtensionUiRequest r => {
+      'type': 'extension_ui_request',
+      'id': r.id,
+      'method': r.method.wire,
+      if (r.title != null) 'title': r.title,
+      if (r.message != null) 'message': r.message,
+      if (r.placeholder != null) 'placeholder': r.placeholder,
+      if (r.options.isNotEmpty) 'options': r.options,
+      if (r.notifyType != null) 'notify_type': r.notifyType,
+      if (r.ask != null)
+        'ask': {
+          'flow_id': r.ask!.flowId,
+          'source': r.ask!.source,
+          if (r.ask!.title != null) 'title': r.ask!.title,
+          'questions': [
+            for (final q in r.ask!.questions)
+              {
+                'id': q.id,
+                'label': q.label,
+                'prompt': q.prompt,
+                'type': q.type.wire,
+                'required': q.required,
+                'options': [
+                  for (final o in q.options)
+                    {'value': o.value, 'label': o.label},
+                ],
+              },
+          ],
+        },
+    },
     ErrorMessage(:final code, :final message) => {
       'type': 'error',
       'code': code,
@@ -275,6 +305,36 @@ class _Harness {
 
 Future<void> pump() => Future<void>.delayed(const Duration(milliseconds: 1));
 
+/// A pi-ask flow as the bridge posts it: one request carrying the whole form.
+ExtensionUiRequest _ask({required String id}) => ExtensionUiRequest(
+  id: id,
+  method: ExtensionUiMethod.select,
+  title: 'Clarify next step',
+  options: const ['Speed', 'Safety'],
+  ask: AskEnrichmentWire(
+    flowId: id,
+    source: 'tool',
+    questions: const [
+      AskQuestionWire(
+        id: 'goal',
+        label: 'Goal',
+        prompt: 'What should I optimize for?',
+        type: AskQuestionWireType.single,
+        required: false,
+        options: [AskOptionWire(value: 'speed', label: 'Speed')],
+      ),
+      AskQuestionWire(
+        id: 'scope',
+        label: 'Scope',
+        prompt: 'How wide should the change be?',
+        type: AskQuestionWireType.single,
+        required: false,
+        options: [AskOptionWire(value: 'one', label: 'One file')],
+      ),
+    ],
+  ),
+);
+
 void main() {
   test('a finished turn in another room becomes a notification', () async {
     final h = _Harness(
@@ -381,6 +441,127 @@ void main() {
     await pump();
 
     expect(h.notifier.shown.single.body, 'rate limited');
+    h.dispose();
+  });
+
+  test('an ask waiting for an answer notifies even though no turn finished', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi'});
+    await h.connect();
+    await h.delivery.start();
+    h.transport.emit('room-a', _ask(id: 'flow-1'));
+    await pump();
+
+    // The agent is blocked, so there is no `agent_done` to piggyback on: this
+    // banner is the only signal that the phone needs to answer something.
+    expect(h.notifier.shown, hasLength(1));
+    expect(h.notifier.shown.single.room, 'room-a');
+    expect(
+      h.notifier.shown.single.body,
+      '2 questions · What should I optimize for?',
+    );
+    h.dispose();
+  });
+
+  test('an ask is silent while the user reads that chat', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi'});
+    await h.connect();
+    await h.delivery.start();
+    h.visible.enterChat(_epk, 'room-a');
+    h.visible.setForeground(true);
+
+    h.transport.emit('room-a', _ask(id: 'flow-1'));
+    await pump();
+
+    expect(h.notifier.shown, isEmpty);
+    h.dispose();
+  });
+
+  test('resolving a flow clears the banner that asked for it', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi'});
+    await h.connect();
+    await h.delivery.start();
+    h.transport.emit('room-a', _ask(id: 'flow-1'));
+    await pump();
+    h.notifier.cancelled.clear();
+
+    // pi-ask reuses the flow id on the note that says the form is done.
+    h.transport.emit(
+      'room-a',
+      const ExtensionUiRequest(
+        id: 'flow-1',
+        method: ExtensionUiMethod.notify,
+        message: 'Clarification resolved.',
+      ),
+    );
+    await pump();
+
+    expect(h.notifier.shown, hasLength(1), reason: 'a notify is not a banner');
+    expect(h.notifier.cancelled, contains((epk: _epk, room: 'room-a')));
+    h.dispose();
+  });
+
+  test('a warning keeps the banner, and another room cannot clear it', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi', 'room-b': 'remote'});
+    await h.connect();
+    await h.delivery.start();
+    h.transport.emit('room-a', _ask(id: 'flow-1'));
+    await pump();
+    h.notifier.cancelled.clear();
+
+    // `warning` means the Pi is still waiting — the client can retry.
+    h.transport.emit(
+      'room-a',
+      const ExtensionUiRequest(
+        id: 'flow-1',
+        method: ExtensionUiMethod.notify,
+        message: 'Answer was not accepted.',
+        notifyType: 'warning',
+      ),
+    );
+    // Same id, different room: not the banner this frame resolves.
+    h.transport.emit('room-b', _ask(id: 'flow-2'));
+    await pump();
+    h.notifier.cancelled.clear();
+    h.transport.emit(
+      'room-b',
+      const ExtensionUiRequest(
+        id: 'flow-1',
+        method: ExtensionUiMethod.notify,
+        message: 'Clarification resolved.',
+      ),
+    );
+    await pump();
+
+    expect(h.notifier.cancelled, isEmpty);
+    h.dispose();
+  });
+
+  test('a plain dialog request notifies with its title', () async {
+    final h = _Harness(rooms: {'room-a': 'remote_pi'});
+    await h.connect();
+    await h.delivery.start();
+    // Not just ask forms: any dialog blocks the Pi until it is answered.
+    h.transport.emit(
+      'room-a',
+      const ExtensionUiRequest(
+        id: 'dialog-1',
+        method: ExtensionUiMethod.confirm,
+        title: 'Allow the shell command?',
+      ),
+    );
+    // Informational toasts are not dialogs.
+    h.transport.emit(
+      'room-a',
+      const ExtensionUiRequest(
+        id: 'toast-1',
+        method: ExtensionUiMethod.notify,
+        message: 'MCP server connected',
+      ),
+    );
+    await pump();
+
+    expect(h.notifier.shown, hasLength(1));
+    expect(h.notifier.shown.single.body, 'Allow the shell command?');
     h.dispose();
   });
 

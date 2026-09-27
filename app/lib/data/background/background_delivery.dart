@@ -66,6 +66,11 @@ class BackgroundDelivery extends Service {
   /// every finished turn.
   final Map<String, StringBuffer> _previews = <String, StringBuffer>{};
 
+  /// The interactive request each room's banner was posted for, so a later
+  /// resolution can clear that banner. One entry per room at most: a room has a
+  /// single banner (the notification id is derived from `(epk, room)`).
+  final Map<String, String> _pendingRequests = <String, String>{};
+
   bool _started = false;
   bool _disposed = false;
 
@@ -235,10 +240,81 @@ class BackgroundDelivery extends Service {
         final preview = _takePreview(key);
         // ignore: unawaited_futures
         _notify(m.epk, m.roomId, preview);
+      case final ExtensionUiRequest request:
+        _onInteractiveRequest(m, request);
       case _:
         // Tool traffic, echoes, sync payloads, presence: nothing to notify on.
         break;
     }
+  }
+
+  /// The Pi is *blocked* on an interactive request. Unlike a finished turn, no
+  /// further frame is coming until a human answers, so a silent phone means the
+  /// agent waits for nobody: this is the one in-flight state worth a banner.
+  void _onInteractiveRequest(RoomMessage m, ExtensionUiRequest request) {
+    final key = '${m.epk}|${m.roomId}';
+    // `notify` frames are informational — except the one pi-ask reuses, carrying
+    // the flow id, to say a flow was answered, cancelled or expired. For that
+    // one the useful action is the opposite: drop the banner it replaced.
+    if (request.method == ExtensionUiMethod.notify) {
+      _resolvePendingRequest(m.epk, m.roomId, request);
+      return;
+    }
+    final body = _interactiveRequestBody(request);
+    if (body == null) return;
+    _pendingRequests[key] = request.id;
+    // ignore: unawaited_futures
+    _notify(m.epk, m.roomId, body);
+  }
+
+  /// Clears the banner posted for [request]'s flow, if this room's banner is
+  /// still that flow's. A `warning` notify means the Pi is *still* waiting (a
+  /// rejected answer, a bridge that forgot the flow), so it keeps the banner
+  /// and its retry hint.
+  void _resolvePendingRequest(
+    String epk,
+    String roomId,
+    ExtensionUiRequest request,
+  ) {
+    if (request.notifyType == 'warning') return;
+    final key = '$epk|$roomId';
+    if (_pendingRequests[key] != request.id) return;
+    _pendingRequests.remove(key);
+    // Same reasoning as opening the chat by hand: nothing is waiting on this
+    // room anymore, so its banner has nothing left to say.
+    // ignore: unawaited_futures
+    _notifier.cancel(epk: epk, roomId: roomId);
+  }
+
+  /// What a banner should say about a request the Pi is waiting on, or null when
+  /// there is nothing worth interrupting the user for.
+  static String? _interactiveRequestBody(ExtensionUiRequest request) {
+    final ask = request.ask;
+    if (ask != null && ask.questions.isNotEmpty) {
+      final first = ask.questions.first;
+      // The question itself is what needs answering; the flow's own title is
+      // decoration the room name already covers. The count matters because one
+      // banner stands for the whole form.
+      final prompt = ask.questions.length > 1
+          ? '${ask.questions.length} questions · ${first.prompt}'
+          : first.prompt;
+      final line = _oneLine(prompt);
+      if (line.isNotEmpty) return line;
+    }
+    final fallback = _oneLine(
+      request.title ?? request.message ?? request.placeholder ?? '',
+    );
+    if (fallback.isNotEmpty) return fallback;
+    return 'Input needed';
+  }
+
+  /// Collapses text to one banner line, keeping its **start**: a question or a
+  /// dialog's title says what it is in its first words, unlike a streamed turn
+  /// whose conclusion is at the end (see [_condense]).
+  static String _oneLine(String raw) {
+    final flat = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (flat.length <= _bodyLimit) return flat;
+    return '${flat.substring(0, _bodyLimit - 1)}…';
   }
 
   Future<void> _notify(String epk, String roomId, String preview) async {
