@@ -1341,6 +1341,59 @@ void main() {
     },
   );
 
+  test(
+    'relay working=false racing agent_done does not eat the streamed reply',
+    () async {
+      final s = await setup();
+      await s.sync.sendMessage('hi');
+      await _settle();
+      final target = s.ch.sent.whereType<UserMessage>().single.id;
+
+      s.ch.push(AgentChunk(inReplyTo: target, delta: 'Hello'));
+      await _settle();
+      expect(s.sync.streaming?.buffer, 'Hello');
+
+      // The relay's `turn_end` → `working:false` room meta reaches the app over
+      // the control channel while `agent_done` rides the chat channel. When the
+      // meta loses the race (or simply wins by a frame), the discarded buffer
+      // must not take the un-finalized reply with it.
+      s.ch.pushControl(
+        RoomAnnounced(peer: s.epk, roomId: 'main', startedAt: 1),
+      );
+      s.ch.pushControl(
+        RoomMetaUpdated(
+          peer: s.epk,
+          roomId: 'main',
+          working: true,
+          hasModel: false,
+          hasThinking: false,
+        ),
+      );
+      await _settle();
+      s.ch.pushControl(
+        RoomMetaUpdated(
+          peer: s.epk,
+          roomId: 'main',
+          working: false,
+          hasModel: false,
+          hasThinking: false,
+        ),
+      );
+      await _settle();
+
+      s.ch.push(AgentDone(inReplyTo: target));
+      await _settle();
+
+      expect(
+        messages(s.epk).map((m) => m.text),
+        contains('Hello'),
+        reason: 'the reply must be in the box, not only in the next re-sync',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
   // Plan/32 safety net — a sent message whose echo never comes back must not
   // spin forever; the optimistic bubble is removed SILENTLY after the timeout.
   group('no-echo send timeout', () {

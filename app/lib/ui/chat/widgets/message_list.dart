@@ -49,6 +49,11 @@ class MessageListState extends State<MessageList> {
   @visibleForTesting
   final ScrollController controller = ScrollController();
 
+  /// True while the user's finger owns the list. The auto-follow stays out of
+  /// the way for the WHOLE gesture: [ScrollController.jumpTo] ends the drag
+  /// activity, so a follow that fires mid-drag silently kills it.
+  bool _userDragging = false;
+
   /// True while the viewport follows new content. False as soon as the user
   /// scrolls away from the bottom, true again when they come back.
   bool _following = true;
@@ -98,7 +103,28 @@ class MessageListState extends State<MessageList> {
 
   void _onScroll() {
     if (!controller.hasClients) return;
+    // A finger on the list owns the viewport: never re-arm the follow from a
+    // mid-gesture offset. Otherwise the first few pixels of a slow drag — still
+    // within [_followSlop] — re-enable it, and the post-frame jump yanks the
+    // list back to the bottom, killing the drag. That is what made scrolling up
+    // while a reply streams need a violent flick instead of a plain drag.
+    if (_userDragging) return;
     _following = _distanceFromBottom <= _followSlop;
+  }
+
+  /// Follow yields the moment a finger starts moving the list, and resumes only
+  /// once the gesture settles back at the bottom.
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n is ScrollStartNotification) {
+      if (n.dragDetails != null) {
+        _userDragging = true;
+        _following = false;
+      }
+    } else if (n is ScrollEndNotification) {
+      _userDragging = false;
+      _onScroll();
+    }
+    return false;
   }
 
   void _afterFrame(void Function() action) {
@@ -144,38 +170,41 @@ class MessageListState extends State<MessageList> {
 
     return Opacity(
       opacity: _ready ? 1 : 0,
-      child: ListView.separated(
-        controller: controller,
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
-        itemCount: messages.length + (streaming != null ? 1 : 0),
-        separatorBuilder: (context, idx) => const SizedBox(height: 14),
-        itemBuilder: (_, i) {
-          // Stable keys are REQUIRED here: when the streaming bubble
-          // appears/disappears at the end every other item's index shifts by 1,
-          // and without keys Flutter re-matches elements by position — briefly
-          // painting the wrong message at a slot (the momentary C/B/A → B/C/A
-          // reorder). Keying by message id makes it match by identity instead.
-          if (streaming != null && i == messages.length) {
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _onScrollNotification,
+        child: ListView.separated(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+          itemCount: messages.length + (streaming != null ? 1 : 0),
+          separatorBuilder: (context, idx) => const SizedBox(height: 14),
+          itemBuilder: (_, i) {
+            // Stable keys are REQUIRED here: when the streaming bubble
+            // appears/disappears at the end every other item's index shifts by 1,
+            // and without keys Flutter re-matches elements by position — briefly
+            // painting the wrong message at a slot (the momentary C/B/A → B/C/A
+            // reorder). Keying by message id makes it match by identity instead.
+            if (streaming != null && i == messages.length) {
+              return KeyedSubtree(
+                key: const ValueKey('streaming'),
+                child: StreamingBubble(streaming),
+              );
+            }
+            final msg = messages[i];
             return KeyedSubtree(
-              key: const ValueKey('streaming'),
-              child: StreamingBubble(streaming),
+              key: ValueKey(msg.id),
+              child: switch (msg) {
+                UserMsg() => UserBubble(msg),
+                AssistantMsg() => AssistantBubble(msg),
+                ThinkingMsg() => ThinkingBubble(msg),
+                ToolEvent() => ToolRequestCard(
+                  tool: msg,
+                  onDecide: widget.onDecide,
+                ),
+                CompactionMsg() => CompactionBubble(msg),
+              },
             );
-          }
-          final msg = messages[i];
-          return KeyedSubtree(
-            key: ValueKey(msg.id),
-            child: switch (msg) {
-              UserMsg() => UserBubble(msg),
-              AssistantMsg() => AssistantBubble(msg),
-              ThinkingMsg() => ThinkingBubble(msg),
-              ToolEvent() => ToolRequestCard(
-                tool: msg,
-                onDecide: widget.onDecide,
-              ),
-              CompactionMsg() => CompactionBubble(msg),
-            },
-          );
-        },
+          },
+        ),
       ),
     );
   }

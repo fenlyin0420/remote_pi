@@ -1222,8 +1222,17 @@ class SyncService extends Service {
       return;
     }
     if (t != null && t.sawRemoteWorking && t.working) {
-      _discardStreamingState(t);
-      _setWorking(t, false);
+      // The relay says this room stopped working, but `agent_done` has not been
+      // processed (yet): the two signals ride DIFFERENT channels — the meta is
+      // a control broadcast, `agent_done` a chat envelope — and the meta's
+      // debounce makes it routinely win by a frame or two. Closing the turn
+      // here must not throw away text the Pi already streamed: finalize the
+      // open segments exactly like `agent_done` does, so the reply lands in the
+      // box. An `agent_done` arriving afterwards finds nothing open and no-ops.
+      _finalizeThinkingSegment(t);
+      final text = _finalizeTextSegment(t);
+      _clearSteeringLabels();
+      _setWorking(t, false, preview: text.isEmpty ? null : text);
     }
     if (t != null) t.sawRemoteWorking = false;
   }
