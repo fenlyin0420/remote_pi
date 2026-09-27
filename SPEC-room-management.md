@@ -1,10 +1,10 @@
 # 任务 spec：房间管理（新建/删除 room）+ 工具调用开关按 room 隔离 + 打包 APK 发 Release
 
 仓库：`jacobaraujo7/remote_pi` 的 fork（`fenlyin0420/remote_pi`）。
-git remote：`origin` = 原作者仓库（只读，**不要 push、不要发 PR**）；`upstream` = 自己的 fork（push 目标）。
-当前在 `main`，与原作者最新一致（af04a482）。
+git remote：`origin` = 自己的 fork（唯一 push 目标）；`upstream` = 原作者仓库（只读，**不要 push、不要发 PR**）。
+分支：`main` = 上游纯镜像（不写定制代码），`dev` = 定制主线。
 
-**新建分支 `feat/room-management` 做所有改动，完成后 push 到 `upstream`（自己的 fork）。**
+**新建分支 `feat/room-management` 做所有改动，完成后 merge 回 `dev` 并 push 到 `origin`（自己的 fork）。**
 
 ---
 
@@ -127,13 +127,14 @@ key `prefs.hide_tool_calls`），UI 在 `lib/ui/settings/settings_page.dart:342`
    （产物 `build/app/outputs/flutter-apk/app-debug.apk`）。
    不要动 build 配置；若编译报错就修最小问题（可能是 SDK 版本/依赖版本，
    必要时 `flutter pub upgrade --major-versions` 慎用，先最小改动）。
-4. push：`git push upstream feat/room-management`（**只 push 到自己的 fork，
-   绝不 push 到 origin，绝不给作者发 PR**）。
+4. push：`git push origin feat/room-management`（**只 push 到自己的 fork，
+   绝不 push 到 upstream，绝不给作者发 PR**）。
 5. 在 fork 上发 Release：
    `gh release create "v2.x-room-management" --target feat/room-management \
      app-debug.apk`（名字自定，标题说明这是带房间管理功能的构建；
-   `gh` 已登录 fenlyin0420，默认仓库就是本目录的 remote upstream/fork——
-   注意确认 `gh` 认的是 fork：`gh repo view --json name`）。
+   `gh` 已登录 fenlyin0420 且 `repo set-default` 钉到 fork——
+   仍要确认 `gh` 认的是 fork：`gh repo view --json nameWithOwner`；
+   `gh` 默认会挑名为 `upstream` 的 remote，不钉死就打到原作者仓库）。
 
 ## 验收标准
 
@@ -147,4 +148,4 @@ key `prefs.hide_tool_calls`），UI 在 `lib/ui/settings/settings_page.dart:342`
 
 - Node 在 PATH（v25.9.0）。pi-extension 若没 node_modules，先 `npm install`。
 - 网络直连可用（GitHub、Google 存储均可达）。
-- 这是 fork 仓库，`origin` remote 是原作者的——push/gh 操作一律用 `upstream`/fork。
+- 这是 fork 仓库，`origin` remote 是自己的 fork——push/gh 操作一律用 `origin`。

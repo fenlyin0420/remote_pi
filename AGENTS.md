@@ -7,6 +7,23 @@
 - 本目录只服务这个工作单元，产物放这里，别散进 `$HOME`。
 - 主控是 `~/remote`（agent 名 `Jarvis`）：需要跨工作区协调时找它。
 
+## 仓库与分支（fork 规范）
+
+| remote | 仓库 | 权限 |
+|---|---|---|
+| `origin` | `fenlyin0420/remote_pi`（自己的 fork） | **唯一 push 目标**（已设 `remote.pushDefault=origin`，裸 `git push` 也只到这里） |
+| `upstream` | `jacobaraujo7/remote_pi`（原作者） | 只读：**绝不 push、绝不发 PR** |
+
+| 分支 | 用途 |
+|---|---|
+| `main` | 上游纯镜像，**禁止写任何自定义代码**（定制文件如本文件都不在 main 上） |
+| `dev` | 所有定制工作的长期主线——日常在这里合并、发布 |
+| `feat/...` `fix/...` | 从 `dev` 切，做完 merge 回 `dev` 并删分支 |
+
+同步上游：`git fetch upstream` → 先看 `git log dev..upstream/main` / `git diff dev upstream/main`
+→ 满意了再 `git switch dev && git merge upstream/main`（**别在 main 上做定制**）。
+`gh` 已 `repo set-default` 到 fork（`gh` 默认会挑名为 `upstream` 的 remote，不钉死会打到原作者仓库）。
+
 ## 交付方式（固定流程）
 
 > 细节与踩坑全在 `~/.agents/memory/remote-pi-in-app-update.md`（发版步骤 / 版号规则 / 签名 /
@@ -16,7 +33,7 @@
 只推测试通道，用户测完确认后，再打**正式版**（干净版号 + `prod` flavor）推正式通道 + GitHub Release。
 **不要跳过测试直接发正式版**（2026-09-27 发 1.5.11 时越过，用户明确要求改正）。
 
-1. 在自己的分支上做（`feat/...`），全部测试 + analyze/typecheck 绿。
+1. 从 `dev` 切 `feat/...`/`fix/...` 做，全部测试 + analyze/typecheck 绿后 merge 回 `dev`。
 2. 打 APK。环境：`export PATH=$HOME/flutter/flutter/bin:$HOME/jdk-21.0.12.1+1/bin:$PATH`、
    `JAVA_HOME=$HOME/jdk-21.0.12.1+1`、`ANDROID_HOME=$HOME/Android/Sdk`
    （系统 `/usr/lib/jvm` 那几个是 JRE，没 javac），在 `app/` 下（**必须带 `--flavor`**，
@@ -39,9 +56,9 @@
 4. **三条都要核**：①APK 里 `strings lib/arm64-v8a/libapp.so` 能搜到该通道的 manifest URL；
    ②`aapt dump badging` 的 versionName/applicationId 对（beta = `…remotepi.beta`）；
    ③`curl -o /tmp/s.apk .../<channel>/<apk>` 下来 sha256 与本地一致。
-5. 测完确认后发正式版：push 到自己的 fork（remote `upstream`），发 Release
+5. 测完确认后发正式版：push 到 `origin`（自己的 fork），发 Release
    （`--target <分支>`），标题/正文用英文，APK 命名 `remote-pi-<版本>-arm64-signed.apk`；
-   发完 `gh release view --json` 自查 + 回下载对 sha256。**绝不 push 到 `origin`，不发 PR。**
+   发完 `gh release view --json` 自查 + 回下载对 sha256。**绝不 push 到 `upstream`（原作者），不发 PR。**
 6. Pi 侧（pi-extension）改动要同时给用户可用：`npm pack` 出 tgz，挂到同一个 Release，
    然后 `cd ~/.pi/agent/npm && npm install ./remote-pi-<版本>.tgz`。
    **supervisor 重启会杀掉所有房里正在跑的 turn（包括本会话）——只提醒用户自己执行；
@@ -50,9 +67,10 @@
 
 ## 当前状态
 
-- **房间管理（`SPEC-room-management.md`）已交付**（commit 7ad3389a，已并入 main 并随
-  1.5.x 系列发过 Release），任务书保留作参考，不用重做。
-- **手机命令通道已交付**：分支 `feat/app-commands`（0.8.0 / App 1.5.11+31），
+- **房间管理（`SPEC-room-management.md`）已交付**（已并入 `dev` 并随 1.5.x 系列发过
+  Release；给原作者的 PR #199 还开着，head 分支 `pr/room-management` 别删），任务书保留作
+  参考，不用重做。
+- **手机命令通道已交付**（已并入 `dev`；0.8.0 / App 1.5.11+31），
   Release `v1.5.11-commands-arm64`（APK + `remote-pi-0.8.0.tgz`），1.5.11 已推正式通道并校验，
   supervisor 已重启（`op:"rpc"` 生效）。
   手机 composer 支持 `/slash`（daemon 房走 RPC 通道跑扩展命令/技能/模板，其余内置
@@ -62,6 +80,6 @@
 - **测试通道（`beta` flavor + 下载站 `app-beta`）已建好**：首个测试包 `1.5.12-beta.1`(+32)
   已推测试通道（appId `work.jacobmoura.remotepi.beta`，与正式版共存）。改动：
   `app/android/app/build.gradle.kts`（flavor + `@string/app_name`）、
-  `rp-s3/selfhost/download_server.py`（`app-beta` 通道），已推 `feat/app-commands`。
+  `rp-s3/selfhost/download_server.py`（`app-beta` 通道），已并入 `dev`。
 
 不用 `agent_send` 向 Jarvis 汇报，进展直接在本会话回复用户。
