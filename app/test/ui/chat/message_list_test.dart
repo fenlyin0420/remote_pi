@@ -24,6 +24,14 @@ int _newestVisible(int count) {
 }
 
 Future<void> _pump(WidgetTester tester, List<ChatMessage> messages) async {
+  await _pumpWithStreaming(tester, messages, null);
+}
+
+Future<void> _pumpWithStreaming(
+  WidgetTester tester,
+  List<ChatMessage> messages,
+  String? streamingText,
+) async {
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
@@ -31,7 +39,9 @@ Future<void> _pump(WidgetTester tester, List<ChatMessage> messages) async {
           height: 200,
           child: MessageList(
             messages: messages,
-            streaming: null,
+            streaming: streamingText == null
+                ? null
+                : StreamingMessage(inReplyTo: 'u1', buffer: streamingText),
             onDecide: (_, _) {},
           ),
         ),
@@ -80,6 +90,37 @@ void main() {
       reason: 'the viewport must not drift toward the newest message',
     );
   });
+
+  testWidgets(
+    'a plain slow drag up wins against the follow while a reply streams',
+    (tester) async {
+      await _pump(tester, _rows(30));
+      expect(find.text('message 30'), findsOneWidget, reason: 'starts pinned');
+
+      // A finger moving a few pixels per frame, with the streaming bubble
+      // growing underneath it — the exact conditions under which the
+      // post-frame follow used to jump back to the bottom (killing the drag)
+      // on every frame, so only a violent flick could break away.
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(ListView)),
+      );
+      for (var i = 1; i <= 12; i++) {
+        await gesture.moveBy(const Offset(0, 10));
+        await _pumpWithStreaming(tester, _rows(30), 'streaming $i');
+      }
+      await gesture.up();
+      // Not pumpAndSettle: the streaming bubble's cursor blinks forever.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(
+        find.text('message 30'),
+        findsNothing,
+        reason: 'the drag must have taken the viewport into history',
+      );
+      expect(_newestVisible(30), lessThan(30));
+    },
+  );
 
   testWidgets('a message the user sends brings them back to the newest', (
     tester,
