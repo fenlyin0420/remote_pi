@@ -220,14 +220,15 @@ void main() {
   );
 
   test(
-    'unmatched notify is ignored; new request replaces the pending one',
+    'a notify for another id leaves the modal alone and becomes a notice',
     () async {
       final h = await harness();
 
       h.ch.push(_request('tool:f1'));
       await Future<void>.delayed(const Duration(milliseconds: 30));
 
-      // Notify for some other id → no effect on the open modal.
+      // A notify carrying a different id is not that modal's lifecycle: it is
+      // the Pi speaking on its own, so it goes to the notice strip.
       h.ch.push(
         const ExtensionUiRequest(
           id: 'other',
@@ -240,6 +241,7 @@ void main() {
       var state = h.vm.state as ChatReady;
       expect(state.pendingUiRequest?.id, 'tool:f1');
       expect(state.pendingUiError, isNull);
+      expect(state.notice, 'noise');
 
       // A new interactive request replaces the pending one (and clears errors).
       h.ch.push(_request('tool:f2'));
@@ -303,5 +305,55 @@ void main() {
     h.vm.dispose();
     h.sync.dispose();
     h.conn.dispose();
+  });
+
+  test('a stand-alone notify surfaces as a notice, not as a modal', () async {
+    // `ctx.ui.notify()` is how extension commands answer in the TUI
+    // (/mcp, /rp list, /todos, …). The phone used to drop it, so every one of
+    // them looked like a command that silently did nothing.
+    final h = await harness();
+
+    h.ch.push(
+      const ExtensionUiRequest(
+        id: 'notice-1',
+        method: ExtensionUiMethod.notify,
+        message: 'MCP Server Status:\n  pi-mcp: ok',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    final state = h.vm.state as ChatReady;
+    expect(state.notice, 'MCP Server Status:\n  pi-mcp: ok');
+    expect(
+      state.pendingUiRequest,
+      isNull,
+      reason: 'a stand-alone notice must not open a modal with no submit path',
+    );
+  });
+
+  test('a notify matching the open modal is still a modal lifecycle event', () async {
+    final h = await harness();
+
+    h.ch.push(_request('tool:f1'));
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect((h.vm.state as ChatReady).pendingUiRequest, isNotNull);
+
+    // A rejection for THAT request keeps the modal open and shows the reason —
+    // it must not be mistaken for a stand-alone notice.
+    h.ch.push(
+      const ExtensionUiRequest(
+        id: 'tool:f1',
+        method: ExtensionUiMethod.notify,
+        message: 'try again',
+        notifyType: 'error',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    final state = h.vm.state as ChatReady;
+    // A modal rejection is not a stand-alone notice: it must not also appear in
+    // the strip, which would double-report the same event.
+    expect(state.notice, isNull);
+    expect(state.pendingUiError, 'try again');
   });
 }

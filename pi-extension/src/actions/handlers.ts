@@ -80,8 +80,21 @@ export interface ActionPi {
  * `ExtensionContext` was seen) becomes a typed `action_error` instead of
  * a runtime TypeError.
  */
+/**
+ * Structural subset of the SDK's `CompactOptions` — only what remote-pi passes.
+ *
+ * `onError` is the important one: `ctx.compact()` is fire-and-forget, so
+ * without it a refused compaction (a session too small to compact, most often)
+ * was indistinguishable from a button that does nothing.
+ */
+export interface ActionCompactOptions {
+  customInstructions?: string;
+  onComplete?: (result: unknown) => void;
+  onError?: (error: Error) => void;
+}
+
 export interface ActionCtx {
-  compact?: (options?: object) => void;
+  compact?: (options?: ActionCompactOptions) => void;
   /**
    * Starts a new session. `withSession` is the SDK's blessed hook for
    * post-replacement work: it receives a FRESH, command-capable ctx bound to
@@ -196,7 +209,23 @@ export function handleSessionCompact(
     ctx.compact({
       customInstructions:
         "Always write the compaction summary in English, even if the conversation is in another language.",
+      onError: (err) => reportCompactFailure(sender, err),
     });
+  });
+}
+
+/**
+ * Reports why a compaction was refused. `ctx.compact()` is fire-and-forget:
+ * the `action_ok` reply only means "dispatched", so a failure has nowhere to
+ * go but a pushed frame — and without one a refused `/compact` (a session too
+ * small to compact, most often) looked exactly like a dead button.
+ */
+export function reportCompactFailure(sender: ActionReplySender, err: unknown): void {
+  const detail = err instanceof Error ? err.message : String(err);
+  sender.send({
+    type: "error",
+    code: "command_failed",
+    message: `/compact failed: ${detail}`,
   });
 }
 

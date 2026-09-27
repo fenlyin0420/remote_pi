@@ -155,6 +155,8 @@ Future<void> setupDependencies() async {
       _injector.get<Preferences>(),
       _injector.get<PairingStorage>(),
       _injector.get<VisibleSession>(),
+      // Command channel — feeds the `/` palette with the Pi's own catalogue.
+      _injector.get<IActionsRepository>(),
     ),
   );
   _injector.addViewModel<HomeViewModel>(

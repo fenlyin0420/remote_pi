@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/domain/value_objects/session_label.dart';
@@ -73,7 +76,28 @@ class ChatPage extends StatelessWidget {
             // surfaces those, and stacking duplicates noise the surface.
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
-            Expanded(child: _buildBody(context, state, vm)),
+            // The notify strip floats OVER the transcript rather than sitting
+            // in this column: as a layout sibling it shifted every message up
+            // by its height the moment a command answered.
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    key: const Key('chat-transcript'),
+                    child: _buildBody(context, state, vm),
+                  ),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _NoticeStrip(
+                      text: vm.notice,
+                      onDismiss: vm.dismissNotice,
+                    ),
+                  ),
+                ],
+              ),
+            ),
             _buildInput(context, state, vm),
           ],
         ),
@@ -175,7 +199,7 @@ class ChatPage extends StatelessWidget {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 6),
                 Row(
                   children: [
                     Flexible(
@@ -472,7 +496,55 @@ class ChatPage extends StatelessWidget {
           file: attachments.takeFileForSend(),
         );
       },
+      // Command channel. `/slash` and `!shell` go to the Pi instead of the
+      // model: the Pi classifies a slash name (builtin it can drive, extension
+      // command / skill / template over its RPC channel, or a refusal it
+      // explains), and runs a shell command in its own shell and cwd. Failures
+      // are the Pi's own words, so they are shown verbatim — and both callbacks
+      // must swallow them, or a refused `!` would surface as an unhandled async
+      // error instead of a toast.
+      onRunCommand: actionsEnabled
+          ? (text) => unawaited(_invoke(context, () => vm.runCommand(text)))
+          : null,
+      onRunBash: actionsEnabled
+          ? (command, {excludeFromContext = false}) => unawaited(
+              _invoke(
+                context,
+                () => vm.runBash(command, excludeFromContext: excludeFromContext),
+              ),
+            )
+          : null,
+      commands: isReady ? state.commands : const [],
+      onCommandsRequested: actionsEnabled ? vm.refreshCommands : null,
     );
+  }
+
+  /// Runs one command-channel call and surfaces a failure as a toast, in the
+  /// Pi's own words (unknown name, desktop only, needs a daemon room, offline).
+  ///
+  /// There is deliberately no success toast: what a command produces always
+  /// arrives on the normal channels — a `bash` tool card for `!cmd`, a
+  /// compaction notice for `/compact`, an extension's own output for anything
+  /// forwarded over RPC — and a second, faster signal on this side would only
+  /// get ahead of the real one.
+  static Future<void> _invoke(
+    BuildContext context,
+    Future<void> Function() call,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await call();
+    } on ActionFailure catch (e) {
+      if (!context.mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          duration: const Duration(seconds: 4),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   /// Open the Camera / Photo Library / File sheet and drive the picker.
@@ -692,13 +764,121 @@ class _InfoRow extends StatelessWidget {
               letterSpacing: 0.4,
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 6),
           SelectableText(
             value,
             style: TextStyle(
               fontFamily: kMonoFamily,
               fontSize: 13,
               color: colors.text,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Live output from the Pi that has no place in the transcript.
+///
+/// A command answered on Pi's notify channel (`/mcp`, `/rp list`, any extension
+/// calling `ctx.ui.notify`) produces no message row and no tool card — the text
+/// is transient by design. Without somewhere to put it the command looked like
+/// it did nothing at all, which is exactly how it was reported.
+///
+/// Floated over the bottom of the transcript (see the Stack in `build`) so
+/// appearing and disappearing never reflows the messages underneath, and
+/// dismissable, with a new notice replacing the previous one in place so a burst
+/// of commands cannot stack strips.
+///
+/// Deliberately not styled like a message or a tool card: it is the Pi talking
+/// about itself (a command's answer, a connection state), not part of the
+/// conversation. Hence the accent-tinted border and the labelled header, which
+/// read as chrome — the same reason it floats instead of joining the transcript.
+///
+/// Typography and layout follow the tool card's output block: `context.typo.mono`
+/// (this app has one source of truth for text styles) inside a horizontally
+/// scrolling viewport, so terminal-shaped output keeps its own line structure
+/// instead of soft-wrapping into an unreadable smear.
+class _NoticeStrip extends StatelessWidget {
+  const _NoticeStrip({required this.text, required this.onDismiss});
+
+  final String? text;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = text;
+    if (value == null || value.isEmpty) return const SizedBox.shrink();
+    final colors = context.colors;
+    final typo = context.typo;
+    return Container(
+      key: const Key('chat-notice-strip'),
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      decoration: BoxDecoration(
+        color: colors.codeBg,
+        border: Border.all(color: colors.accent.withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(10),
+        // Lifted off the transcript it covers, so it reads as an overlay rather
+        // than as the last message.
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.28),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 10, 6, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(LucideIcons.terminal, size: 11, color: colors.accent),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'PI OUTPUT',
+                  style: typo.monoSmall.copyWith(
+                    color: colors.accent,
+                    fontSize: 10,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ),
+              IconButton(
+                key: const Key('chat-notice-dismiss'),
+                icon: Icon(LucideIcons.x, size: 16, color: colors.muted),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+                tooltip: 'Dismiss',
+                onPressed: onDismiss,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Divider(height: 12, thickness: 1, color: colors.border),
+          ConstrainedBox(
+            // Long output (an MCP server list, a roleplay roster) stays readable
+            // without taking over the chat.
+            constraints: const BoxConstraints(maxHeight: 160),
+            child: SingleChildScrollView(
+              child: SingleChildScrollView(
+                // No soft wrap: a wrapped table or list is harder to read than
+                // one you scroll sideways, and it keeps the notice's height
+                // stable regardless of content.
+                scrollDirection: Axis.horizontal,
+                child: SelectableText(
+                  value,
+                  style: typo.mono.copyWith(
+                    color: colors.text,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ),
             ),
           ),
         ],

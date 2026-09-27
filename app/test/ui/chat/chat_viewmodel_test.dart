@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
@@ -40,6 +41,66 @@ class _FakeChannel implements IChannel, IControlLink {
 
   void push(ServerMessage m) => _ctrl.add(m);
   void pushControl(ControlInbound m) => _control.add(m);
+}
+
+/// Command-channel stand-in: records what the VM dispatched and can be told to
+/// fail, so the "errors are rethrown, not swallowed" contract is pinned.
+class _FakeActions implements IActionsRepository {
+  final List<String> commands = [];
+  final List<({String command, bool exclude})> bashes = [];
+  Object? runError;
+  Object? listError;
+  List<WireCommand> catalogue = const [];
+
+  @override
+  Future<void> runCommand(String text) async {
+    if (runError != null) throw runError!;
+    commands.add(text);
+  }
+
+  @override
+  Future<void> runBash(String command, {bool excludeFromContext = false}) async {
+    if (runError != null) throw runError!;
+    bashes.add((command: command, exclude: excludeFromContext));
+  }
+
+  @override
+  Future<List<WireCommand>> listCommands({bool forceRefresh = false}) async {
+    if (listError != null) throw listError!;
+    return catalogue;
+  }
+
+  @override
+  ActiveRoomMeta get activeRoomMeta => const ActiveRoomMeta();
+
+  @override
+  Stream<ActiveRoomMeta> get activeRoomMetaStream =>
+      const Stream<ActiveRoomMeta>.empty();
+
+  @override
+  Future<void> compact() async {}
+
+  @override
+  Future<void> newSession() async {}
+
+  @override
+  Future<void> setModel(String provider, String modelId) async {}
+
+  @override
+  Future<void> setThinking(ThinkingLevel level) async {}
+
+  @override
+  Future<void> createRoom(String path, {bool createIfMissing = false}) async {}
+
+  @override
+  Future<void> deleteRoom(String path) async {}
+
+  @override
+  Future<ModelsCatalogue> listModels({bool forceRefresh = false}) async =>
+      const ModelsCatalogue(models: [], current: null);
+
+  @override
+  void dispose() {}
 }
 
 class _FakeSecureStorage implements FlutterSecureStorage {
@@ -451,6 +512,100 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(vm.isWorking, isFalse);
     expect((vm.state as ChatReady).isWorking, isFalse);
+
+    vm.dispose();
+    sync.dispose();
+    conn.dispose();
+  });
+
+  test('refreshCommands() puts the Pi catalogue in the state; failures stay quiet', () async {
+    final ch = _FakeChannel();
+    final storage = _FakeStorage();
+    final conn = ConnectionManager(
+      factory: (_, _) async => ch,
+      storage: storage,
+    );
+    final boxes = LocalBoxes();
+    final sync = SyncService(conn, boxes);
+    final read = SessionReadRepository(boxes);
+    final prefs = Preferences(_FakeSecureStorage());
+    await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+    await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+    conn.adopt(ch, _peer);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    final actions = _FakeActions();
+    final vm = ChatViewModel(
+      read,
+      sync,
+      conn,
+      prefs,
+      storage,
+      VisibleSession(),
+      actions,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect((vm.state as ChatReady).commands, isEmpty);
+
+    actions.catalogue = [
+      WireCommand(
+        name: 'compact',
+        description: 'Compact',
+        source: CommandSource.builtin,
+        scope: CommandScope.all,
+        supported: true,
+      ),
+    ];
+    await vm.refreshCommands();
+    expect((vm.state as ChatReady).commands.single.name, 'compact');
+
+    // A Pi that refuses the catalogue must not turn into an error banner: the
+    // palette simply stays as it was and the next open retries.
+    actions.listError = const ActionFailure('offline');
+    await vm.refreshCommands();
+    expect((vm.state as ChatReady).commands.single.name, 'compact');
+
+    vm.dispose();
+    sync.dispose();
+    conn.dispose();
+  });
+
+  test('runCommand/runBash delegate to the repository and rethrow its reason', () async {
+    final ch = _FakeChannel();
+    final storage = _FakeStorage();
+    final conn = ConnectionManager(
+      factory: (_, _) async => ch,
+      storage: storage,
+    );
+    final boxes = LocalBoxes();
+    final sync = SyncService(conn, boxes);
+    final read = SessionReadRepository(boxes);
+    final prefs = Preferences(_FakeSecureStorage());
+    await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+    await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+    conn.adopt(ch, _peer);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    final actions = _FakeActions();
+    final vm = ChatViewModel(
+      read,
+      sync,
+      conn,
+      prefs,
+      storage,
+      VisibleSession(),
+      actions,
+    );
+    await vm.runCommand('/compact now');
+    await vm.runBash('git status', excludeFromContext: true);
+    expect(actions.commands, ['/compact now']);
+    expect(actions.bashes, [(command: 'git status', exclude: true)]);
+
+    actions.runError = const ActionFailure('/settings is only available in the Pi TUI');
+    await expectLater(
+      vm.runCommand('/settings'),
+      throwsA(isA<ActionFailure>()),
+    );
 
     vm.dispose();
     sync.dispose();

@@ -71,6 +71,16 @@ class _FakeRepo implements IActionsRepository {
   }
 
   @override
+  Future<void> runCommand(String text) async {}
+
+  @override
+  Future<void> runBash(String command, {bool excludeFromContext = false}) async {}
+
+  @override
+  Future<List<WireCommand>> listCommands({bool forceRefresh = false}) async =>
+      const [];
+
+  @override
   void dispose() {}
 }
 

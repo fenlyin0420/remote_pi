@@ -2,7 +2,7 @@ import { ChildProcess, execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { DaemonState } from "./control_protocol.js";
+import type { DaemonState, RpcCommandWire, RpcResponseWire } from "./control_protocol.js";
 import { defaultAgentName, loadLocalConfig, type LocalConfig } from "../session/local_config.js";
 
 /**
@@ -155,6 +155,62 @@ export function busyTransition(line: string): boolean | null {
   return null;
 }
 
+/** A notification the child sent on Pi's extension-UI channel.
+ *
+ * `ctx.ui.notify()` is how extension commands answer when they are not the TUI
+ * (there it prints in the footer). The SDK marks it "fire and forget", so the
+ * daemon is the only place that can carry it back out: nothing else in the
+ * chain looks at the child's stdout. */
+export interface RpcUiEvent {
+  /** The request's own id (`crypto.randomUUID()` for a notify). */
+  id?: string;
+  method?: string;
+  message?: string;
+  notifyType?: "info" | "warning" | "error";
+}
+
+/**
+ * Maps an RPC stdout line to an extension-UI event, or null. Only the fields a
+ * consumer forwards are read; a malformed line is ignored like any other.
+ *
+ * `timeoutMs` is dropped on purpose: a notify needs no answer, and a dialog
+ * request is the wrong thing to surface as a notification.
+ */
+export function parseUiEventLine(line: string): RpcUiEvent | null {
+  let obj: unknown;
+  try { obj = JSON.parse(line); } catch { return null; }
+  const o = obj as {
+    type?: unknown; id?: unknown; method?: unknown; message?: unknown; notifyType?: unknown;
+  };
+  if (o.type !== "extension_ui_request") return null;
+  const ev: RpcUiEvent = {};
+  if (typeof o.id === "string") ev.id = o.id;
+  if (typeof o.method === "string") ev.method = o.method;
+  if (typeof o.message === "string") ev.message = o.message;
+  if (o.notifyType === "info" || o.notifyType === "warning" || o.notifyType === "error") {
+    ev.notifyType = o.notifyType;
+  }
+  return ev;
+}
+
+/** Parses an RPC `response` line into its id + the forwarded payload.
+ *  Returns null for anything that isn't a response (events dominate the
+ *  stream), so the id-correlation path stays cheap. */
+export function parseResponseLine(
+  line: string,
+): { id?: string; response: RpcResponseWire } | null {
+  let obj: unknown;
+  try { obj = JSON.parse(line); } catch { return null; }
+  const o = obj as { type?: unknown; id?: unknown; command?: unknown; success?: unknown; data?: unknown; error?: unknown };
+  if (o.type !== "response") return null;
+  const response: RpcResponseWire = {};
+  if (typeof o.command === "string") response.command = o.command;
+  if (typeof o.success === "boolean") response.success = o.success;
+  if (o.data !== undefined) response.data = o.data;
+  if (typeof o.error === "string") response.error = o.error;
+  return { id: typeof o.id === "string" ? o.id : undefined, response };
+}
+
 /** Parses a `get_state` RPC response line, returning its id + isStreaming. */
 function parseGetStateResponse(line: string): { id?: string; isStreaming?: boolean } | null {
   let obj: unknown;
@@ -230,6 +286,8 @@ export class RpcChild extends EventEmitter {
   private _busy = false;
   /** In-flight `get_state` requests, keyed by request id. */
   private readonly _statePending = new Map<string, { resolve: (b: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+  /** In-flight awaited RPC commands, keyed by request id (see `awaitCommand`). */
+  private readonly _commandPending = new Map<string, { resolve: (res: RpcResponseWire | null) => void }>();
 
   constructor(private readonly opts: RpcChildOptions) {
     super();
@@ -318,14 +376,51 @@ export class RpcChild extends EventEmitter {
    * Returns false if the child isn't running (caller decides how to report).
    */
   sendPrompt(text: string, requestId?: string): boolean {
+    return this.sendCommand({ type: "prompt", message: text }, requestId);
+  }
+
+  /**
+   * Sends any Pi RPC command to the child's stdin. Fire-and-forget; returns
+   * false when the child isn't running. Use {@link awaitCommand} when the
+   * caller needs the child's own answer (e.g. a command that may be rejected
+   * by preflight).
+   */
+  sendCommand(command: RpcCommandWire, requestId?: string): boolean {
     if (!this.child || !this.child.stdin || this._state !== "running") return false;
-    const cmd = { id: requestId ?? `sv-${Date.now()}`, type: "prompt", message: text };
+    const id = requestId ?? `sv-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
     try {
-      this.child.stdin.write(JSON.stringify(cmd) + "\n");
+      this.child.stdin.write(JSON.stringify({ id, ...command }) + "\n");
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Sends a Pi RPC command and resolves with the matching `response` line
+   * (correlated by the id we stamped). Resolves `null` on timeout, on a dead
+   * child, or if the child exits first — callers treat "no answer" as
+   * "delivered, unknown outcome" rather than a hard failure.
+   */
+  async awaitCommand(command: RpcCommandWire, timeoutMs = 5000): Promise<RpcResponseWire | null> {
+    if (!this.child || !this.child.stdin || this._state !== "running") return null;
+    const id = `sv-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    return new Promise<RpcResponseWire | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this._commandPending.delete(id);
+        resolve(null);
+      }, timeoutMs);
+      this._commandPending.set(id, {
+        resolve: (res) => { clearTimeout(timer); resolve(res); },
+      });
+      try {
+        this.child!.stdin!.write(JSON.stringify({ id, ...command }) + "\n");
+      } catch {
+        clearTimeout(timer);
+        this._commandPending.delete(id);
+        resolve(null);
+      }
+    });
   }
 
   /**
@@ -372,7 +467,18 @@ export class RpcChild extends EventEmitter {
         pending.resolve(this._busy);
       }
     }
-    this.emit("stdout", line);
+    const resp = parseResponseLine(line);
+    if (resp && resp.id) {
+      const pending = this._commandPending.get(resp.id);
+      if (pending) {
+        this._commandPending.delete(resp.id);
+        pending.resolve(resp.response);
+      }
+    }
+    // The child's side of Pi's extension-UI channel rides the same stream:
+    // consumers that care (the supervisor's stdout bridge) get it as a second
+    // argument, everyone else keeps ignoring it.
+    this.emit("stdout", line, parseUiEventLine(line) ?? undefined);
   }
 
   /**
@@ -422,6 +528,8 @@ export class RpcChild extends EventEmitter {
       p.resolve(false);
     }
     this._statePending.clear();
+    for (const p of this._commandPending.values()) p.resolve(null);
+    this._commandPending.clear();
     this.emit("exit", { code, signal, isCrash } satisfies RpcChildExitEvent);
   }
 

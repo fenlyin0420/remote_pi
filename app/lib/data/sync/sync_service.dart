@@ -74,6 +74,19 @@ class _RoomTurn {
   List<QueuedMsg> queuedMessages = const [];
 }
 
+/// Transport-level error codes (mirrors the Pi's `KnownErrorCode`).
+const _knownErrorCodes = {
+  'tool_approval_required',
+  'invalid_message',
+  'unsupported_type',
+  'too_large',
+  'rate_limited',
+  'timeout',
+  'internal_error',
+  'provider_error',
+  'unknown_peer',
+};
+
 class SyncService extends Service {
   final ConnectionManager _conn;
   final LocalBoxes _boxes;
@@ -352,6 +365,12 @@ class SyncService extends Service {
   /// Test seam — number of armed no-echo timers (asserts no leak on reset).
   @visibleForTesting
   int get debugPendingSendTimerCount => _pendingSendTimers.length;
+
+  /// Test seam — deliver one already-decoded server frame through the normal
+  /// dispatch path. Lets a widget test drive a frame the relay would send
+  /// (e.g. an extension's notify) without standing up a socket.
+  @visibleForTesting
+  void onServerMessageForTest(ServerMessage msg) => _onServerMessage(msg);
 
   Future<void> queueMessage(String text) async {
     final ch = _conn.channel;
@@ -792,7 +811,10 @@ class SyncService extends Service {
             id: 'err_$seq',
             seq: seq,
             role: MsgRole.assistant,
-            text: '⚠ $code: $message',
+            // A known transport code is worth labelling; a Pi-side marker like
+            // `command_failed` is bookkeeping, and its message is the part
+            // written for a human — so that stands alone.
+            text: _labelledError(code, message),
             ts: DateTime.now(),
           ),
         );
@@ -811,8 +833,21 @@ class SyncService extends Service {
       case ActionOk():
       case ActionError():
       case ModelsList():
+      // Command channel: the `/` palette catalogue is consumed by the
+      // ActionsRepository (it asked for it), the action replies with it, and a
+      // `!` shell execution rides the normal tool stream as a `bash` card.
+      // Nothing here belongs in the transcript.
+      case CommandsList():
         break;
     }
+  }
+
+  /// Error text for the transcript: `⚠ code: message` for transport codes the
+  /// app knows, `⚠ message` for Pi-side markers (`command_failed`, …) whose
+  /// code is bookkeeping rather than something to show.
+  static String _labelledError(String code, String message) {
+    if (!_knownErrorCodes.contains(code)) return '⚠ $message';
+    return '⚠ $code: $message';
   }
 
   /// Plan/32 — persist a compaction as a system row so it renders a system

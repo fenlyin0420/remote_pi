@@ -167,6 +167,28 @@ describe("Supervisor — control UDS surface", () => {
     expect(r).toMatchObject({ ok: true, data: { removed: false } });
   });
 
+  // ── rpc passthrough (phone command channel) ──
+
+  test("rpc refuses a verb outside the allow-list, before touching any child", async () => {
+    const r = await ask({ op: "rpc", id: "ffffffff", command: { type: "shutdown" } });
+    expect(r).toMatchObject({ ok: false });
+    if (!r.ok) expect(r.error).toMatch(/not allowed/i);
+  });
+
+  test("rpc with a missing type is refused rather than forwarded", async () => {
+    // Cast past the wire type: the supervisor must defend against a malformed
+    // frame, not trust that the sender used the same types it does.
+    const r = await ask({ op: "rpc", id: "ffffffff", command: {} } as unknown as ControlRequest);
+    expect(r).toMatchObject({ ok: false });
+    if (!r.ok) expect(r.error).toMatch(/missing type/i);
+  });
+
+  test("rpc to an unknown daemon reports that, not a timeout", async () => {
+    const r = await ask({ op: "rpc", id: "ffffffff", command: { type: "get_state" } });
+    expect(r).toMatchObject({ ok: false });
+    if (!r.ok) expect(r.error).toMatch(/not running/i);
+  });
+
   test("malformed request returns ok:false with parser error", async () => {
     const reply = await new Promise<ControlReply<unknown>>((resolve, reject) => {
       const sock = createConnection({ path: getSupervisorSockPath() });

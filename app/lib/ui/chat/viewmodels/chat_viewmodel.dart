@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -13,6 +14,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
+import 'package:flutter/foundation.dart';
 
 /// Plan/31 — ChatViewModel is now a thin composer over the local SSOT.
 ///
@@ -34,6 +36,14 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// while that screen is mounted (the tablet swaps VMs per session, the phone
   /// disposes on back).
   final VisibleSession _visibleSession;
+
+  /// Command channel — optional so the many test harnesses that construct this
+  /// VM keep working without an actions repository. `null` means the `/`
+  /// palette has no catalogue to offer; typing a command name still works,
+  /// because the Pi classifies it either way.
+  final IActionsRepository? _actions;
+
+  List<WireCommand> _commands = const [];
 
   StreamSubscription<List<MessageRecord>>? _msgsSub;
   StreamSubscription<RuntimeRecord>? _runtimeSub;
@@ -60,6 +70,39 @@ class ChatViewModel extends ViewModel<ChatState> {
   // / resolved). Surfaced to the modal so the user can retry instead of staring
   // at a closed/dismissed flow that's still blocked on desktop.
   String? _pendingUiError;
+
+  /// Stand-alone `ctx.ui.notify()` messages from the Pi — the output of
+  /// extension commands that answer on the notify channel. The page renders
+  /// them as a transient notice; they are not part of the transcript (they are
+  /// transient by definition and the Pi keeps no history of them).
+  /// The most recent output a command produced on Pi's notify channel.
+  ///
+  /// Plain state rather than a stream: the composer sits below the transcript
+  /// and is rebuilt whenever anything changes, and a broadcast stream meant the
+  /// notice could fire before the strip subscribed (the frame is delivered by
+  /// SyncService, whose listener order is not ours to control).
+  String? _notice;
+
+  /// Test seam — lets a test tell "the VM never received the notify" from
+  /// "the widget did not render it".
+  @visibleForTesting
+  String? get debugLastNotice => _notice;
+
+  /// The notice currently shown above the composer (`null` when none).
+  ///
+  /// Read straight off the VM rather than threaded through a `state` argument:
+  /// `_buildInput` is called with the state captured during `build`, and a
+  /// notice arriving between that capture and the widget's construction left
+  /// the strip built with `null`.
+  String? get notice => _notice;
+
+  /// Dismiss the current notice (`null` when there is nothing to show).
+  void dismissNotice() {
+    if (_notice == null) return;
+    _notice = null;
+    _recompute();
+  }
+
   RuntimeRecord _runtime = const RuntimeRecord();
   bool _pairingRevoked = false;
   String? _peerOfflineReason;
@@ -71,8 +114,9 @@ class ChatViewModel extends ViewModel<ChatState> {
     this._conn,
     this._prefs,
     this._storage,
-    this._visibleSession,
-  ) : super(const ChatReady(messages: [])) {
+    this._visibleSession, [
+    this._actions,
+  ]) : super(const ChatReady(messages: [])) {
     // Plan/32f — do NOT seed _streaming/_working from the shared SyncService
     // here: it may still be bound to the PREVIOUS chat (this VM is recreated
     // on session switch, before _bootstrap rebinds via activate). Seeding now
@@ -272,6 +316,12 @@ class ChatViewModel extends ViewModel<ChatState> {
   ///  - a submit-result warning (notify_type warning/error) → keep the modal
   ///    open and surface the message so the user can retry.
   /// Any non-notify request opens/replaces the modal (and clears a prior error).
+  ///
+  /// A **stand-alone** `notify` (no modal waiting on its id) is the Pi speaking
+  /// on its own: `ctx.ui.notify()` from an extension command, which in the TUI
+  /// is how those commands answer — `/mcp`, `/rp list`, `/todos` and friends
+  /// print their output that way. Dropping it made every one of them look like
+  /// a command that silently did nothing on the phone.
   void _onExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
       final matchesOpen =
@@ -287,8 +337,12 @@ class ChatViewModel extends ViewModel<ChatState> {
           _pendingUiRequest = null;
           _pendingUiError = null;
         }
+      } else {
+        final text = req.message ?? '';
+        if (text.isNotEmpty) {
+          _notice = text;
+        }
       }
-      // Unmatched notifies (stand-alone notices) are ignored in v1.
     } else {
       _pendingUiRequest = req;
       _pendingUiError = null;
@@ -308,8 +362,12 @@ class ChatViewModel extends ViewModel<ChatState> {
     // inline (banner + presence dot via isOffline/peerPresence), never as a
     // full-screen spinner, so entering the chat doesn't flicker.
     if (_activePeer == null) {
+      // A notice can arrive while the room is still unbound (a command sent
+      // just before the peer resolved, or a reconnect mid-stream). Dropping it
+      // here is what made a relayed notification invisible: the server side
+      // worked and the frame arrived, but every recompute discarded it.
       return _bootstrapping
-          ? const ChatReady(messages: [])
+          ? ChatReady(messages: const [], notice: _notice)
           : const ChatNoPeer();
     }
     final isOnline = _runtime.connection == RuntimeConnection.online;
@@ -328,8 +386,46 @@ class ChatViewModel extends ViewModel<ChatState> {
       isWorking: isWorking,
       queuedMessages: _queuedMessages,
       pendingUiRequest: _pendingUiRequest,
+      notice: _notice,
       pendingUiError: _pendingUiError,
+      commands: _commands,
     );
+  }
+
+  // --- Command channel (`/slash` and `!shell`) ---
+
+  /// Fetches the `/` palette catalogue from the Pi (cached per peer+room by the
+  /// repository, so re-opening the palette is a local hit). Called when the
+  /// palette becomes visible rather than at bootstrap: the room may not be live
+  /// yet at mount, and a failure here is not worth an error banner — the user can
+  /// still type the command, and the next open retries.
+  Future<void> refreshCommands() async {
+    final actions = _actions;
+    if (actions == null || _disposed) return;
+    try {
+      final commands = await actions.listCommands();
+      if (_disposed) return;
+      _commands = commands;
+      _recompute();
+    } on ActionFailure {
+      // Best-effort: an empty palette is a missing convenience, not an error.
+    }
+  }
+
+  /// Runs a `/slash` line. Errors carry the Pi's own explanation (unknown name,
+  /// desktop-only, needs a daemon room) and are rethrown for the page to toast.
+  Future<void> runCommand(String text) async {
+    final actions = _actions;
+    if (actions == null) return;
+    await actions.runCommand(text);
+  }
+
+  /// Runs a `!shell` command on the Pi. The output arrives as a `bash` tool
+  /// card on the normal tool stream, not through this Future.
+  Future<void> runBash(String command, {bool excludeFromContext = false}) async {
+    final actions = _actions;
+    if (actions == null) return;
+    await actions.runBash(command, excludeFromContext: excludeFromContext);
   }
 
   // --- Commands (writer = SyncService; lifecycle = ConnectionManager) ---

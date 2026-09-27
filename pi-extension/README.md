@@ -148,6 +148,28 @@ interactive loop), so the app exposes only the actions that have a clean
 SDK call. The [`pi-telegram`](https://github.com/llblab/pi-telegram) adapter
 follows the same pattern.
 
+### Commands (`/slash` and `!shell`)
+
+The composer also takes commands directly. Typing `/` opens a palette fed by
+`list_commands` (the Pi's own catalogue: the builtins it implements, plus this
+session's extension commands, skills and prompt templates), and the submitted
+text goes to the Pi as `command_invoke` instead of to the model. `!cmd` runs a
+shell command on the Pi (`bash_exec`, `!!` to keep the output out of the
+model's context) and comes back as a `bash` tool card.
+
+The split is deliberate, because a slash name can mean three different things:
+
+| Kind | Where it runs |
+|---|---|
+| `/compact`, `/new`, `/model`, `/thinking`, `/name` | In the extension, on the same SDK calls the Quick Actions use. Works in **any** room. |
+| Extension commands (`pi.registerCommand`), `/skill:name`, prompt templates | Through Pi's RPC stdin, the one path that reaches `AgentSession.prompt` with expansion on. Needs a **daemon room** (see [daemon.md](daemon.md)). |
+| Everything else (`/login`, `/settings`, `/tree`, `/share`, …) | Refused by name: those live in the TUI's interactive loop. |
+
+A slash command sent while paired to a TUI-hosted Pi therefore answers with an
+explanation instead of silently becoming a literal message. `list_commands`
+flags each entry with `scope` + `supported` so the palette can show it disabled
+with the reason.
+
 ### Images
 
 The app can attach **one image** (camera or gallery) to a message. It's
