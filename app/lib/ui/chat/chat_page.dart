@@ -199,7 +199,7 @@ class ChatPage extends StatelessWidget {
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 6),
                 Row(
                   children: [
                     Flexible(
@@ -764,7 +764,7 @@ class _InfoRow extends StatelessWidget {
               letterSpacing: 0.4,
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: 6),
           SelectableText(
             value,
             style: TextStyle(
@@ -791,6 +791,11 @@ class _InfoRow extends StatelessWidget {
 /// dismissable, with a new notice replacing the previous one in place so a burst
 /// of commands cannot stack strips.
 ///
+/// Deliberately not styled like a message or a tool card: it is the Pi talking
+/// about itself (a command's answer, a connection state), not part of the
+/// conversation. Hence the accent-tinted border and the labelled header, which
+/// read as chrome — the same reason it floats instead of joining the transcript.
+///
 /// Typography and layout follow the tool card's output block: `context.typo.mono`
 /// (this app has one source of truth for text styles) inside a horizontally
 /// scrolling viewport, so terminal-shaped output keeps its own line structure
@@ -806,43 +811,75 @@ class _NoticeStrip extends StatelessWidget {
     final value = text;
     if (value == null || value.isEmpty) return const SizedBox.shrink();
     final colors = context.colors;
+    final typo = context.typo;
     return Container(
       key: const Key('chat-notice-strip'),
-      margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       decoration: BoxDecoration(
         color: colors.codeBg,
-        border: Border.all(color: colors.border),
-        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.accent.withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(10),
+        // Lifted off the transcript it covers, so it reads as an overlay rather
+        // than as the last message.
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.28),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(12, 10, 6, 12),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Expanded(
-            child: ConstrainedBox(
-              // Long output (an MCP server list, a roleplay roster) stays
-              // readable without taking over the chat.
-              constraints: const BoxConstraints(maxHeight: 160),
+          Row(
+            children: [
+              Icon(LucideIcons.terminal, size: 11, color: colors.accent),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  'PI OUTPUT',
+                  style: typo.monoSmall.copyWith(
+                    color: colors.accent,
+                    fontSize: 10,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ),
+              IconButton(
+                key: const Key('chat-notice-dismiss'),
+                icon: Icon(LucideIcons.x, size: 16, color: colors.muted),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+                tooltip: 'Dismiss',
+                onPressed: onDismiss,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Divider(height: 12, thickness: 1, color: colors.border),
+          ConstrainedBox(
+            // Long output (an MCP server list, a roleplay roster) stays readable
+            // without taking over the chat.
+            constraints: const BoxConstraints(maxHeight: 160),
+            child: SingleChildScrollView(
               child: SingleChildScrollView(
-                child: SingleChildScrollView(
-                  // No soft wrap: a wrapped table or list is harder to read
-                  // than one you scroll sideways, and it keeps the notice's
-                  // height stable regardless of content.
-                  scrollDirection: Axis.horizontal,
-                  child: SelectableText(
-                    value,
-                    style: context.typo.mono.copyWith(color: colors.muted2),
+                // No soft wrap: a wrapped table or list is harder to read than
+                // one you scroll sideways, and it keeps the notice's height
+                // stable regardless of content.
+                scrollDirection: Axis.horizontal,
+                child: SelectableText(
+                  value,
+                  style: typo.mono.copyWith(
+                    color: colors.text,
+                    decoration: TextDecoration.none,
                   ),
                 ),
               ),
             ),
-          ),
-          IconButton(
-            key: const Key('chat-notice-dismiss'),
-            icon: const Icon(LucideIcons.x, size: 16),
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Dismiss',
-            onPressed: onDismiss,
           ),
         ],
       ),
