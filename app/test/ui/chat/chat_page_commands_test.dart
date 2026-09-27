@@ -319,6 +319,35 @@ void main() {
   // The common case is a second command while the first notice is still up:
   // replacing in place keeps a burst of commands from stacking strips and
   // pushing the transcript off screen.
+  // Floated, not stacked: the notice must not push the transcript around. The
+  // bug was visible as messages jumping up by the strip's height whenever a
+  // command answered, and it is a layout property, so it is asserted as one.
+  testWidgets('the notice floats — showing it does not move the messages', (tester) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+
+    // An empty room renders _EmptyState rather than MessageList, so the
+    // transcript region is measured by the overlay's own parent.
+    final bodyBefore = tester.getRect(find.byKey(const Key('chat-transcript')));
+    app.sync.onServerMessageForTest(
+      const ExtensionUiRequest(
+        id: 'notify-1',
+        method: ExtensionUiMethod.notify,
+        message: 'MCP Server Status:\n  pi-mcp: ok',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('chat-notice-strip')), findsOneWidget);
+    expect(
+      tester.getRect(find.byKey(const Key('chat-transcript'))),
+      bodyBefore,
+      reason: 'the transcript must keep its geometry while a notice is shown',
+    );
+
+    shutdown(app);
+  });
+
   testWidgets('a newer Pi notify replaces the previous one', (tester) async {
     final actions = _FakeActions();
     final app = await pumpChat(tester, actions);

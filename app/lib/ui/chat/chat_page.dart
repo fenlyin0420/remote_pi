@@ -76,7 +76,28 @@ class ChatPage extends StatelessWidget {
             // surfaces those, and stacking duplicates noise the surface.
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
-            Expanded(child: _buildBody(context, state, vm)),
+            // The notify strip floats OVER the transcript rather than sitting
+            // in this column: as a layout sibling it shifted every message up
+            // by its height the moment a command answered.
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    key: const Key('chat-transcript'),
+                    child: _buildBody(context, state, vm),
+                  ),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _NoticeStrip(
+                      text: vm.notice,
+                      onDismiss: vm.dismissNotice,
+                    ),
+                  ),
+                ],
+              ),
+            ),
             _buildInput(context, state, vm),
           ],
         ),
@@ -436,11 +457,7 @@ class ChatPage extends StatelessWidget {
         !isPeerOffline &&
         !isPresenceOffline;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _NoticeStrip(text: vm.notice, onDismiss: vm.dismissNotice),
-        InputBar(
+    return InputBar(
       disabled:
           !isReady ||
           isOffline ||
@@ -499,8 +516,6 @@ class ChatPage extends StatelessWidget {
           : null,
       commands: isReady ? state.commands : const [],
       onCommandsRequested: actionsEnabled ? vm.refreshCommands : null,
-        ),
-      ],
     );
   }
 
@@ -771,10 +786,15 @@ class _InfoRow extends StatelessWidget {
 /// is transient by design. Without somewhere to put it the command looked like
 /// it did nothing at all, which is exactly how it was reported.
 ///
-/// Rendered just above the composer, monospaced and scrollable (these are
-/// terminal-shaped outputs), dismissable, and replaced in place by the next
-/// notice so repeated commands never stack up. Driven by state, not a stream:
-/// a listener here could be handed the frame before it subscribed.
+/// Floated over the bottom of the transcript (see the Stack in `build`) so
+/// appearing and disappearing never reflows the messages underneath, and
+/// dismissable, with a new notice replacing the previous one in place so a burst
+/// of commands cannot stack strips.
+///
+/// Typography and layout follow the tool card's output block: `context.typo.mono`
+/// (this app has one source of truth for text styles) inside a horizontally
+/// scrolling viewport, so terminal-shaped output keeps its own line structure
+/// instead of soft-wrapping into an unreadable smear.
 class _NoticeStrip extends StatelessWidget {
   const _NoticeStrip({required this.text, required this.onDismiss});
 
@@ -785,32 +805,33 @@ class _NoticeStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final value = text;
     if (value == null || value.isEmpty) return const SizedBox.shrink();
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final colors = context.colors;
     return Container(
       key: const Key('chat-notice-strip'),
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
-      padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+      margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
+        color: colors.codeBg,
+        border: Border.all(color: colors.border),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: scheme.outlineVariant),
       ),
+      padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
             child: ConstrainedBox(
-              // Long output (an MCP server list, a roleplay roster) must stay
+              // Long output (an MCP server list, a roleplay roster) stays
               // readable without taking over the chat.
               constraints: const BoxConstraints(maxHeight: 160),
               child: SingleChildScrollView(
-                child: SelectableText(
-                  value,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                    height: 1.35,
+                child: SingleChildScrollView(
+                  // No soft wrap: a wrapped table or list is harder to read
+                  // than one you scroll sideways, and it keeps the notice's
+                  // height stable regardless of content.
+                  scrollDirection: Axis.horizontal,
+                  child: SelectableText(
+                    value,
+                    style: context.typo.mono.copyWith(color: colors.muted2),
                   ),
                 ),
               ),
