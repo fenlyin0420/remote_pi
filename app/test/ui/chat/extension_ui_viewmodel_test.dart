@@ -223,8 +223,6 @@ void main() {
     'a notify for another id leaves the modal alone and becomes a notice',
     () async {
       final h = await harness();
-      final notices = <String>[];
-      h.vm.notices.listen(notices.add);
 
       h.ch.push(_request('tool:f1'));
       await Future<void>.delayed(const Duration(milliseconds: 30));
@@ -243,7 +241,7 @@ void main() {
       var state = h.vm.state as ChatReady;
       expect(state.pendingUiRequest?.id, 'tool:f1');
       expect(state.pendingUiError, isNull);
-      expect(notices, ['noise']);
+      expect(state.notice, 'noise');
 
       // A new interactive request replaces the pending one (and clears errors).
       h.ch.push(_request('tool:f2'));
@@ -314,8 +312,6 @@ void main() {
     // (/mcp, /rp list, /todos, …). The phone used to drop it, so every one of
     // them looked like a command that silently did nothing.
     final h = await harness();
-    final notices = <String>[];
-    h.vm.notices.listen(notices.add);
 
     h.ch.push(
       const ExtensionUiRequest(
@@ -326,9 +322,10 @@ void main() {
     );
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    expect(notices, ['MCP Server Status:\n  pi-mcp: ok']);
+    final state = h.vm.state as ChatReady;
+    expect(state.notice, 'MCP Server Status:\n  pi-mcp: ok');
     expect(
-      (h.vm.state as ChatReady).pendingUiRequest,
+      state.pendingUiRequest,
       isNull,
       reason: 'a stand-alone notice must not open a modal with no submit path',
     );
@@ -336,8 +333,6 @@ void main() {
 
   test('a notify matching the open modal is still a modal lifecycle event', () async {
     final h = await harness();
-    final notices = <String>[];
-    h.vm.notices.listen(notices.add);
 
     h.ch.push(_request('tool:f1'));
     await Future<void>.delayed(const Duration(milliseconds: 30));
@@ -355,7 +350,10 @@ void main() {
     );
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    expect(notices, isEmpty);
-    expect((h.vm.state as ChatReady).pendingUiError, 'try again');
+    final state = h.vm.state as ChatReady;
+    // A modal rejection is not a stand-alone notice: it must not also appear in
+    // the strip, which would double-report the same event.
+    expect(state.notice, isNull);
+    expect(state.pendingUiError, 'try again');
   });
 }

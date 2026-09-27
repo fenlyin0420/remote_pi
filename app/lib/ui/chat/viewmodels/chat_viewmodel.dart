@@ -14,6 +14,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
+import 'package:flutter/foundation.dart';
 
 /// Plan/31 — ChatViewModel is now a thin composer over the local SSOT.
 ///
@@ -74,14 +75,33 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// extension commands that answer on the notify channel. The page renders
   /// them as a transient notice; they are not part of the transcript (they are
   /// transient by definition and the Pi keeps no history of them).
-  final _noticeController = StreamController<String>.broadcast();
-  Stream<String> get notices => _noticeController.stream;
+  /// The most recent output a command produced on Pi's notify channel.
+  ///
+  /// Plain state rather than a stream: the composer sits below the transcript
+  /// and is rebuilt whenever anything changes, and a broadcast stream meant the
+  /// notice could fire before the strip subscribed (the frame is delivered by
+  /// SyncService, whose listener order is not ours to control).
+  String? _notice;
 
-  /// Dismiss hook for the notice strip. The text itself lives in the widget's
-  /// state; nothing here is persisted, so this only clears the VM's side (a
-  /// late duplicate from the Pi would still surface — correct, since it really
-  /// did arrive again).
-  void dismissNotice() {}
+  /// Test seam — lets a test tell "the VM never received the notify" from
+  /// "the widget did not render it".
+  @visibleForTesting
+  String? get debugLastNotice => _notice;
+
+  /// The notice currently shown above the composer (`null` when none).
+  ///
+  /// Read straight off the VM rather than threaded through a `state` argument:
+  /// `_buildInput` is called with the state captured during `build`, and a
+  /// notice arriving between that capture and the widget's construction left
+  /// the strip built with `null`.
+  String? get notice => _notice;
+
+  /// Dismiss the current notice (`null` when there is nothing to show).
+  void dismissNotice() {
+    if (_notice == null) return;
+    _notice = null;
+    _recompute();
+  }
 
   RuntimeRecord _runtime = const RuntimeRecord();
   bool _pairingRevoked = false;
@@ -319,7 +339,9 @@ class ChatViewModel extends ViewModel<ChatState> {
         }
       } else {
         final text = req.message ?? '';
-        if (text.isNotEmpty) _noticeController.add(text);
+        if (text.isNotEmpty) {
+          _notice = text;
+        }
       }
     } else {
       _pendingUiRequest = req;
@@ -340,8 +362,12 @@ class ChatViewModel extends ViewModel<ChatState> {
     // inline (banner + presence dot via isOffline/peerPresence), never as a
     // full-screen spinner, so entering the chat doesn't flicker.
     if (_activePeer == null) {
+      // A notice can arrive while the room is still unbound (a command sent
+      // just before the peer resolved, or a reconnect mid-stream). Dropping it
+      // here is what made a relayed notification invisible: the server side
+      // worked and the frame arrived, but every recompute discarded it.
       return _bootstrapping
-          ? const ChatReady(messages: [])
+          ? ChatReady(messages: const [], notice: _notice)
           : const ChatNoPeer();
     }
     final isOnline = _runtime.connection == RuntimeConnection.online;
@@ -360,6 +386,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       isWorking: isWorking,
       queuedMessages: _queuedMessages,
       pendingUiRequest: _pendingUiRequest,
+      notice: _notice,
       pendingUiError: _pendingUiError,
       commands: _commands,
     );
@@ -475,7 +502,6 @@ class ChatViewModel extends ViewModel<ChatState> {
     _queuedSub?.cancel();
     _eventSub?.cancel();
     _uiReqSub?.cancel();
-    unawaited(_noticeController.close());
     _roomsSub?.cancel();
     _statusSub?.cancel();
     super.dispose();

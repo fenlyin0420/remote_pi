@@ -51,6 +51,15 @@ class ChatReady extends ChatState {
   /// reuses the same instance across recomputes until it changes).
   final ExtensionUiRequest? pendingUiRequest;
 
+  /// Plan/57b — the most recent output a command produced on Pi's notify
+  /// channel (`/mcp`, `/rp list`, any extension calling `ctx.ui.notify`).
+  /// Such output has no message row and no tool card, so without this it looks
+  /// like the command did nothing. Unlike [pendingUiRequest] it demands no
+  /// answer: it is shown above the composer until the user dismisses it or a
+  /// newer notice replaces it. Lives in the state (not a stream) so a rebuild
+  /// renders it — a broadcast-stream listener in the widget raced the frame.
+  final String? notice;
+
   /// Plan/57 — last submit-result error for [pendingUiRequest] (null when none
   /// or resolved). Shown in the modal so the user can retry instead of hitting a
   /// dead end when pi-ask rejects an answer.
@@ -75,6 +84,7 @@ class ChatReady extends ChatState {
     this.isWorking = false,
     this.queuedMessages = const [],
     this.pendingUiRequest,
+    this.notice,
     this.pendingUiError,
     this.commands = const [],
   });
@@ -93,6 +103,8 @@ class ChatReady extends ChatState {
     bool clearQueuedMessages = false,
     ExtensionUiRequest? pendingUiRequest,
     bool clearPendingUiRequest = false,
+    String? notice,
+    bool clearNotice = false,
     String? pendingUiError,
     bool clearPendingUiError = false,
     List<WireCommand>? commands,
@@ -113,6 +125,7 @@ class ChatReady extends ChatState {
         pendingUiRequest: clearPendingUiRequest
             ? null
             : (pendingUiRequest ?? this.pendingUiRequest),
+        notice: clearNotice ? null : (notice ?? this.notice),
         pendingUiError: clearPendingUiError
             ? null
             : (pendingUiError ?? this.pendingUiError),
@@ -131,6 +144,7 @@ class ChatReady extends ChatState {
       other.isWorking == isWorking &&
       other.queuedMessages == queuedMessages &&
       other.pendingUiRequest == pendingUiRequest &&
+      other.notice == notice &&
       other.pendingUiError == pendingUiError &&
       other.commands == commands;
 
@@ -145,6 +159,7 @@ class ChatReady extends ChatState {
         isWorking,
         queuedMessages,
         pendingUiRequest,
+        notice,
         pendingUiError,
         commands,
       );

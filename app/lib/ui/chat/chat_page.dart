@@ -436,7 +436,11 @@ class ChatPage extends StatelessWidget {
         !isPeerOffline &&
         !isPresenceOffline;
 
-    return InputBar(
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _NoticeStrip(text: vm.notice, onDismiss: vm.dismissNotice),
+        InputBar(
       disabled:
           !isReady ||
           isOffline ||
@@ -495,6 +499,8 @@ class ChatPage extends StatelessWidget {
           : null,
       commands: isReady ? state.commands : const [],
       onCommandsRequested: actionsEnabled ? vm.refreshCommands : null,
+        ),
+      ],
     );
   }
 
@@ -751,6 +757,71 @@ class _InfoRow extends StatelessWidget {
               fontSize: 13,
               color: colors.text,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Live output from the Pi that has no place in the transcript.
+///
+/// A command answered on Pi's notify channel (`/mcp`, `/rp list`, any extension
+/// calling `ctx.ui.notify`) produces no message row and no tool card — the text
+/// is transient by design. Without somewhere to put it the command looked like
+/// it did nothing at all, which is exactly how it was reported.
+///
+/// Rendered just above the composer, monospaced and scrollable (these are
+/// terminal-shaped outputs), dismissable, and replaced in place by the next
+/// notice so repeated commands never stack up. Driven by state, not a stream:
+/// a listener here could be handed the frame before it subscribed.
+class _NoticeStrip extends StatelessWidget {
+  const _NoticeStrip({required this.text, required this.onDismiss});
+
+  final String? text;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = text;
+    if (value == null || value.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      key: const Key('chat-notice-strip'),
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+      padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: ConstrainedBox(
+              // Long output (an MCP server list, a roleplay roster) must stay
+              // readable without taking over the chat.
+              constraints: const BoxConstraints(maxHeight: 160),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  value,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontFamily: 'monospace',
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            key: const Key('chat-notice-dismiss'),
+            icon: const Icon(LucideIcons.x, size: 16),
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Dismiss',
+            onPressed: onDismiss,
           ),
         ],
       ),

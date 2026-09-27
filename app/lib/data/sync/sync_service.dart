@@ -366,6 +366,12 @@ class SyncService extends Service {
   @visibleForTesting
   int get debugPendingSendTimerCount => _pendingSendTimers.length;
 
+  /// Test seam — deliver one already-decoded server frame through the normal
+  /// dispatch path. Lets a widget test drive a frame the relay would send
+  /// (e.g. an extension's notify) without standing up a socket.
+  @visibleForTesting
+  void onServerMessageForTest(ServerMessage msg) => _onServerMessage(msg);
+
   Future<void> queueMessage(String text) async {
     final ch = _conn.channel;
     if (ch == null) return;

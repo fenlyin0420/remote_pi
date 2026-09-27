@@ -23,6 +23,7 @@ import 'package:app/routing/adaptive.dart';
 import 'package:app/routing/visible_session.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
+import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:flutter/material.dart';
@@ -271,6 +272,81 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
   }
+
+  // A command answered on the Pi's notify channel (`/mcp`, `/rp list`) produces
+  // no message row and no tool card, so the page must render it somewhere or the
+  // command looks like it did nothing. This pins the strip that does it.
+  //
+  // The frame is pushed through SyncService the way the relay delivers it: the
+  // notice arrives as an extension_ui_request with method=notify and no matching
+  // open modal (an ask_user flow reuses the same id).
+  testWidgets('a Pi notify is shown above the composer, then dismissable', (tester) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+
+    expect(find.byKey(const Key('chat-notice-strip')), findsNothing);
+
+    app.sync.onServerMessageForTest(
+      const ExtensionUiRequest(
+        id: 'notify-1',
+        method: ExtensionUiMethod.notify,
+        message: 'MCP Server Status:\n\nShared MCP config: .mcp.json',
+        notifyType: 'info',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      app.vm.debugLastNotice,
+      isNotNull,
+      reason: 'the VM never received the notify from SyncService',
+    );
+    expect(
+      app.vm.state,
+      isA<ChatReady>(),
+      reason: 'page is not in the ChatReady state the strip reads from',
+    );
+    expect(find.byKey(const Key('chat-notice-strip')), findsOneWidget);
+    expect(find.textContaining('MCP Server Status'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('chat-notice-dismiss')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('chat-notice-strip')), findsNothing);
+
+    shutdown(app);
+  });
+
+  // The common case is a second command while the first notice is still up:
+  // replacing in place keeps a burst of commands from stacking strips and
+  // pushing the transcript off screen.
+  testWidgets('a newer Pi notify replaces the previous one', (tester) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+
+    app.sync.onServerMessageForTest(
+      const ExtensionUiRequest(
+        id: 'notify-1',
+        method: ExtensionUiMethod.notify,
+        message: 'first output',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('first output'), findsOneWidget);
+
+    app.sync.onServerMessageForTest(
+      const ExtensionUiRequest(
+        id: 'notify-2',
+        method: ExtensionUiMethod.notify,
+        message: 'second output',
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('second output'), findsOneWidget);
+    expect(find.textContaining('first output'), findsNothing);
+    expect(find.byKey(const Key('chat-notice-strip')), findsOneWidget);
+
+    shutdown(app);
+  });
 
   testWidgets('a submitted /command reaches the repository', (tester) async {
     final actions = _FakeActions();
