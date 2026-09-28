@@ -6,7 +6,6 @@ import 'dart:async';
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:app/data/attachments/attachment_store.dart';
 import 'package:app/data/local/boxes.dart';

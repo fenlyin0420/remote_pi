@@ -24,18 +24,17 @@ void main() {
 
   test('put/get round-trips the bytes and reports the blob name', () async {
     final store = AttachmentStore(dir);
-    final name = await store.put('att_tc-1', pngBytes);
-    expect(name, isNotNull);
-    expect(await store.get(name!), orderedEquals(pngBytes));
-    expect(await store.pathOf(name!), isNotNull);
+    final name = (await store.put('att_tc-1', pngBytes))!;
+    expect(await store.get(name), orderedEquals(pngBytes));
+    expect(await store.pathOf(name), isNotNull);
   });
 
   test('the same id overwrites instead of piling up', () async {
     final store = AttachmentStore(dir);
-    final first = await store.put('att_tc-1', pngBytes);
-    final second = await store.put('att_tc-1', Uint8List.fromList([1, 2, 3]));
+    final first = (await store.put('att_tc-1', pngBytes))!;
+    final second = (await store.put('att_tc-1', Uint8List.fromList([1, 2, 3])))!;
     expect(second, first);
-    expect(await store.get(first!), orderedEquals([1, 2, 3]));
+    expect(await store.get(first), orderedEquals([1, 2, 3]));
   });
 
   test('a wire id can never escape the attachments dir', () async {
@@ -51,18 +50,18 @@ void main() {
     // A 1 KB cap keeps the test small; the real one is 64 MB. 400 B × 2 = 800
     // fits, the third write trips the cap.
     final small = AttachmentStore(dir, maxTotalBytes: 1024);
-    final old = await small.put('att_old', Uint8List(400));
+    final old = (await small.put('att_old', Uint8List(400)))!;
     await Future<void>.delayed(const Duration(milliseconds: 20));
-    final mid = await small.put('att_new', Uint8List(400));
-    expect(await small.get(old!), isNotNull);
+    final mid = (await small.put('att_new', Uint8List(400)))!;
+    expect(await small.get(old), isNotNull);
 
-    final newest = await small.put('att_newest', Uint8List(400));
+    final newest = (await small.put('att_newest', Uint8List(400)))!;
     // `put` fires the sweep without awaiting it (housekeeping must not delay a
     // card), so drive it explicitly here to assert on a settled directory.
     await small.prune();
-    expect(await small.get(old!), isNull, reason: 'oldest goes first');
-    expect(await small.get(mid!), isNotNull);
-    expect(await small.get(newest!), isNotNull);
+    expect(await small.get(old), isNull, reason: 'oldest goes first');
+    expect(await small.get(mid), isNotNull);
+    expect(await small.get(newest), isNotNull);
   });
 
   test('an old leftover .tmp is swept, a fresh one is left alone', () async {

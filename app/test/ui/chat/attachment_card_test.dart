@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/attachment_card.dart';
