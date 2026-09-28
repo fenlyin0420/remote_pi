@@ -172,7 +172,14 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         val file = File(path)
-                        val root = filesDir.canonicalFile
+                        // Confine the copy to THIS APP's private data dir
+                        // (`/data/user/0/<pkg>`), not to `filesDir`: attachment
+                        // blobs live next to the Hive boxes, which Flutter puts
+                        // in the documents dir (`<dataDir>/app_flutter`) — a
+                        // filesDir check rejected every real save with "not an
+                        // app-owned file". The data dir is still exactly the
+                        // right boundary: nothing outside it is ours to copy.
+                        val root = File(applicationInfo.dataDir).canonicalFile
                         val inside = try {
                             file.canonicalPath.startsWith(root.path + File.separator)
                         } catch (_: Exception) {

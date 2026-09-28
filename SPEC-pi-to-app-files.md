@@ -122,7 +122,9 @@ downscaled from 3.0 MB) to the phone.` / no erro, o motivo + o que fazer.
   insert de arquivo criado pelo próprio app **não pede permissão nenhuma**, e um
   toque em vez de um diálogo por salvamento. Imagem → `Pictures/Remote Pi`, resto
   → `Download/Remote Pi`; devolve o caminho e a UI mostra onde foi. O canal
-  confina o path ao filesDir do app.
+  confina o path ao **dataDir do app** (`/data/user/0/<pkg>`) — os blobs ficam ao
+  lado das boxes do Hive, que o Flutter põe no documents dir (`<dataDir>/app_flutter`),
+  então uma checagem por `filesDir` rejeita todo salvamento real.
 - O tool card de `send_to_phone` é **suprimido** nos dois caminhos (live e
   replay); uma **falha** continua virando tool card, que é o único lugar onde o
   usuário vê que não foi. O evento `attachment` entra no lugar, então a ordem na
