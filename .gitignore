@@ -13,6 +13,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
+# npm pack output — a release artifact (attached to the GitHub Release), not source
+*.tgz
 
 # Rust
 target/
