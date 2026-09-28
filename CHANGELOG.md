@@ -316,7 +316,11 @@ on the Pi's disk to the phone, and it shows up as a card in the chat timeline.
   it went. No storage permission is involved (the app's `minSdk` is 34 and the
   inserted file is one the app created), and no system file-picker dialog per
   save. The platform side is a new `.../media` MethodChannel (`MediaSaver.kt`),
-  confined to the app's own files dir.
+  confined to the app's own data dir.
+- **Closing the viewer no longer raises the keyboard**: focus is dropped on both
+  sides of the route, so a composer that still held focus from an earlier tap
+  does not get it handed back (with the soft keyboard) every time a preview
+  closes.
 
 ### Notes
 

@@ -31,20 +31,31 @@ class AttachmentViewer extends StatefulWidget {
   /// Copies the file into the phone's storage; returns where it went.
   final Future<String> Function(AttachmentMsg msg) onSave;
 
+  /// Open the viewer, leaving the keyboard down on return.
+  ///
+  /// Focus is dropped on BOTH sides of the route on purpose. Pushing alone is
+  /// not enough — the composer can be holding focus from an earlier tap with
+  /// the IME hidden, and popping hands that focus back, which raises the soft
+  /// keyboard every single time a preview is closed. Unfocusing after the pop
+  /// makes "look at a file, come back, keyboard stays down" the default.
   static Future<void> open(
     BuildContext context, {
     required AttachmentMsg message,
     required Future<Uint8List?> Function(String blobName) loadBytes,
     required Future<String> Function(AttachmentMsg msg) onSave,
-  }) => Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (_) => AttachmentViewer(
-        message: message,
-        loadBytes: loadBytes,
-        onSave: onSave,
+  }) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AttachmentViewer(
+          message: message,
+          loadBytes: loadBytes,
+          onSave: onSave,
+        ),
       ),
-    ),
-  );
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
 
   @override
   State<AttachmentViewer> createState() => _AttachmentViewerState();
