@@ -475,6 +475,93 @@ Câmera / Galeria quando o modelo ativo não aceita imagem.
 
 ---
 
+## Arquivos do Pi para o app (`send_to_phone`)
+
+O espelho do upload: o agente entrega um arquivo que **já está no disco do Pi**
+e ele aparece como card na timeline do chat. O conteúdo vem de volta porque o
+celular não tem como ler o filesystem do Pi.
+
+### Teto: por que ~2 MB
+
+O relay aceita envelope externo de 4 MiB (`RELAY_MAX_CT_MIB`, medido sobre
+`ct`, que é Base64 do JSON interno). Pior caso, com `B` bytes originais:
+
+```text
+B → base64 (JSON interno) ≈ 4/3·B → ct = base64(JSON) ≈ 16/9·B ≈ 1.78·B
+16/9·B ≤ 4 MiB  ⇒  B ≤ ~2.3 MB
+```
+
+Teto adotado: **2 MiB**. Imagem acima disso é **reduzida** no Pi (o
+`resizeImage` do próprio SDK — Photon/WASM, sem dependência nova) até caber;
+texto tem teto próprio de 1 MiB. O que não couber é recusado com mensagem
+acionável, nunca truncado.
+
+### Wire
+
+ServerMessage `file_offer` (Pi → App):
+
+```jsonc
+{ "type": "file_offer", "id": "att_<toolCallId>", "name": "chart.png",
+  "path": "/home/p/chart.png", "mime": "image/png", "size": 184320,
+  "data": "<base64>", "note": "opcional", "resized": true,
+  "original_size": 3145728, "in_reply_to": "get_1" }
+```
+
+ClientMessage `file_get` (App → Pi):
+
+```jsonc
+{ "type": "file_get", "id": "get_1", "path": "/home/p/chart.png",
+  "attachment_id": "att_<toolCallId>" }
+```
+
+O `id` é `att_` + `toolCallId` nos **três** lugares (offer ao vivo, replay de
+histórico, resposta do `file_get`), então o app faz upsert por id: o replay
+nunca duplica o card nem apaga bytes já baixados. `in_reply_to` só aparece na
+resposta a um `file_get`.
+
+Evento de `session_history`:
+
+```jsonc
+{ "ts": 1730, "type": "attachment", "id": "att_tc-1", "name": "chart.png",
+  "path": "/…", "mime": "image/png", "size": 184320, "note": "…" }
+```
+
+**Sem `data`, de propósito**: o `session_history` tem teto de 3 MiB e corta os
+eventos mais antigos quando estoura, então embedder base64 (≈270 KB por
+screenshot) expulsaria meia conversa em ~10 arquivos. O app puxa sob demanda
+com `file_get` — a história fica barata e o byte trafega uma vez, quando alguém
+realmente olha. O pull é **manual** (toque no card): abrir uma sala antiga não
+pode baixar tudo que já foi enviado.
+
+### O gatilho, do lado Pi
+
+Tool `send_to_phone(path, note?)` — um arquivo por chamada. O que conta como
+imagem e o que conta como texto é decidido **pelos bytes, nunca pelo nome**
+(mesma regra do upload): assinatura PNG/JPEG/GIF/WebP/BMP → imagem; senão
+UTF-8/UTF-16 estrito sem NUL → texto; senão recusado. `path` sai pelo
+`realpath`, então symlink e `~` nunca reportam outro lugar que não o nomeado.
+
+O tool **não** publica `tool_request`/`tool_result` para o app: o card de
+anexo É a renderização dessa chamada, e um segundo card seria duplicata. Uma
+**falha** continua aparecendo como tool card — é o único lugar onde o usuário
+vê que não foi.
+
+A metadata do card entra na sessão como custom message `display:false`
+(`remote-pi:attachment`, `details` = metadados): o prefixo a marca como dado
+puro (nenhum custo de token) e o `details` **sobrevive em disco** — ao
+contrário do `details` de um toolResult, que o arquivo de sessão descarta. É
+essa a fonte de verdade do replay, mesma lição da linha de aviso do upload.
+
+### No app
+
+Bytes vão para `<dir do box Hive>/attachments/<id>.bin`; o registro guarda só
+metadados + o nome do blob (um base64 de 2 MB dentro de uma row do Hive
+carregaria a sala inteira na memória a cada leitura). Cache com teto de 64 MB,
+varredura do mais antigo primeiro. Card: imagem vira thumbnail (220 px), texto
+vira nome + preview, sem bytes vira "toque para carregar", erro vira a causa.
+
+---
+
 ## Mensagem enfileirada durante turn ativo
 
 Fila curta **Pi-side, em memória**, de propriedade do Android: enquanto há turn

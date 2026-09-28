@@ -3989,6 +3989,136 @@ describe("session sync", () => {
     });
   });
 
+  // ── Pi → App attachments (send_to_phone) ─────────────────────────────────
+  const _attachMeta = {
+    id: "att_tc-1",
+    name: "chart.png",
+    path: "/home/p/chart.png",
+    mime: "image/png",
+    size: 1234,
+    note: "throughput",
+  };
+
+  test("mapping: the attachment marker replays as an `attachment` event, metadata only", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "send me the chart", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "here" }], timestamp: 2 },
+      {
+        role: "custom",
+        customType: "remote-pi:attachment",
+        content: "",
+        display: false,
+        details: { ..._attachMeta, resized: true, original_size: 9_000_000 },
+        timestamp: 3,
+      },
+    ]);
+    expect(events.map((e) => e.type)).toEqual(["user_input", "agent_message", "attachment"]);
+    expect(events[2]).toMatchObject({
+      ts: 3,
+      type: "attachment",
+      ..._attachMeta,
+      resized: true,
+      original_size: 9_000_000,
+    });
+    // No bytes: the history budget is 3 MiB and the app pulls with `file_get`.
+    expect(events[2]).not.toHaveProperty("data");
+  });
+
+  test("mapping: send_to_phone contributes no tool card, only the attachment", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "the chart", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc-1", name: "send_to_phone", arguments: { path: "/home/p/chart.png" } }],
+        timestamp: 2,
+      },
+      { role: "toolResult", toolCallId: "tc-1", toolName: "send_to_phone", content: "Sent chart.png", timestamp: 3 },
+      { role: "custom", customType: "remote-pi:attachment", content: "", details: _attachMeta, timestamp: 4 },
+    ]);
+    expect(events.map((e) => e.type)).toEqual(["user_input", "attachment"]);
+  });
+
+  test("mapping: a FAILED send_to_phone still surfaces as a tool error", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "the chart", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc-1", name: "send_to_phone", arguments: { path: "/nope" } }],
+        timestamp: 2,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tc-1",
+        toolName: "send_to_phone",
+        content: "Could not send the file: No such file",
+        isError: true,
+        timestamp: 3,
+      },
+    ]);
+    // No attachment marker exists (nothing was sent), so the error has to land
+    // somewhere — the tool timeline is the only place left.
+    expect(events.map((e) => e.type)).toEqual(["user_input", "tool_result"]);
+    expect(events[1]).toMatchObject({ type: "tool_result", tool_call_id: "tc-1" });
+  });
+
+  test("mapping: other tools keep their cards next to an attachment", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "plot it", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "tc-0", name: "bash", arguments: { command: "python plot.py" } },
+          { type: "toolCall", id: "tc-1", name: "send_to_phone", arguments: { path: "/tmp/plot.png" } },
+        ],
+        timestamp: 2,
+      },
+      { role: "toolResult", toolCallId: "tc-0", toolName: "bash", content: "ok", timestamp: 3 },
+      { role: "toolResult", toolCallId: "tc-1", toolName: "send_to_phone", content: "Sent", timestamp: 4 },
+      { role: "custom", customType: "remote-pi:attachment", content: "", details: _attachMeta, timestamp: 5 },
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "user_input",
+      "tool_request",
+      "tool_result",
+      "attachment",
+    ]);
+    expect(events[1]).toMatchObject({ tool: "bash" });
+  });
+
+  test("mapping: a foreign custom message is ignored", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "hi", timestamp: 1 },
+      { role: "custom", customType: "remote-pi:relay-state", content: "Relay connected", display: false, details: { status: "connected" }, timestamp: 2 },
+      { role: "custom", customType: "remote-pi:attachment", content: "", details: { id: "att_x" }, timestamp: 3 },
+    ]);
+    expect(events.map((e) => e.type)).toEqual(["user_input"]);
+  });
+
+  test("file_get is answered with the bytes, even with no live Pi session", async () => {
+    const file = join(tmpdir(), `rp-file-get-${Date.now()}.png`);
+    const bytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
+    writeFileSync(file, bytes);
+    try {
+      const { _routeClientMessageFrom } = await import("./index.js");
+      const sender = { send: vi.fn(), last: () => undefined };
+      _routeClientMessageFrom(sender as never, { type: "file_get", id: "g-1", path: file, attachment_id: "att_tc-9" }, { abort: () => false });
+      await vi.waitFor(() => expect(sender.send).toHaveBeenCalled());
+      const msg = sender.send.mock.calls[0]![0] as { type: string; id: string; in_reply_to: string; data: string };
+      expect(msg).toMatchObject({ type: "file_offer", id: "att_tc-9", in_reply_to: "g-1" });
+      expect(Buffer.from(msg.data, "base64").equals(bytes)).toBe(true);
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
+
+  test("file_get for a file that is gone answers with a typed error", async () => {
+    const { _routeClientMessageFrom } = await import("./index.js");
+    const sender = { send: vi.fn(), last: () => undefined };
+    _routeClientMessageFrom(sender as never, { type: "file_get", id: "g-2", path: join(tmpdir(), "rp-ghost.png") }, { abort: () => false });
+    await vi.waitFor(() => expect(sender.send).toHaveBeenCalled());
+    expect(sender.send.mock.calls[0]![0]).toMatchObject({ type: "error", in_reply_to: "g-2", code: "not_found" });
+  });
+
   test("pair_ok carries session_started_at = _sessionStartedAt", async () => {
     const beforePair = Date.now();
     await _pairForTest("peer-ss-5");

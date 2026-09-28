@@ -43,6 +43,8 @@ Future<void> _pumpWithStreaming(
                 ? null
                 : StreamingMessage(inReplyTo: 'u1', buffer: streamingText),
             onDecide: (_, _) {},
+            loadAttachmentBytes: (_) async => null,
+            onLoadAttachment: (_, _) async {},
           ),
         ),
       ),

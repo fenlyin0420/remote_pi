@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/chat/widgets/attachment_card.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
 import 'package:app/ui/chat/widgets/thinking_block.dart';
@@ -30,11 +33,19 @@ class MessageList extends StatefulWidget {
     required this.messages,
     required this.streaming,
     required this.onDecide,
+    required this.loadAttachmentBytes,
+    required this.onLoadAttachment,
   });
 
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
   final void Function(String, ApproveDecision) onDecide;
+
+  /// Reads a cached attachment blob (null when the card has none yet).
+  final Future<Uint8List?> Function(String blobName) loadAttachmentBytes;
+
+  /// Asks the Pi for the bytes behind an attachment card that has none.
+  final Future<void> Function(String attachmentId, String path) onLoadAttachment;
 
   @override
   State<MessageList> createState() => MessageListState();
@@ -201,6 +212,11 @@ class MessageListState extends State<MessageList> {
                   onDecide: widget.onDecide,
                 ),
                 CompactionMsg() => CompactionBubble(msg),
+                AttachmentMsg() => AttachmentCard(
+                  message: msg,
+                  loadBytes: widget.loadAttachmentBytes,
+                  onLoad: widget.onLoadAttachment,
+                ),
               },
             );
           },

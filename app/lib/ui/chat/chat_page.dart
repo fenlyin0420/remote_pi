@@ -428,6 +428,8 @@ class ChatPage extends StatelessWidget {
           messages: visible,
           streaming: streaming,
           onDecide: (id, decision) => vm.approveTool(id, decision),
+          loadAttachmentBytes: vm.attachmentBytes,
+          onLoadAttachment: vm.loadAttachment,
         );
       }(),
     };

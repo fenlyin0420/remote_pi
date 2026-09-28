@@ -80,6 +80,13 @@ import {
 import { createUiNotifyCapture as _createUiNotifyCapture, type UiNotifyCapture as _UiNotifyCapture } from "./ui_notify_capture.js";
 import { roomIdFor } from "./rooms.js";
 import { registerAgentTools } from "./session/tools.js";
+import {
+  ATTACHMENT_CUSTOM_TYPE,
+  SEND_TO_PHONE_TOOL,
+  handleFileGetRequest,
+  registerSendToPhoneTool,
+  type AttachmentMeta,
+} from "./session/attachment.js";
 import { formatPeerInventory } from "./session/peer_inventory.js";
 import { MeshNode } from "./session/mesh_node.js";
 import {
@@ -658,6 +665,45 @@ function _filterInternalMessagesFromContext<T>(messages: T[] | undefined): T[] {
     ? messages.filter((message) =>
         !_isReceivedImageContextMessage(message) && !_isPureDataContextMessage(message))
     : [];
+}
+
+// ── Pi → App attachments (`send_to_phone`) ───────────────────────────────────
+//
+// The live `file_offer` already reached every app. What has to survive is the
+// CARD: a re-sync (or a daemon restart re-seeding from the session file) has to
+// rebuild it, or the file vanishes from the timeline the moment the phone
+// reconnects.
+//
+// The metadata goes into the session as a `display: false` custom message — the
+// prefix makes `_isPureDataContextMessage` strip it from the LLM context, so it
+// costs no tokens, while `details` survives to disk (unlike a toolResult's
+// `details`, which the session file drops). The `attachment` history event
+// replays from it. Same lesson as the upload notice: the fact that lives in the
+// session is the only fact the mapper needs.
+function _rememberAttachmentForHistory(meta: AttachmentMeta): void {
+  _messageBuffer.push({
+    role: "custom",
+    customType: ATTACHMENT_CUSTOM_TYPE,
+    content: "",
+    display: false,
+    details: meta,
+    timestamp: Date.now(),
+  } as unknown as BufferMsg);
+  if (!_pi) return;
+  try {
+    _pi.sendMessage({
+      customType: ATTACHMENT_CUSTOM_TYPE,
+      content: "",
+      display: false,
+      details: meta,
+    });
+  } catch (err) {
+    // The card is already broadcast and buffered; failing to persist it only
+    // costs the replay, so this must not take the turn down with it.
+    console.error(
+      `[remote-pi] could not persist attachment ${meta.id}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 // ── Uploaded text files (app → Pi) ───────────────────────────────────────────
@@ -1421,6 +1467,20 @@ export function _seedMessageBufferFromSession(ctx: unknown): void {
           timestamp: Date.parse((entry["timestamp"] as string) ?? "") || 0,
           tokensBefore:
             typeof entry["tokensBefore"] === "number" ? entry["tokensBefore"] : 0,
+        });
+      } else if (entry["type"] === "custom_message") {
+        // Our own attachment bookkeeping (`display:false`, `details` = metadata).
+        // Custom entries are stored flat rather than under `message`, and the
+        // seed above only reads `type === "message"`, so without this branch a
+        // daemon restart would drop every file card the phone already showed.
+        if ((entry["customType"] as string | undefined) !== ATTACHMENT_CUSTOM_TYPE) continue;
+        seeded.push({
+          role: "custom",
+          customType: ATTACHMENT_CUSTOM_TYPE,
+          content: "",
+          display: false,
+          details: entry["details"],
+          timestamp: Date.parse((entry["timestamp"] as string) ?? "") || 0,
         });
       }
     }
@@ -2399,6 +2459,14 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // session network natively. Getter captures `_meshNode` live so the
   // tool always sees the current state.
   registerAgentTools(pi, () => _meshNode?.peer() ?? null);
+  // Pi → App file hand-off: the model calls `send_to_phone(path)` and the file
+  // shows up in the app as a card. `remember` mirrors the metadata into the
+  // session (a display:false custom message) so a later session_sync — or a
+  // daemon restart that re-seeds from the session file — replays the same card.
+  registerSendToPhoneTool(pi, {
+    broadcast: (offer) => _broadcastToActive(offer),
+    remember: (meta) => _rememberAttachmentForHistory(meta),
+  });
   _registerReceivedImageRenderer(pi);
 
   // Received-image preview entries are for local TUI display only. Pi's custom
@@ -2510,6 +2578,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // they render a "Tool running… done" timeline in each paired app.
   pi.on("tool_execution_start", (event) => {
     if (!_anyPeerActive()) return;
+    // `send_to_phone` renders as an attachment card, not a tool card — the
+    // offer (or the error) already said everything a card would.
+    if (event.toolName === SEND_TO_PHONE_TOOL) return;
     _broadcastToActive({
       type: "tool_request",
       tool_call_id: event.toolCallId,
@@ -2520,6 +2591,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
 
   pi.on("tool_execution_end", (event) => {
     if (!_anyPeerActive()) return;
+    if (event.toolName === SEND_TO_PHONE_TOOL) return;
     // Stringify like the history mapper (same helper) so the live text == what
     // a session_sync replays for this tool. Raw `String(event.result)` turned
     // a content-array/object into "[object Object]" and the success branch sent
@@ -4827,6 +4899,12 @@ export function _routeClientMessageFrom(
     _handleListCommands(sender, msg);
     return;
   }
+  // Before the pi-binding guard like the other file/command paths: rehydrating a
+  // card after a re-sync must work in a room whose Pi session is gone.
+  if (msg.type === "file_get") {
+    void handleFileGetRequest(msg, (reply) => sender.send(reply));
+    return;
+  }
   if (!_pi) return;
   switch (msg.type) {
     case "queued_message_set": {
@@ -5940,6 +6018,40 @@ function _imagesFromContent(content: unknown): WireImage[] {
 }
 
 /**
+ * The `attachment` metadata carried by one of our own `display:false` custom
+ * messages, or null for any other message. Only what the app needs to draw the
+ * card comes out — the bytes are deliberately not here (the app pulls them with
+ * `file_get`), so this stays a few dozen bytes per file in the history budget.
+ */
+function _attachmentMetaFromMessage(m: unknown): AttachmentMeta | null {
+  if (!m || typeof m !== "object") return null;
+  const msg = m as { customType?: unknown; details?: unknown };
+  if (msg.customType !== ATTACHMENT_CUSTOM_TYPE) return null;
+  const d = msg.details;
+  if (!d || typeof d !== "object") return null;
+  const meta = d as Partial<AttachmentMeta>;
+  if (
+    typeof meta.id !== "string" || !meta.id
+    || typeof meta.name !== "string" || !meta.name
+    || typeof meta.path !== "string" || !meta.path
+    || typeof meta.mime !== "string" || !meta.mime
+    || typeof meta.size !== "number" || !Number.isFinite(meta.size)
+  ) {
+    return null;
+  }
+  return {
+    id: meta.id,
+    name: meta.name,
+    path: meta.path,
+    mime: meta.mime,
+    size: meta.size,
+    ...(typeof meta.note === "string" && meta.note ? { note: meta.note } : {}),
+    ...(meta.resized === true ? { resized: true } : {}),
+    ...(typeof meta.original_size === "number" ? { original_size: meta.original_size } : {}),
+  };
+}
+
+/**
  * Maps SDK AgentMessage[] (UserMessage / AssistantMessage / ToolResultMessage)
  * into the flat SessionHistoryEvent[] shape consumed by the app.
  *
@@ -5953,11 +6065,22 @@ export function _mapAgentMessagesToEvents(
 ): SessionHistoryEvent[] {
   const events: SessionHistoryEvent[] = [];
   let lastUserId: string | null = null;
+  // toolCallId → tool name, so a toolResult can be recognised by the call that
+  // produced it. `send_to_phone` is the one tool the app renders as something
+  // other than a tool card (an attachment card), and its `details` do NOT
+  // survive to the session file — the metadata comes from the custom message
+  // instead, so both halves have to be recognised here.
+  const toolNameByCallId = new Map<string, string>();
 
   for (const m of messages) {
     const ts = typeof m.timestamp === "number" ? m.timestamp : 0;
 
-    if (m.role === "compaction") {
+    if (m.role === "custom") {
+      const meta = _attachmentMetaFromMessage(m);
+      if (meta) {
+        events.push({ ts, type: "attachment", ...meta });
+      }
+    } else if (m.role === "compaction") {
       // Plan/32: re-render the compaction notice on history re-sync.
       events.push({
         ts,
@@ -6036,11 +6159,15 @@ export function _mapAgentMessagesToEvents(
               : {}),
           });
         } else if (block.type === "toolCall") {
+          const id = String(block.id ?? "");
+          const name = String(block.name ?? "");
+          toolNameByCallId.set(id, name);
+          if (name === SEND_TO_PHONE_TOOL) continue;
           events.push({
             ts,
             type: "tool_request",
-            tool_call_id: String(block.id ?? ""),
-            tool: String(block.name ?? ""),
+            tool_call_id: id,
+            tool: name,
             args: (block.arguments as Record<string, unknown>) ?? {},
           });
         }
@@ -6050,6 +6177,12 @@ export function _mapAgentMessagesToEvents(
       const text = _stringifyToolResult(m.content);
       const diff = _toolResultDiff(m);
       const tcid = String(m.toolCallId ?? "");
+      // The attachment card replaces this tool card (live skipped the pair, so
+      // the replay must skip it too). A failure still surfaces as a tool_result
+      // with the error: there is no card to show when nothing was sent.
+      if (toolNameByCallId.get(tcid) === SEND_TO_PHONE_TOOL && !m.isError) {
+        continue;
+      }
       events.push(
         m.isError
           ? { ts, type: "tool_result", tool_call_id: tcid, error: text }

@@ -448,6 +448,19 @@ class ChatViewModel extends ViewModel<ChatState> {
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
 
+  // --- Pi → App attachments (`send_to_phone` cards) ---
+
+  /// The bytes cached locally for an attachment card, or null when it has
+  /// none (a card rebuilt from `session_history` starts empty).
+  Future<Uint8List?> attachmentBytes(String blobName) =>
+      _sync.attachmentBytes(blobName);
+
+  /// Pull the bytes for a card that has none — the user tapped it. The Pi
+  /// answers with a `file_offer` for the same card id, which flows back
+  /// through the normal writer path.
+  Future<void> loadAttachment(String attachmentId, String path) =>
+      _sync.requestAttachment(attachmentId, path);
+
   /// Plan/57 — submit (or cancel) an interactive extension_ui_request.
   ///
   /// Does NOT clear the pending request optimistically: pi-ask may reject the

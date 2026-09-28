@@ -23,6 +23,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:app/data/attachments/attachment_store.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
@@ -145,11 +146,24 @@ class SyncService extends Service {
   final Duration pendingSendTimeout;
   final Map<String, Timer> _pendingSendTimers = {};
 
+  // Cache for the bytes of files the Pi sent to the phone. Resolved lazily
+  // from the msgs box dir (it needs an OPEN box for a real path), so tests
+  // that never send a file never touch the filesystem.
+  AttachmentStore? _attachments;
+
+  /// The one tool the app renders as something other than a tool card.
+  static const String _sendToPhoneTool = 'send_to_phone';
+
+  /// Live `send_to_phone` calls whose tool card was skipped, so the matching
+  /// `tool_result` can be recognised (a bare result frame carries no tool name).
+  final Set<String> _attachmentToolCalls = {};
+
   SyncService(
     this._conn,
     this._boxes, {
     this.pendingSendTimeout = const Duration(seconds: 20),
-  }) {
+    AttachmentStore? attachmentStore,
+  }) : _attachments = attachmentStore {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
       _writeRuntime();
@@ -172,6 +186,48 @@ class SyncService extends Service {
   StreamingMessage? get streaming => _activeTurn?.streaming;
   Stream<StreamingMessage?> get streamingStream => _streamingController.stream;
   Stream<SessionEvent> get events => _eventController.stream;
+
+  // ---------------------------------------------------------------------------
+  // Pi → App attachments
+  // ---------------------------------------------------------------------------
+
+  /// Ask the Pi for the bytes behind an attachment card that has none yet.
+  ///
+  /// A card rebuilt from `session_history` arrives as metadata only (the
+  /// history budget has no room for base64), so this is what puts something on
+  /// screen. The answer comes back as a [FileOffer] reusing the card id, which
+  /// lands in the same upsert the live offer uses.
+  ///
+  /// Deliberately NOT automatic: opening an old room must not pull every file
+  /// that was ever sent, so the card asks when the user actually looks at it.
+  Future<void> requestAttachment(String attachmentId, String path) async {
+    final ch = _conn.channel;
+    if (ch == null || _activeEpk == null) return;
+    // ignore: discarded_futures
+    ch.send(
+      FileGet(id: 'get_${uuid7()}', path: path, attachmentId: attachmentId),
+    );
+  }
+
+  /// The bytes cached for a card, or null when it was never fetched.
+  Future<Uint8List?> attachmentBytes(String blobName) async {
+    final store = _attachmentStore();
+    if (store == null) return null;
+    return store.get(blobName);
+  }
+
+  AttachmentStore? _attachmentStore() {
+    final existing = _attachments;
+    if (existing != null) return existing;
+    final epk = _activeEpk;
+    if (epk == null) return null;
+    final box = _boxes.isMsgsBoxOpen(epk, _activeRoomId)
+        ? _boxes.openMsgsBox(epk, _activeRoomId)
+        : null;
+    final path = box?.path;
+    if (path == null) return null;
+    return _attachments = AttachmentStore.forBox(path);
+  }
 
   /// Plan/57 — stream of interactive extension_ui_request prompts (ask_user
   /// via pi-ask). Transient: not written to the DB; the ChatViewModel renders
@@ -724,6 +780,14 @@ class SyncService extends Service {
           _finalizeThinkingSegment(t);
           _finalizeTextSegment(t);
         }
+        // `send_to_phone` has its own card (see `FileOffer`); a tool card for
+        // the same event would just be a duplicate. Remember the call so the
+        // matching `tool_result` can be judged too (a FAILURE still becomes a
+        // tool row — the only place the user learns it didn't go).
+        if (tool == _sendToPhoneTool) {
+          _attachmentToolCalls.add(toolCallId);
+          break;
+        }
         // ignore: discarded_futures
         _upsert(
           MsgRole.tool,
@@ -744,6 +808,9 @@ class SyncService extends Service {
         );
 
       case ToolResult(:final toolCallId, :final result, :final error, :final diff):
+        // A `send_to_phone` that succeeded is already on screen as its
+        // attachment card; only the failure needs the tool timeline.
+        if (_attachmentToolCalls.remove(toolCallId) && error == null) break;
         // ignore: discarded_futures
         _upsert(MsgRole.tool, toolCallId, (seq, existing) {
           final base =
@@ -822,6 +889,38 @@ class SyncService extends Service {
       case Compaction(:final summary, :final tokensBefore, :final ts):
         _writeCompaction(summary, tokensBefore, ts);
 
+      case FileOffer(
+        :final id,
+        :final name,
+        :final path,
+        :final mime,
+        :final size,
+        :final data,
+        :final note,
+        :final resized,
+        :final originalSize,
+      ):
+        // The Pi handing us a file (`send_to_phone`, or the answer to a
+        // `file_get`). Sequential ordering: the card belongs where the tool ran,
+        // so close the open text/reasoning segments first, exactly like
+        // `ToolRequest` does.
+        if (t != null) {
+          _finalizeThinkingSegment(t);
+          _finalizeTextSegment(t);
+        }
+        // ignore: discarded_futures
+        _writeAttachment(
+          id: id,
+          name: name,
+          path: path,
+          mime: mime,
+          size: size,
+          data: data,
+          note: note,
+          resized: resized,
+          originalSize: originalSize,
+        );
+
       case ExtensionUiRequest():
         // Plan/57 — transient interactive prompt (ask_user via pi-ask).
         // Surface to the UI; never persist (it's a live request, not history).
@@ -875,6 +974,55 @@ class SyncService extends Service {
     );
   }
 
+  /// Pi → App file hand-off: cache the bytes, then upsert the card.
+  ///
+  /// Metadata-only offers (a replay that raced ahead of the bytes) keep the
+  /// card and leave `blob` untouched, so a card that already has its content
+  /// never degrades into a "tap to load" placeholder because a re-sync landed.
+  Future<void> _writeAttachment({
+    required String id,
+    required String name,
+    required String path,
+    required String mime,
+    required int size,
+    required String? data,
+    required String? note,
+    required bool resized,
+    required int? originalSize,
+  }) async {
+    String? blob;
+    if (data != null && data.isNotEmpty) {
+      try {
+        blob = await _attachmentStore()?.put(id, base64Decode(data));
+      } catch (_) {
+        // A malformed payload must not kill the card: the metadata still tells
+        // the user what the Pi tried to send.
+        blob = null;
+      }
+    }
+    // ignore: discarded_futures
+    _upsert(
+      MsgRole.attachment,
+      id,
+      (seq, existing) => MessageRecord(
+        id: id,
+        seq: seq,
+        role: MsgRole.attachment,
+        ts: existing?.ts ?? DateTime.now(),
+        attachment: AttachmentData(
+          name: name,
+          path: path,
+          mime: mime,
+          size: size,
+          note: note,
+          resized: resized,
+          originalSize: originalSize,
+          blobName: blob ?? existing?.attachment?.blobName,
+        ),
+      ),
+    );
+  }
+
   Future<void> _applyHistory(SessionHistory h) async {
     final epk = _activeEpk;
     if (epk == null) return;
@@ -885,12 +1033,38 @@ class SyncService extends Service {
       final box = await _boxes.msgsBox(epk, room);
       // Preserve local pending user rows the Pi hasn't echoed yet.
       final preserved = <MessageRecord>[];
+      // Attachment cards come back from history as metadata only, so carry the
+      // cached blob name over — otherwise every re-sync would turn a room full
+      // of already-seen screenshots back into "tap to load".
+      final blobs = <String, String>{};
       for (final v in box.values) {
         final r = MessageRecord.fromJson(_coerce(v));
+        if (r.role == MsgRole.attachment) {
+          final blob = r.attachment?.blobName;
+          if (blob != null) blobs[r.id] = blob;
+        }
         if (r.role == MsgRole.user &&
             r.pending &&
             !historyIds.contains(_key(r.role, r.id))) {
           preserved.add(r);
+        }
+      }
+      for (var i = 0; i < rows.length; i++) {
+        final blob = blobs[rows[i].id];
+        final a = rows[i].attachment;
+        if (blob != null && a != null && a.blobName == null) {
+          rows[i] = rows[i].copyWith(
+            attachment: AttachmentData(
+              name: a.name,
+              path: a.path,
+              mime: a.mime,
+              size: a.size,
+              note: a.note,
+              resized: a.resized,
+              originalSize: a.originalSize,
+              blobName: blob,
+            ),
+          );
         }
       }
       // Desired ordered state: history (seq = index) then preserved pending.
@@ -952,6 +1126,9 @@ class SyncService extends Service {
   List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
     final out = <MessageRecord>[];
     var seq = 0;
+    // A `tool_result` event carries no tool name, so the request is what says
+    // "this was a send_to_phone" — and whether its card already exists.
+    final toolNameByCallId = <String, String>{};
     for (final e in events) {
       switch (e) {
         case UserInputEvt(:final id, :final text, :final image, :final file):
@@ -993,6 +1170,11 @@ class SyncService extends Service {
             );
           }
         case ToolRequestEvt(:final toolCallId, :final tool, :final args):
+          toolNameByCallId[toolCallId] = tool;
+          // The attachment card replaces this row (see the live `ToolRequest`
+          // case). A failed send still arrives as a `ToolResultEvt`, which
+          // creates its own row below.
+          if (tool == _sendToPhoneTool) break;
           out.add(
             MessageRecord(
               id: toolCallId,
@@ -1007,6 +1189,9 @@ class SyncService extends Service {
             ),
           );
         case ToolResultEvt(:final toolCallId, :final result, :final error, :final diff):
+          final toolName = toolNameByCallId[toolCallId];
+          // A successful send is already on screen as its attachment card.
+          if (toolName == _sendToPhoneTool && error == null) break;
           final idx = out.lastIndexWhere(
             (m) => m.role == MsgRole.tool && m.tool?.toolCallId == toolCallId,
           );
@@ -1031,7 +1216,9 @@ class SyncService extends Service {
                 ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
                 tool: ToolEventData(
                   toolCallId: toolCallId,
-                  tool: 'unknown',
+                  // A known name when the request told us (a failed
+                  // `send_to_phone` arrives without a row of its own).
+                  tool: toolName ?? 'unknown',
                   status: status,
                   result: result,
                   error: error,
@@ -1049,6 +1236,35 @@ class SyncService extends Service {
               text: summary,
               tokensBefore: tokensBefore,
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+            ),
+          );
+        // A file the Pi sent, replayed as metadata only (no bytes — the app
+        // pulls them with `file_get` when the card is actually looked at).
+        case AttachmentEvt(
+          :final id,
+          :final name,
+          :final path,
+          :final mime,
+          :final size,
+          :final note,
+          :final resized,
+          :final originalSize,
+        ):
+          out.add(
+            MessageRecord(
+              id: id,
+              seq: seq++,
+              role: MsgRole.attachment,
+              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              attachment: AttachmentData(
+                name: name,
+                path: path,
+                mime: mime,
+                size: size,
+                note: note,
+                resized: resized,
+                originalSize: originalSize,
+              ),
             ),
           );
       }

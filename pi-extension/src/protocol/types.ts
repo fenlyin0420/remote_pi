@@ -187,6 +187,12 @@ export type ClientMessage =
     }
   | { type: "queued_message_set"; id: string; text: string }
   | { type: "queued_message_clear"; id: string; target_id?: string }
+  // Pi → App file pull. The app asks for bytes it does not have yet (a card
+  // rebuilt from `session_history`, which replays metadata only — see the
+  // `attachment` history event). The Pi answers with a `file_offer` carrying
+  // the same `id` the history event used, so the app upserts the existing card
+  // instead of adding a second one.
+  | { type: "file_get"; id: string; path: string; attachment_id?: string }
   | { type: "approve_tool"; id: string; tool_call_id: string; decision: "allow" | "deny" }
   | { type: "cancel"; id: string; target_id: string }
   | { type: "ping"; id: string }
@@ -255,6 +261,38 @@ export interface WireFile {
   path?: string;
 }
 
+/**
+ * A file the Pi hands to the phone (Pi → App), the mirror of `WireFile`.
+ *
+ * Unlike the upload direction the content DOES come back: the app has no other
+ * way to see a file that lives on the Pi's disk. `data` is therefore always
+ * present (base64 of the bytes) and bounded — see `ATTACHMENT_MAX_BYTES` in
+ * `session/attachment.ts`, which is sized so the double-base64 envelope still
+ * fits the relay's 4 MiB.
+ */
+export interface WireFileOffer {
+  /** Stable identity: `att_<toolCallId>` — same in the live offer, in the
+   *  `session_history` event and in a `file_get` reply, so every side can
+   *  upsert by id. */
+  id: string;
+  /** File name (no directories). */
+  name: string;
+  /** Absolute path on the Pi where the file lives. */
+  path: string;
+  /** Content type, e.g. `"image/png"`. */
+  mime: string;
+  /** Byte length of `data` (post-downscale for images). */
+  size: number;
+  /** Base64 of the bytes to show. */
+  data: string;
+  /** Optional caption written by the agent. */
+  note?: string;
+  /** Set when the Pi had to downscale/re-encode to fit the envelope. */
+  resized?: boolean;
+  /** Size on disk before any downscale, when it differs from `size`. */
+  original_size?: number;
+}
+
 export type Usage = { input_tokens: number; output_tokens: number };
 
 export type KnownErrorCode =
@@ -304,6 +342,22 @@ export type SessionHistoryEvent =
   // `duration_ms` is how long the block took to stream (absent when the block
   // came from a session-file seed, i.e. a daemon restart).
   | { ts: number; type: "agent_thinking"; in_reply_to: string; text: string; duration_ms?: number }
+  // A file the Pi sent to the phone, replayed as METADATA ONLY — no `data`.
+  // `session_history` is capped at 3 MiB and trims the oldest events when it
+  // overflows, so inlining ~270 KB of base64 per screenshot would evict half the
+  // conversation. The app pulls the bytes on demand with `file_get`.
+  | {
+      ts: number;
+      type: "attachment";
+      id: string;
+      name: string;
+      path: string;
+      mime: string;
+      size: number;
+      note?: string;
+      resized?: boolean;
+      original_size?: number;
+    }
   // Plan/32: a context-compaction marker, replayed in history (survives
   // re-sync like images) so the app re-renders the "context compacted" notice.
   | { ts: number; type: "compaction"; summary: string; tokens_before: number };
@@ -360,6 +414,13 @@ export type ServerMessage =
   // older clients ignore unknown types.
   | { type: "agent_thinking"; in_reply_to: string; delta: string }
   | { type: "agent_done"; in_reply_to: string; usage?: Usage }
+  // A file from the Pi's disk, shown in the app as a card. `data` is always
+  // here (never metadata-only): the phone cannot read the Pi's filesystem, and
+  // a pull would just add a round-trip before the user sees anything. A
+  // `session_history` replay carries the same card WITHOUT `data` (see the
+  // `attachment` event) and the app re-pulls with `file_get` if it needs the
+  // bytes. `in_reply_to` is set when this answers a `file_get`.
+  | (WireFileOffer & { type: "file_offer"; in_reply_to?: string })
   | { type: "agent_message"; in_reply_to: string; text: string; usage?: Usage }
   // Plan/32: pushed after a context compaction (live, and replayed on history
   // re-sync). `tokens_before` is the pre-compaction token count.

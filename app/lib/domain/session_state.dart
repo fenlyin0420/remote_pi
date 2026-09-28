@@ -159,6 +159,101 @@ class AssistantMsg extends ChatMessage {
   int get hashCode => Object.hash(id, text);
 }
 
+/// A file the Pi handed to the phone (`send_to_phone`), rendered as a card in
+/// the timeline where the tool ran.
+///
+/// [blobName] is the local copy of the bytes inside the app's attachment dir,
+/// or null while the card has no content yet (a card rebuilt from
+/// `session_history` starts empty and fills in on the first view). The bytes
+/// are deliberately NOT part of this object: a 2 MB base64 string inside a
+/// message record would be loaded into memory every time the room is read.
+class AttachmentMsg extends ChatMessage {
+  final String name;
+  final String path;
+  final String mime;
+  final int size;
+
+  /// Optional caption the agent wrote for the card.
+  final String? note;
+
+  /// The Pi downscaled the image to fit the relay envelope.
+  final bool resized;
+  final int? originalSize;
+
+  /// File name of the locally cached bytes, or null when not fetched yet.
+  final String? blobName;
+
+  /// Set when the Pi refused to send the file (too large, binary, gone). The
+  /// card renders the reason instead of a preview.
+  final String? error;
+
+  const AttachmentMsg({
+    required super.id,
+    required this.name,
+    required this.path,
+    required this.mime,
+    required this.size,
+    this.note,
+    this.resized = false,
+    this.originalSize,
+    this.blobName,
+    this.error,
+  });
+
+  /// True when the mime is an image the card can render inline (SVG is text
+  /// and gets the file treatment, like on the Pi side).
+  bool get isImage => mime.startsWith('image/') && mime != 'image/svg+xml';
+
+  /// The card has something to show.
+  bool get hasContent => blobName != null;
+
+  AttachmentMsg copyWith({
+    String? blobName,
+    String? error,
+    bool clearError = false,
+  }) => AttachmentMsg(
+    id: id,
+    name: name,
+    path: path,
+    mime: mime,
+    size: size,
+    note: note,
+    resized: resized,
+    originalSize: originalSize,
+    // A later replay carries no bytes, so only overwrite when we HAVE some.
+    blobName: blobName ?? this.blobName,
+    error: clearError ? null : (error ?? this.error),
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is AttachmentMsg &&
+      other.id == id &&
+      other.name == name &&
+      other.path == path &&
+      other.mime == mime &&
+      other.size == size &&
+      other.note == note &&
+      other.resized == resized &&
+      other.originalSize == originalSize &&
+      other.blobName == blobName &&
+      other.error == error;
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    name,
+    path,
+    mime,
+    size,
+    note,
+    resized,
+    originalSize,
+    blobName,
+    error,
+  );
+}
+
 /// Model reasoning for one turn ("thinking"). Rendered as a collapsible block,
 /// collapsed by default — it's context, not the answer. Persisted like any
 /// other row (including the `session_history` replay) so it survives a
