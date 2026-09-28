@@ -3,7 +3,7 @@ import 'package:app/domain/session_state.dart';
 /// Plan/31 — one persisted chat message (row-granular SSOT). Stored in the
 /// per-session `msgs:<epk>:<roomId>` box, keyed by [seq]. Maps to the domain
 /// [ChatMessage] the UI widgets already render.
-enum MsgRole { user, assistant, tool, compaction, thinking }
+enum MsgRole { user, assistant, tool, compaction, thinking, attachment }
 
 class MessageRecord {
   /// Protocol id — the dedupe key (optimistic send ↔ Pi echo share it).
@@ -39,6 +39,11 @@ class MessageRecord {
   /// timed (measured live by the app, or replayed from the Pi's history event).
   final int? thinkingMs;
 
+  /// A file the Pi sent to the phone (attachment rows only). Metadata plus the
+  /// name of the locally cached bytes — never the bytes themselves, see
+  /// [AttachmentMsg.blobName].
+  final AttachmentData? attachment;
+
   const MessageRecord({
     required this.id,
     required this.seq,
@@ -52,6 +57,7 @@ class MessageRecord {
     this.steering = false,
     this.tokensBefore,
     this.thinkingMs,
+    this.attachment,
   });
 
   MessageRecord copyWith({
@@ -62,6 +68,7 @@ class MessageRecord {
     ToolEventData? tool,
     bool? pending,
     bool? steering,
+    AttachmentData? attachment,
   }) => MessageRecord(
     id: id,
     seq: seq ?? this.seq,
@@ -75,6 +82,7 @@ class MessageRecord {
     steering: steering ?? this.steering,
     tokensBefore: tokensBefore,
     thinkingMs: thinkingMs,
+    attachment: attachment ?? this.attachment,
   );
 
   Map<String, dynamic> toJson() => {
@@ -86,6 +94,7 @@ class MessageRecord {
     if (file != null)
       'file': {'name': file!.name, if (file!.path != null) 'path': file!.path},
     if (tool != null) 'tool': tool!.toJson(),
+    if (attachment != null) 'attachment': attachment!.toJson(),
     'ts': ts.millisecondsSinceEpoch,
     'pending': pending,
     if (steering) 'steering': true,
@@ -97,6 +106,7 @@ class MessageRecord {
     final imageRaw = j['image'];
     final fileRaw = j['file'];
     final toolRaw = j['tool'];
+    final attachmentRaw = j['attachment'];
     return MessageRecord(
       id: j['id'] as String,
       seq: (j['seq'] as num).toInt(),
@@ -119,6 +129,9 @@ class MessageRecord {
           : null,
       tool: toolRaw is Map
           ? ToolEventData.fromJson(toolRaw.cast<String, dynamic>())
+          : null,
+      attachment: attachmentRaw is Map
+          ? AttachmentData.fromJson(attachmentRaw.cast<String, dynamic>())
           : null,
       ts: DateTime.fromMillisecondsSinceEpoch((j['ts'] as num).toInt()),
       pending: (j['pending'] as bool?) ?? false,
@@ -164,8 +177,75 @@ class MessageRecord {
         );
       case MsgRole.compaction:
         return CompactionMsg(id: id, summary: text, tokensBefore: tokensBefore);
+      case MsgRole.attachment:
+        final a = attachment;
+        return AttachmentMsg(
+          id: id,
+          name: a?.name ?? '',
+          path: a?.path ?? '',
+          mime: a?.mime ?? 'application/octet-stream',
+          size: a?.size ?? 0,
+          note: a?.note,
+          resized: a?.resized ?? false,
+          originalSize: a?.originalSize,
+          blobName: a?.blobName,
+          error: a?.error,
+        );
     }
   }
+}
+
+/// A file the Pi sent to the phone, as persisted.
+///
+/// [blobName] points at the cached bytes inside the app's attachment dir. It is
+/// a name, not a path, so the dir can move (and so a record can't be used to
+/// point at an arbitrary file); [AttachmentStore] resolves it.
+class AttachmentData {
+  final String name;
+  final String path;
+  final String mime;
+  final int size;
+  final String? note;
+  final bool resized;
+  final int? originalSize;
+  final String? blobName;
+  final String? error;
+
+  const AttachmentData({
+    required this.name,
+    required this.path,
+    required this.mime,
+    required this.size,
+    this.note,
+    this.resized = false,
+    this.originalSize,
+    this.blobName,
+    this.error,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'path': path,
+    'mime': mime,
+    'size': size,
+    if (note != null) 'note': note,
+    if (resized) 'resized': true,
+    if (originalSize != null) 'original_size': originalSize,
+    if (blobName != null) 'blob': blobName,
+    if (error != null) 'error': error,
+  };
+
+  factory AttachmentData.fromJson(Map<String, dynamic> j) => AttachmentData(
+    name: (j['name'] as String?) ?? '',
+    path: (j['path'] as String?) ?? '',
+    mime: (j['mime'] as String?) ?? 'application/octet-stream',
+    size: (j['size'] as num?)?.toInt() ?? 0,
+    note: j['note'] as String?,
+    resized: (j['resized'] as bool?) ?? false,
+    originalSize: (j['original_size'] as num?)?.toInt(),
+    blobName: j['blob'] as String?,
+    error: j['error'] as String?,
+  );
 }
 
 /// Tool request + result collapsed into a single persisted shape.

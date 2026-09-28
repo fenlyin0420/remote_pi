@@ -903,6 +903,32 @@ class ListCommands extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'list_commands', 'id': id};
 }
 
+/// Asks the Pi for the bytes of a file it already offered.
+///
+/// A `session_history` replay carries the card as metadata only (the history
+/// has a 3 MiB budget, so base64 does not belong in it), which means a card
+/// rebuilt after a reconnect may have nothing to show. The Pi answers with a
+/// [FileOffer] reusing [attachmentId] — the id the history event carried — so
+/// the existing card is filled in rather than duplicated.
+class FileGet extends ClientMessage {
+  final String id;
+  final String path;
+
+  /// The card this pull is for. Optional: a Pi that doesn't know it mints one
+  /// from the request id.
+  final String? attachmentId;
+
+  FileGet({required this.id, required this.path, this.attachmentId});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'file_get',
+    'id': id,
+    'path': path,
+    if (attachmentId != null) 'attachment_id': attachmentId,
+  };
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -935,6 +961,8 @@ sealed class ServerMessage {
       'agent_message' => AgentMessage.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
       'compaction' => Compaction.fromJson(json),
+      // Pi → App file hand-off (`send_to_phone` / a `file_get` answer).
+      'file_offer' => FileOffer.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
       'bye' => Bye.fromJson(json),
       'action_ok' => ActionOk.fromJson(json),
@@ -1312,10 +1340,71 @@ class Compaction extends ServerMessage {
   );
 }
 
+/// A file the Pi handed to the phone (the `send_to_phone` tool), shown as a
+/// card in the chat timeline.
+///
+/// [data] is base64 and always present on the live offer: the phone cannot read
+/// the Pi's filesystem, so this is the only way the bytes arrive. The same card
+/// replayed by `session_history` arrives WITHOUT [data] (see [AttachmentEvt])
+/// and is filled in later with a [FileGet].
+///
+/// [id] is stable across all three appearances (live offer, history replay,
+/// pull answer) so every side can upsert instead of appending a second card.
+class FileOffer extends ServerMessage {
+  final String id;
+  final String name;
+  final String path;
+  final String mime;
+  final int size;
+
+  /// Base64 of the file bytes. Absent only on a metadata-only replay.
+  final String? data;
+
+  /// Optional one-line caption the agent wrote for the card.
+  final String? note;
+
+  /// The Pi had to downscale/re-encode the image to fit the relay envelope.
+  final bool resized;
+
+  /// Size on the Pi's disk before any downscale, when it differs from [size].
+  final int? originalSize;
+
+  /// Set when this offer answers a [FileGet].
+  final String? inReplyTo;
+
+  FileOffer({
+    required this.id,
+    required this.name,
+    required this.path,
+    required this.mime,
+    required this.size,
+    this.data,
+    this.note,
+    this.resized = false,
+    this.originalSize,
+    this.inReplyTo,
+  });
+
+  /// True when the mime is an image the card can render inline.
+  bool get isImage => mime.startsWith('image/') && mime != 'image/svg+xml';
+
+  factory FileOffer.fromJson(Map<String, dynamic> j) => FileOffer(
+    id: j['id'] as String,
+    name: (j['name'] as String?) ?? '',
+    path: (j['path'] as String?) ?? '',
+    mime: (j['mime'] as String?) ?? 'application/octet-stream',
+    size: (j['size'] as num?)?.toInt() ?? 0,
+    data: j['data'] as String?,
+    note: j['note'] as String?,
+    resized: (j['resized'] as bool?) ?? false,
+    originalSize: (j['original_size'] as num?)?.toInt(),
+    inReplyTo: j['in_reply_to'] as String?,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // SessionHistory + embedded event types
 // ---------------------------------------------------------------------------
-
 /// Reply to a `session_sync`. May arrive in batches; the final batch
 /// sets `eos: true`. `truncated: true` indicates Pi had more events
 /// than the requested `limit` and dropped the oldest — surfaced to
@@ -1393,6 +1482,19 @@ sealed class SessionHistoryEvent {
         ts: ts,
         summary: (j['summary'] as String?) ?? '',
         tokensBefore: (j['tokens_before'] as num?)?.toInt(),
+      ),
+      // Pi → App file card, metadata only: `session_history` has a 3 MiB
+      // budget, so the bytes are pulled on demand with `file_get`.
+      'attachment' => AttachmentEvt(
+        ts: ts,
+        id: j['id'] as String,
+        name: (j['name'] as String?) ?? '',
+        path: (j['path'] as String?) ?? '',
+        mime: (j['mime'] as String?) ?? 'application/octet-stream',
+        size: (j['size'] as num?)?.toInt() ?? 0,
+        note: j['note'] as String?,
+        resized: (j['resized'] as bool?) ?? false,
+        originalSize: (j['original_size'] as num?)?.toInt(),
       ),
       final t => throw UnsupportedTypeException(t ?? ''),
     };
@@ -1489,6 +1591,35 @@ class CompactionEvt extends SessionHistoryEvent {
     required super.ts,
     required this.summary,
     this.tokensBefore,
+  });
+}
+
+/// A file the Pi sent to the phone, replayed from `session_history`.
+///
+/// Metadata only — no bytes. The app upserts this on the card id, so a replay
+/// after a live offer (or after the bytes were already fetched) never clears
+/// what is on screen; when the card has no content yet the UI pulls it with
+/// [FileGet].
+class AttachmentEvt extends SessionHistoryEvent {
+  final String id;
+  final String name;
+  final String path;
+  final String mime;
+  final int size;
+  final String? note;
+  final bool resized;
+  final int? originalSize;
+
+  const AttachmentEvt({
+    required super.ts,
+    required this.id,
+    required this.name,
+    required this.path,
+    required this.mime,
+    required this.size,
+    this.note,
+    this.resized = false,
+    this.originalSize,
   });
 }
 

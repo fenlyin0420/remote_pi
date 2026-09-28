@@ -279,6 +279,44 @@ Documented for context:
 
 ---
 
+## [Unreleased 2] — Files from the Pi to the phone
+
+The mirror of the attachment upload: the agent hands a file that already lives
+on the Pi's disk to the phone, and it shows up as a card in the chat timeline.
+
+### Added
+
+- **`send_to_phone(path, note?)` tool** (pi-extension 0.10.0): an image renders
+  inline in the app, a text file shows its name and a preview. One file per
+  call. What counts as an image or as text is decided by the bytes, never by
+  the name (same rule as the upload direction), and `path` is reported through
+  `realpath` so a symlink can't point the card somewhere else.
+- **`file_offer` (Pi → App) and `file_get` (App → Pi)** on the wire, plus an
+  `attachment` event in `session_history`. The card id is `att_<toolCallId>` in
+  all three, so the app upserts instead of appending a second card, and a
+  metadata-only replay never clears bytes already on screen.
+- **Image downscale on the Pi** for anything over the 2 MiB envelope budget
+  (`resizeImage` from the SDK — Photon/WASM, no new dependency). The card says
+  what it was reduced from. Binary files and text over 1 MiB are refused with
+  a message that tells the model to send a link instead.
+- **Attachment cache in the app** (`<Hive dir>/attachments/<id>.bin`, 64 MB
+  cap, oldest-first sweep). Bytes stay out of the message records — a 2 MB
+  base64 row would load the whole room into memory on every read.
+- **`AttachmentCard`** in the chat: inline thumbnail, text preview, a
+  "tap to load" state for a card rebuilt from history, and the reason when the
+  Pi refused. Tapping pulls the bytes on demand, so opening an old room never
+  downloads every file that was ever sent.
+
+### Notes
+
+- `send_to_phone` publishes no tool card to the app — the attachment card *is*
+  the rendering of that call. A failure still shows up in the tool timeline.
+- Video, archives and other binaries are out of scope: breaking the relay's
+  4 MiB envelope needs an HTTP pull (upload to a host the phone can reach),
+  which remains the open option.
+
+---
+
 ## [0.1.3] — 2026-05-22
 
 ### Added

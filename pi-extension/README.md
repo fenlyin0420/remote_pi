@@ -91,6 +91,26 @@ waiting for another agent's content reply. Use `agent_send`, continue the
 current turn, and receive any later reply through the inbox/turn flow with
 `re` correlating it to the original message id.
 
+### 1b) Sending a file to the phone
+
+- `send_to_phone({ path, note? })` — shows a file from this machine in the
+  phone app as a card in the chat timeline: an image renders inline, a text
+  file shows its name and a preview. One file per call.
+
+What counts as an image or as text is decided by the **bytes**, never the name
+(PNG/JPEG/GIF/WebP/BMP by signature, then strict UTF-8/UTF-16 without a NUL
+byte). Images over 2 MiB are downscaled automatically to fit the relay's
+envelope; binary files and text over 1 MiB are refused with a message telling
+the model to send a link instead. `note` is a one-line caption shown under the
+card.
+
+The tool deliberately publishes no `tool_request`/`tool_result` to the app —
+the attachment card *is* the app's rendering of the call. A failure still
+surfaces as a tool card, since that is the only place the user learns the file
+did not go. The card survives a re-sync (and a daemon restart): its metadata is
+persisted as a `display:false` custom message, and the app re-pulls the bytes
+on demand with `file_get` when the card is actually looked at.
+
 Peers on the same machine talk over a Unix domain socket at
 `~/.pi/remote/sessions/<session-name>/broker.sock`. When sibling PCs are paired,
 a leader-capable Extension or MCP participant bridges the opaque cross-PC
