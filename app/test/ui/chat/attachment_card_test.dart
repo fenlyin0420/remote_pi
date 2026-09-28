@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/value_objects/image_size.dart';
 import 'package:app/ui/chat/widgets/attachment_card.dart';
+import 'package:app/ui/chat/widgets/image_frame.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +13,21 @@ import 'package:flutter_test/flutter_test.dart';
 /// A 1×1 PNG — small enough to inline, real enough for `Image.memory` to accept.
 final _png = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+);
+
+/// Real PNGs: a 300×2400 phone screenshot (taller than the 220 px cap) and a
+/// 400×100 strip (shorter than it), inline-able because they are 1-bit palette
+/// files. The pair matters: the first reserves the cap, the second does not, so
+/// a test can tell a reserved box from the fallback.
+final _tallPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAASwAAAlgAQAAAAAaczeoAAAAcUlEQVR42u3BAQ0AAADCoPdP'
+  'bQ8HFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwYba8AAaU4yKwAAAAA'
+  'SUVORK5CYII=',
+);
+final _widePng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAZAAAABkAQAAAACAsFvaAAAAG0lEQVR42u3BAQ0AAADCoPdP'
+  'bQ8HFAAAAADwYBPsAAEwqsp8AAAAAElFTkSuQmCC',
 );
 
 AttachmentMsg _card({
@@ -62,6 +80,10 @@ Future<void> _pump(
 }
 
 void main() {
+  // The memo of image sizes is process-wide, and every test in this file reuses
+  // the same blob name.
+  setUp(ImageSizeCache.shared.clear);
+
   testWidgets('an image card renders inline and names the file', (tester) async {
     await _pump(tester, _card(), blobs: {'att_tc-1.bin': _png});
 
@@ -245,5 +267,81 @@ void main() {
     await tester.tap(find.byKey(const Key('attachment-expand')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('viewer-save')), findsOneWidget);
+  });
+
+  group('the media area is decided before the bytes are', () {
+    /// Pumps a card whose blob read is held open, then completes it.
+    Future<void> pumpGated(
+      WidgetTester tester,
+      Completer<Uint8List?> gate,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: AttachmentCard(
+                message: _card(),
+                loadBytes: (_) => gate.future,
+                onLoad: (_, _) async {},
+                onSave: (_) async => 'Pictures/Remote Pi/x.png',
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    double frameHeight(WidgetTester tester) =>
+        tester.getSize(find.byType(ImageFrame)).height;
+
+    testWidgets('held open at the finished height, not the load row', (
+      tester,
+    ) async {
+      final gate = Completer<Uint8List?>();
+      await pumpGated(tester, gate);
+
+      // Frame one: nothing read yet. It used to be the ~44 px "tap to load"
+      // row, which grew to 220 px a frame later — the reflow that made the
+      // transcript snap back under a scrolling finger.
+      final loading = frameHeight(tester);
+      expect(loading, AttachmentCard.maxImageHeight);
+
+      gate.complete(_tallPng);
+      await tester.pump();
+      await tester.pump();
+      expect(find.byType(Image), findsOneWidget);
+      expect(frameHeight(tester), loading);
+    });
+
+    testWidgets('a size known from a previous pass is exact from frame one', (
+      tester,
+    ) async {
+      // The card's own state does not survive leaving the viewport, so this is
+      // what the second scroll past an image sees: the size is in the memo.
+      ImageSizeCache.shared.remember('att_tc-1.bin', const ImageSize(400, 100));
+      final gate = Completer<Uint8List?>();
+      await pumpGated(tester, gate);
+
+      // 400 px wide in an 800 px card: RenderImage takes its natural 100 px
+      // height, not the 220 px cap. Reserving the cap would have been a 120 px
+      // jump when the bytes landed.
+      expect(frameHeight(tester), 100);
+
+      gate.complete(_widePng);
+      await tester.pump();
+      await tester.pump();
+      expect(frameHeight(tester), 100);
+    });
+
+    testWidgets('a card with nothing cached stays compact', (tester) async {
+      // A metadata-only card from `session_history` has no bytes on disk to
+      // hold a media area for; it must not reserve one.
+      await _pump(tester, _card(blobName: null), blobs: const {});
+      expect(
+        tester.getSize(find.byType(AttachmentCard)).height,
+        lessThan(120),
+      );
+    });
   });
 }

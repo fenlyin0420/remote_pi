@@ -1,7 +1,9 @@
 import 'package:app/data/attachments/attachment_store.dart';
 import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/domain/value_objects/image_size.dart';
 import 'package:app/ui/chat/widgets/attachment_viewer.dart';
+import 'package:app/ui/chat/widgets/image_frame.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +17,8 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 ///
 /// Three states, all in this one widget:
 ///   * image + bytes  → inline thumbnail (same 220 px ceiling as [ImageBubble]);
+///   * image + blob   → the same box, held open while the bytes are read from
+///     disk, so the row never changes height under a scrolling finger;
 ///   * text + bytes   → name/size header + a scrollable monospace preview;
 ///   * no bytes yet   → a "tap to load" affordance. A card rebuilt from
 ///     `session_history` arrives as metadata only, and re-pulling is the user's
@@ -60,6 +64,11 @@ class _AttachmentCardState extends State<AttachmentCard> {
   bool _loading = false;
   String? _loadedBlob;
 
+  /// True while [_readBlob] is waiting on the disk for [_loadedBlob]. Keeps an
+  /// image card's media area open (see [_image]) instead of collapsing to the
+  /// "tap to load" row and growing again a frame later.
+  bool _reading = false;
+
   @override
   void initState() {
     super.initState();
@@ -76,9 +85,18 @@ class _AttachmentCardState extends State<AttachmentCard> {
     final blob = widget.message.blobName;
     if (blob == null || blob == _loadedBlob) return;
     _loadedBlob = blob;
+    _reading = true;
     final bytes = await widget.loadBytes(blob);
-    if (!mounted || bytes == null) return;
-    setState(() => _bytes = bytes);
+    // The header is all the layout needs, and remembering it here means the
+    // box is exact on this card's *first* frame and on every later scroll past
+    // it (the card's own state does not survive leaving the viewport).
+    final size = bytes == null ? null : probeImageSize(bytes);
+    ImageSizeCache.shared.remember(blob, size);
+    if (!mounted) return;
+    setState(() {
+      _reading = false;
+      _bytes = bytes;
+    });
   }
 
   Future<void> _request() async {
@@ -243,18 +261,42 @@ class _AttachmentCardState extends State<AttachmentCard> {
 
   Widget _image(BuildContext context) {
     final bytes = _bytes;
-    if (bytes == null) return _placeholder(context);
-    return GestureDetector(
-      key: const Key('attachment-open'),
-      onTap: _open,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(
-          maxHeight: AttachmentCard.maxImageHeight,
+    final blob = widget.message.blobName;
+    final size = blob == null ? null : ImageSizeCache.shared.sizeOf(blob);
+    if (bytes == null) {
+      // A cached blob whose bytes have not arrived yet: hold the media area
+      // open with the box the picture is going to occupy. (This used to be a
+      // ~44 px "tap to load" row that grew to 220 px a frame later, which is
+      // what made the transcript jump under a scrolling finger.) A card with
+      // no blob at all has nothing to hold open — it stays compact until the
+      // user asks for the file.
+      if (blob == null || !_reading) return _placeholder(context);
+      return ImageFrame(
+        size: size,
+        maxHeight: AttachmentCard.maxImageHeight,
+        builder: (context, _) => Center(
+          child: SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.4,
+              color: context.colors.muted,
+            ),
+          ),
         ),
+      );
+    }
+    return ImageFrame(
+      size: size,
+      maxHeight: AttachmentCard.maxImageHeight,
+      builder: (context, cacheWidth) => GestureDetector(
+        key: const Key('attachment-open'),
+        onTap: _open,
         child: Image.memory(
           bytes,
           fit: BoxFit.cover,
           gaplessPlayback: true,
+          cacheWidth: cacheWidth,
           errorBuilder: (_, _, _) => _brokenImage(context),
         ),
       ),

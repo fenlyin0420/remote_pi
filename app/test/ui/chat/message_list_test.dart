@@ -4,11 +4,28 @@
 // viewport follows new content for free — including when the user does NOT want
 // it to. These tests pin the rule: incoming content never drags a user who is
 // reading history, while a message they send themselves brings them back.
+//
+// They also pin the other half of "the list does not move": an image row's
+// height is decided before its bytes land, so a decode finishing mid-scroll
+// cannot push the content under the finger (see `image_frame.dart`).
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/message_list.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// A real 300×2400 PNG (a phone screenshot), inline-able because it is a 1-bit
+/// palette file.
+final _tallPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAASwAAAlgAQAAAAAaczeoAAAAcUlEQVR42u3BAQ0AAADCoPdP'
+  'bQ8HFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwYba8AAaU4yKwAAAAA'
+  'SUVORK5CYII=',
+);
 
 List<ChatMessage> _rows(int count) => [
   for (var i = 1; i <= count; i++) AssistantMsg(id: 'a$i', text: 'message $i'),
@@ -60,6 +77,63 @@ void main() {
   testWidgets('opens at the newest message', (tester) async {
     await _pump(tester, _rows(30));
     expect(find.text('message 30'), findsOneWidget);
+  });
+
+  testWidgets('an image that finishes loading does not resize the transcript', (
+    tester,
+  ) async {
+    // The whole point: the attachment's bytes arrive a frame or two after the
+    // row is laid out, and the list must not notice. While the row grew from its
+    // load placeholder to the thumbnail's height, every image the viewport
+    // crossed pushed everything below it down — which is what stopped flings
+    // dead and dragged a slow drag backwards.
+    final gate = Completer<Uint8List?>();
+    final list = GlobalKey<MessageListState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 200,
+            child: MessageList(
+              key: list,
+              messages: [
+                ..._rows(12),
+                AttachmentMsg(
+                  id: 'att1',
+                  name: 'shot.png',
+                  path: '/home/p/shot.png',
+                  mime: 'image/png',
+                  size: 4096,
+                  blobName: 'att1.bin',
+                ),
+                AssistantMsg(id: 'a13', text: 'message 13'),
+              ],
+              streaming: null,
+              onDecide: (_, _) {},
+              loadAttachmentBytes: (_) => gate.future,
+              onLoadAttachment: (_, _) async {},
+              onSaveAttachment: (_) async => 'Downloads/Remote Pi/x',
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final before = list.currentState!.controller.position;
+    final extent = before.maxScrollExtent;
+    expect(extent, greaterThan(0), reason: 'the transcript must be scrollable');
+    final pixels = before.pixels;
+
+    gate.complete(_tallPng);
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(Image), findsOneWidget, reason: 'the image did land');
+    final after = list.currentState!.controller.position;
+    expect(after.maxScrollExtent, extent);
+    expect(after.pixels, pixels);
   });
 
   testWidgets('incoming content does not pull the viewport down', (
