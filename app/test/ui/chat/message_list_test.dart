@@ -45,6 +45,7 @@ Future<void> _pumpWithStreaming(
             onDecide: (_, _) {},
             loadAttachmentBytes: (_) async => null,
             onLoadAttachment: (_, _) async {},
+            onSaveAttachment: (_) async => 'Downloads/Remote Pi/x',
           ),
         ),
       ),

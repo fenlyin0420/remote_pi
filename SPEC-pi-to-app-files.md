@@ -98,7 +98,7 @@ Pipeline do lado Pi:
 Tool result (curto, é o que o modelo lê): `Sent chart.png (image/png, 180 KB,
 downscaled from 3.0 MB) to the phone.` / no erro, o motivo + o que fazer.
 
-## App
+### No app
 
 - `AttachmentMsg` (novo `ChatMessage`) com `blobName` (o nome do blob local, não
   os bytes); `data` nunca entra no domain.
@@ -109,9 +109,20 @@ downscaled from 3.0 MB) to the phone.` / no erro, o motivo + o que fazer.
   teto 64 MB, mais antigo primeiro, tmp órfão só some depois de 1 h (senão a
   varredura come a escrita de um `put` concorrente).
 - UI: `AttachmentCard` — imagem vira thumbnail (220 px, à **esquerda**, cor de
-  superfície); texto vira nome + tamanho + preview; sem bytes → "tap to load" e
-  dispara `file_get`; erro → linha vermelha com o motivo; botão de copiar o
-  caminho.
+  superfície); texto vira nome + tamanho + preview inline (fatia de ~700
+  caracteres, sem scroll aninhado — scroll dentro da lista de chat briga com o
+  scroll da própria lista) e "show all" abre a tela cheia; sem bytes →
+  "tap to load" e dispara `file_get`; erro → linha vermelha com o motivo;
+  botões de copiar caminho e salvar.
+- `AttachmentViewer`: tela cheia, `InteractiveViewer` + double-tap 2.5× (uma
+  miniatura de 220 px não é um leitor de screenshot), texto com scroll/seleção
+  até 200k caracteres, e o mesmo botão de salvar.
+- **Salvar no celular**: `MediaSaver` (contrato) + `MethodChannelMediaSaver` +
+  `MediaSaver.kt`. MediaStore, não `ACTION_CREATE_DOCUMENT`: `minSdk` é 34, o
+  insert de arquivo criado pelo próprio app **não pede permissão nenhuma**, e um
+  toque em vez de um diálogo por salvamento. Imagem → `Pictures/Remote Pi`, resto
+  → `Download/Remote Pi`; devolve o caminho e a UI mostra onde foi. O canal
+  confina o path ao filesDir do app.
 - O tool card de `send_to_phone` é **suprimido** nos dois caminhos (live e
   replay); uma **falha** continua virando tool card, que é o único lugar onde o
   usuário vê que não foi. O evento `attachment` entra no lugar, então a ordem na

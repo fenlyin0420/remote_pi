@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/attachment_card.dart';
 import 'package:flutter/material.dart';
@@ -38,6 +39,7 @@ Future<void> _pump(
   AttachmentMsg msg, {
   Map<String, Uint8List> blobs = const {},
   void Function(String id, String path)? onLoad,
+  List<String>? saved,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -47,6 +49,10 @@ Future<void> _pump(
             message: msg,
             loadBytes: (name) async => blobs[name],
             onLoad: (id, path) async => onLoad?.call(id, path),
+            onSave: (msg) async {
+              saved?.add(msg.name);
+              return 'Pictures/Remote Pi/${msg.name}';
+            },
           ),
         ),
       ),
@@ -160,5 +166,84 @@ void main() {
     await tester.tap(find.byKey(const Key('attachment-copy-path')));
     await tester.pump();
     expect(copied, ['/home/p/shot.png']);
+  });
+
+  testWidgets('save writes the file and says where it went', (tester) async {
+    final saved = <String>[];
+    await _pump(
+      tester,
+      _card(),
+      blobs: {'att_tc-1.bin': _png},
+      saved: saved,
+    );
+
+    await tester.tap(find.byKey(const Key('attachment-save')));
+    await tester.pump();
+
+    expect(saved, ['shot.png']);
+    expect(find.textContaining('Pictures/Remote Pi/shot.png'), findsOneWidget);
+  });
+
+  testWidgets('a save failure is reported, not swallowed', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: AttachmentCard(
+              message: _card(),
+              loadBytes: (name) async => _png,
+              onLoad: (_, _) async {},
+              onSave: (_) async =>
+                  throw const MediaSaveException('missing_file', 'gone already'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('attachment-save')));
+    await tester.pump();
+    expect(find.text('gone already'), findsOneWidget);
+  });
+
+  testWidgets('a card with nothing to save offers no save button', (
+    tester,
+  ) async {
+    await _pump(tester, _card(blobName: null), blobs: const {});
+    expect(find.byKey(const Key('attachment-save')), findsNothing);
+  });
+
+  testWidgets('tapping the image opens the full-screen viewer', (tester) async {
+    await _pump(tester, _card(), blobs: {'att_tc-1.bin': _png});
+
+    await tester.tap(find.byKey(const Key('attachment-open')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('viewer-save')), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    // Back out of the viewer.
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('viewer-save')), findsNothing);
+  });
+
+  testWidgets('a long text file offers "show all", which opens the viewer', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      _card(mime: 'text/plain', name: 'log.txt', blobName: 'att_tc-1.bin'),
+      blobs: {
+        'att_tc-1.bin': Uint8List.fromList(utf8.encode('line\n' * 400)),
+      },
+    );
+    // The inline slice is a screenful, not the whole file.
+    expect(find.text('show all'), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const Key('attachment-expand')));
+    await tester.tap(find.byKey(const Key('attachment-expand')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('viewer-save')), findsOneWidget);
   });
 }

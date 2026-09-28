@@ -1,5 +1,7 @@
 import 'package:app/data/attachments/attachment_store.dart';
+import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/ui/chat/widgets/attachment_viewer.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +25,7 @@ class AttachmentCard extends StatefulWidget {
     required this.message,
     required this.loadBytes,
     required this.onLoad,
+    required this.onSave,
   });
 
   final AttachmentMsg message;
@@ -33,11 +36,20 @@ class AttachmentCard extends StatefulWidget {
   /// Asks the Pi for the bytes. Called when the user taps a card that has none.
   final Future<void> Function(String attachmentId, String path) onLoad;
 
+  /// Copies the file into the phone's own storage; returns where it went.
+  final Future<String> Function(AttachmentMsg msg) onSave;
+
   /// Cap the thumbnail height; the card itself spans the list's content width.
   static const double maxImageHeight = 220;
 
-  /// How much of a text file the preview shows before it is cut.
-  static const int previewChars = 4000;
+  /// The inline slice. A nested scroll view inside the chat list is worse than
+  /// useless (it fights the list's own scroll), so the card shows a screenful
+  /// and the viewer takes over from there.
+  static const int previewChars = 700;
+
+  /// How much of a text file the inline card decodes before deciding to offer
+  /// "show all" — cheap enough to do on every build of the card.
+  static const int previewScanChars = 200000;
 
   @override
   State<AttachmentCard> createState() => _AttachmentCardState();
@@ -46,7 +58,6 @@ class AttachmentCard extends StatefulWidget {
 class _AttachmentCardState extends State<AttachmentCard> {
   Uint8List? _bytes;
   bool _loading = false;
-  bool _expanded = false;
   String? _loadedBlob;
 
   @override
@@ -77,6 +88,35 @@ class _AttachmentCardState extends State<AttachmentCard> {
       await widget.onLoad(widget.message.id, widget.message.path);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Full-screen: a screenshot has to be readable, and a long text file has to
+  /// be scrollable past the inline cap.
+  Future<void> _open() => AttachmentViewer.open(
+    context,
+    message: widget.message,
+    loadBytes: widget.loadBytes,
+    onSave: widget.onSave,
+  );
+
+  /// Save straight from the card — the same action the viewer offers, so
+  /// "keep this" never requires opening it first.
+  Future<void> _save() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      final where = await widget.onSave(widget.message);
+      messenger?.showSnackBar(SnackBar(content: Text('Saved to $where')));
+    } catch (error) {
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            error is MediaSaveException
+                ? error.message
+                : 'Could not save the file',
+          ),
+        ),
+      );
     }
   }
 
@@ -172,6 +212,18 @@ class _AttachmentCardState extends State<AttachmentCard> {
               );
             },
           ),
+          // Saving needs the local copy; without one there is nothing to write
+          // to the gallery, so the tap goes to the Pi instead (the placeholder).
+          if (msg.hasContent)
+            IconButton(
+              key: const Key('attachment-save'),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              icon: Icon(LucideIcons.download, size: 13, color: colors.muted),
+              tooltip: 'Save to phone',
+              onPressed: _save,
+            ),
         ],
       ),
     );
@@ -192,24 +244,30 @@ class _AttachmentCardState extends State<AttachmentCard> {
   Widget _image(BuildContext context) {
     final bytes = _bytes;
     if (bytes == null) return _placeholder(context);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: AttachmentCard.maxImageHeight),
-      child: Image.memory(
-        bytes,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _brokenImage(context),
+    return GestureDetector(
+      key: const Key('attachment-open'),
+      onTap: _open,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxHeight: AttachmentCard.maxImageHeight,
+        ),
+        child: Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, _, _) => _brokenImage(context),
+        ),
       ),
     );
   }
 
   Widget _textPreview(BuildContext context) {
     final colors = context.colors;
-    final text = AttachmentStore.textPreview(
+    final full = AttachmentStore.textPreview(
       _bytes!,
-      maxChars: AttachmentCard.previewChars,
+      maxChars: AttachmentCard.previewScanChars,
     );
-    if (text == null || text.trim().isEmpty) {
+    if (full == null || full.trim().isEmpty) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
         child: Text(
@@ -222,34 +280,31 @@ class _AttachmentCardState extends State<AttachmentCard> {
         ),
       );
     }
-    final cut = text.length >= AttachmentCard.previewChars;
+    final cut = full.length > AttachmentCard.previewChars;
+    final text = cut
+        ? full.substring(0, AttachmentCard.previewChars)
+        : full;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 220),
-            child: SingleChildScrollView(
-              child: GptMarkdown(
-                text,
-                style: context.typo.mono,
-                // Prose/code highlighting would fight the mono card; the raw
-                // text is what a file preview is for.
-                highlightBuilder: (context, text, style) =>
-                    Text(text, style: style),
-              ),
-            ),
+          GptMarkdown(
+            text,
+            style: context.typo.mono,
+            // Prose/code highlighting would fight the mono card; the raw text
+            // is what a file preview is for.
+            highlightBuilder: (context, text, style) => Text(text, style: style),
           ),
           if (cut)
             GestureDetector(
               key: const Key('attachment-expand'),
-              onTap: () => setState(() => _expanded = !_expanded),
+              onTap: _open,
               child: Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
-                  _expanded ? 'show less' : 'show all',
+                  'show all',
                   style: TextStyle(
                     fontFamily: kMonoFamily,
                     fontSize: 11,

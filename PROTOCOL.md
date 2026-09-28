@@ -559,6 +559,10 @@ metadados + o nome do blob (um base64 de 2 MB dentro de uma row do Hive
 carregaria a sala inteira na memória a cada leitura). Cache com teto de 64 MB,
 varredura do mais antigo primeiro. Card: imagem vira thumbnail (220 px), texto
 vira nome + preview, sem bytes vira "toque para carregar", erro vira a causa.
+Tocar abre a tela cheia (pinch/double-tap de zoom, texto rolável e selecionável)
+e **salvar** copia o blob para o armazenamento do aparelho via MediaStore —
+imagem em `Pictures/Remote Pi`, o resto em `Download/Remote Pi`, sem pedir
+permissão nenhuma e sem diálogo do sistema por salvamento.
 
 ---
 
