@@ -461,6 +461,11 @@ class ChatViewModel extends ViewModel<ChatState> {
   Future<void> loadAttachment(String attachmentId, String path) =>
       _sync.requestAttachment(attachmentId, path);
 
+  /// Copy a card's file into the phone's own storage (gallery for images,
+  /// Downloads otherwise) and return where it went, for the snackbar.
+  /// Throws [MediaSaveException] — the card shows the reason.
+  Future<String> saveAttachment(AttachmentMsg msg) => _sync.saveAttachment(msg);
+
   /// Plan/57 — submit (or cancel) an interactive extension_ui_request.
   ///
   /// Does NOT clear the pending request optimistically: pi-ask may reject the

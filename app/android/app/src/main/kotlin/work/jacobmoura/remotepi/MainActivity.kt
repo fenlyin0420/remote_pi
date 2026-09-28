@@ -49,6 +49,9 @@ class MainActivity : FlutterActivity() {
         private const val BACKGROUND_CHANNEL = "work.jacobmoura.remotepi/background"
         private const val NOTIFICATIONS_CHANNEL = "work.jacobmoura.remotepi/notifications"
 
+        /** Saving a file the Pi sent into shared storage — see [MediaSaver]. */
+        private const val MEDIA_CHANNEL = "work.jacobmoura.remotepi/media"
+
         /** FileProvider authority declared in AndroidManifest.xml. */
         private val AUTHORITY_SUFFIX = ".fileprovider"
 
@@ -116,6 +119,7 @@ class MainActivity : FlutterActivity() {
         setUpIdentityTransferChannel(flutterEngine)
         setUpBackgroundChannel(flutterEngine)
         setUpNotificationsChannel(flutterEngine)
+        setUpMediaChannel(flutterEngine)
     }
 
     override fun onDestroy() {
@@ -145,6 +149,54 @@ class MainActivity : FlutterActivity() {
     // -----------------------------------------------------------------------
     // Background connection + notifications
     // -----------------------------------------------------------------------
+
+    /**
+     * "Save this file to my phone" for a file the Pi sent us.
+     *
+     * One method, `save`: copies the cached blob into shared storage (gallery
+     * for images, Downloads otherwise) and answers with the location, so the UI
+     * can say WHERE it went instead of a bare "saved". The path is confined to
+     * this app's own files dir — a bad argument cannot become "copy any file
+     * off the device".
+     */
+    private fun setUpMediaChannel(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, MEDIA_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "save" -> {
+                        val path = call.argument<String>("path")
+                        val mime = call.argument<String>("mime").orEmpty()
+                        val name = call.argument<String>("name").orEmpty()
+                        if (path.isNullOrBlank() || name.isBlank()) {
+                            result.error("bad_args", "path and name are required", null)
+                            return@setMethodCallHandler
+                        }
+                        val file = File(path)
+                        val root = filesDir.canonicalFile
+                        val inside = try {
+                            file.canonicalPath.startsWith(root.path + File.separator)
+                        } catch (_: Exception) {
+                            false
+                        }
+                        if (!inside) {
+                            result.error("bad_path", "not an app-owned file", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val where = MediaSaver.save(this, file, mime, name)
+                            result.success(where)
+                        } catch (error: IllegalArgumentException) {
+                            result.error("missing_file", error.message, null)
+                        } catch (error: Exception) {
+                            result.error("save_failed", error.message ?: "save failed", null)
+                        }
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
 
     /**
      * Backs the "keep connected in the background" switch.

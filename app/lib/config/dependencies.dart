@@ -22,12 +22,14 @@ import 'package:app/data/transport/relay_config.dart';
 import 'package:app/data/transport/ws_transport.dart';
 import 'package:app/data/pairing/identity_transfer_service.dart';
 import 'package:app/data/pairing/method_channel_identity_transfer.dart';
+import 'package:app/data/attachments/method_channel_media_saver.dart';
 import 'package:app/data/update/method_channel_apk_installer.dart';
 import 'package:app/data/update/secure_dismissed_update_store.dart';
 import 'package:app/data/update/update_checker_impl.dart';
 import 'package:app/data/update/url_launcher_opener.dart';
 import 'package:app/data/voice/speech_service.dart';
 import 'package:app/domain/contracts/apk_installer.dart';
+import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/contracts/background_connection.dart';
 import 'package:app/domain/contracts/message_notifier.dart';
 import 'package:app/domain/contracts/identity_transfer.dart';
@@ -132,6 +134,7 @@ Future<void> setupDependencies() async {
     () => SyncService(
       _injector.get<ConnectionManager>(),
       _injector.get<LocalBoxes>(),
+      mediaSaver: _injector.get<MediaSaver>(),
     ),
   );
   _injector.addRepository<SessionReadRepository>(
@@ -247,6 +250,11 @@ Future<void> setupDependencies() async {
   // In-app update: downloads the APK and hands it to the system installer
   // through the native channel (no browser round-trip).
   _injector.addOther<ApkInstaller>(() => MethodChannelApkInstaller());
+
+  // Saving a file the Pi sent into the phone's own storage (gallery for
+  // images, Downloads for everything else) — MediaStore on the native side, no
+  // storage permission.
+  _injector.addOther<MediaSaver>(() => MethodChannelMediaSaver());
 
   // Identity backup / restore — carries the Owner keypair + paired peers to a
   // new phone as a file, so a replacement does not rescan the QR. Uses the

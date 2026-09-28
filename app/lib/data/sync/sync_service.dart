@@ -32,6 +32,7 @@ import 'package:app/data/sync/sync_events.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/domain/contracts/service.dart';
+import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
@@ -158,12 +159,18 @@ class SyncService extends Service {
   /// `tool_result` can be recognised (a bare result frame carries no tool name).
   final Set<String> _attachmentToolCalls = {};
 
+  /// Writes a card's file into the phone's storage. Null where the platform has
+  /// no channel for it (desktop builds, tests) — reported, never faked.
+  final MediaSaver? _mediaSaver;
+
   SyncService(
     this._conn,
     this._boxes, {
     this.pendingSendTimeout = const Duration(seconds: 20),
     AttachmentStore? attachmentStore,
-  }) : _attachments = attachmentStore {
+    MediaSaver? mediaSaver,
+  }) : _attachments = attachmentStore,
+       _mediaSaver = mediaSaver {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
       _writeRuntime();
@@ -214,6 +221,43 @@ class SyncService extends Service {
     final store = _attachmentStore();
     if (store == null) return null;
     return store.get(blobName);
+  }
+
+  /// The absolute path of a cached blob, for handing it to the platform.
+  Future<String?> attachmentPath(String blobName) async {
+    final store = _attachmentStore();
+    if (store == null) return null;
+    return store.pathOf(blobName);
+  }
+
+  /// Copy a card's cached file into the phone's own storage (gallery for
+  /// images, Downloads otherwise) and return where it went.
+  ///
+  /// Throws [MediaSaveException] — a card whose blob was pruned away, or a
+  /// platform without the channel, has to be reported, not silently swallowed.
+  Future<String> saveAttachment(AttachmentMsg msg) async {
+    final blob = msg.blobName;
+    if (blob == null) {
+      throw const MediaSaveException(
+        'missing_file',
+        'This file has not been loaded on the phone yet',
+      );
+    }
+    final path = await attachmentPath(blob);
+    if (path == null) {
+      throw const MediaSaveException(
+        'missing_file',
+        'The local copy is gone — load the file and try again',
+      );
+    }
+    final saver = _mediaSaver;
+    if (saver == null) {
+      throw const MediaSaveException(
+        'unsupported',
+        'Saving files is not available on this platform',
+      );
+    }
+    return saver.save(path: path, mime: msg.mime, name: msg.name);
   }
 
   AttachmentStore? _attachmentStore() {

@@ -13,6 +13,7 @@ import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/sync/sync_service.dart';
+import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -80,7 +81,7 @@ void main() {
   Future<
     ({ConnectionManager conn, _FakeChannel ch, SyncService sync, String epk})
   >
-  setup() async {
+  setup({MediaSaver? saver}) async {
     final ch = _FakeChannel();
     final conn = ConnectionManager(
       factory: (_, _) async => ch,
@@ -91,6 +92,7 @@ void main() {
       conn,
       LocalBoxes(),
       attachmentStore: _store,
+      mediaSaver: saver,
     );
     final epk = 'epk_att_${++_counter}';
     conn.adopt(
@@ -372,4 +374,101 @@ void main() {
     s.conn.dispose();
     s.sync.dispose();
   });
+
+  group('saving to the phone', () {
+    /// Records what the platform was asked to copy, so a test can prove the
+    /// CACHED file is what reaches it — never the Pi's path.
+    final asked = <Map<String, String>>[];
+
+    MediaSaver recordingSaver() => _RecordingSaver(asked);
+
+    test('hands the platform the cached file and reports where it went', () async {
+      final s = await setup(saver: recordingSaver());
+      s.ch.push(
+        FileOffer(
+          id: 'att_tc-1',
+          name: 'shot.png',
+          path: '/home/p/shot.png',
+          mime: 'image/png',
+          size: _png.length,
+          data: base64Encode(_png),
+        ),
+      );
+      await _settle();
+      final card = messages(s.epk).first.toChatMessage() as AttachmentMsg;
+      final expected = await _store.pathOf(card.blobName!);
+
+      final where = await s.sync.saveAttachment(card);
+      expect(asked, [
+        {'path': expected!, 'mime': 'image/png', 'name': 'shot.png'},
+      ]);
+      expect(where, 'Pictures/Remote Pi/shot.png');
+      expect(expected, isNot('/home/p/shot.png'));
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('a card that was never loaded says so instead of saving nothing', () async {
+      asked.clear();
+      final s = await setup(saver: recordingSaver());
+      const card = AttachmentMsg(
+        id: 'att_x',
+        name: 'gone.png',
+        path: '/home/p/gone.png',
+        mime: 'image/png',
+        size: 10,
+      );
+      await expectLater(
+        s.sync.saveAttachment(card),
+        throwsA(
+          isA<MediaSaveException>().having((e) => e.code, 'code', 'missing_file'),
+        ),
+      );
+      expect(asked, isEmpty);
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+
+    test('no platform channel is reported, never faked', () async {
+      asked.clear();
+      final s = await setup();
+      // A real cached file, so the refusal is about the missing platform, not
+      // about the file.
+      final blob = (await _store.put('att_y', _png))!;
+      final card = AttachmentMsg(
+        id: 'att_y',
+        name: 'x.png',
+        path: '/home/p/x.png',
+        mime: 'image/png',
+        size: _png.length,
+        blobName: blob,
+      );
+      await expectLater(
+        s.sync.saveAttachment(card),
+        throwsA(
+          isA<MediaSaveException>().having((e) => e.code, 'code', 'unsupported'),
+        ),
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    });
+  });
+}
+
+/// Stands in for the native MediaStore writer.
+class _RecordingSaver implements MediaSaver {
+  _RecordingSaver(this.asked);
+
+  final List<Map<String, String>> asked;
+
+  @override
+  Future<String> save({
+    required String path,
+    required String mime,
+    required String name,
+  }) async {
+    asked.add({'path': path, 'mime': mime, 'name': name});
+    final folder = mime.startsWith('image/') ? 'Pictures' : 'Download';
+    return '$folder/Remote Pi/$name';
+  }
 }

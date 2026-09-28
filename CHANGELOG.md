@@ -306,6 +306,17 @@ on the Pi's disk to the phone, and it shows up as a card in the chat timeline.
   "tap to load" state for a card rebuilt from history, and the reason when the
   Pi refused. Tapping pulls the bytes on demand, so opening an old room never
   downloads every file that was ever sent.
+- **Full-screen viewer** (`AttachmentViewer`): tapping an image opens it with
+  pinch/double-tap zoom over a black backdrop, a text file opens past the
+  inline slice (scrollable, selectable). A 220 px bubble thumbnail is not a
+  screenshot reader.
+- **Save to the phone**: a save action on the card and in the viewer copies the
+  cached file into shared storage through MediaStore — images to
+  `Pictures/Remote Pi`, everything else to `Download/Remote Pi` — and says where
+  it went. No storage permission is involved (the app's `minSdk` is 34 and the
+  inserted file is one the app created), and no system file-picker dialog per
+  save. The platform side is a new `.../media` MethodChannel (`MediaSaver.kt`),
+  confined to the app's own files dir.
 
 ### Notes
 

@@ -35,6 +35,7 @@ class MessageList extends StatefulWidget {
     required this.onDecide,
     required this.loadAttachmentBytes,
     required this.onLoadAttachment,
+    required this.onSaveAttachment,
   });
 
   final List<ChatMessage> messages;
@@ -46,6 +47,9 @@ class MessageList extends StatefulWidget {
 
   /// Asks the Pi for the bytes behind an attachment card that has none.
   final Future<void> Function(String attachmentId, String path) onLoadAttachment;
+
+  /// Copies an attachment into the phone's own storage; returns where it went.
+  final Future<String> Function(AttachmentMsg msg) onSaveAttachment;
 
   @override
   State<MessageList> createState() => MessageListState();
@@ -216,6 +220,7 @@ class MessageListState extends State<MessageList> {
                   message: msg,
                   loadBytes: widget.loadAttachmentBytes,
                   onLoad: widget.onLoadAttachment,
+                  onSave: widget.onSaveAttachment,
                 ),
               },
             );
