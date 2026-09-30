@@ -7,10 +7,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:app/config/dependencies.dart' show injector;
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/files/text_file_picker_service.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
+import 'package:app/data/local/draft_store.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
 import 'package:app/data/sync/sync_service.dart';
@@ -177,6 +179,8 @@ void main() {
   setUpAll(() async {
     dir = Directory.systemTemp.createTempSync('rp_chat_cmd_');
     await LocalBoxes.initForTest(dir.path);
+    // ChatPage reads the global injector for its per-room DraftStore.
+    injector.addInstance<DraftStore>(DraftStore(LocalBoxes()));
   });
   tearDownAll(() async {
     await Hive.close();

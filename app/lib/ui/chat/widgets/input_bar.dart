@@ -84,6 +84,19 @@ class InputBar extends StatefulWidget {
   /// chat mounted.
   final VoidCallback? onCommandsRequested;
 
+  /// Per-room draft persistence — the stored draft for THIS room, hydrated
+  /// into the field on mount. If the room key only resolves after the first
+  /// frame (the peer record loads async), the new value arrives through a
+  /// rebuild and is re-hydrated in `didUpdateWidget` — but only while the
+  /// field is still empty, never clobbering typed text.
+  final String initialDraft;
+
+  /// Per-room draft persistence — reports the field's text back to the host
+  /// (debounced while typing, immediate on clear, and once more on dispose so
+  /// an unflushed keystroke is never lost). The host writes it to this
+  /// room's draft store. Null → no persistence (test default).
+  final void Function(String text)? onDraftChanged;
+
   const InputBar({
     super.key,
     required this.onSend,
@@ -101,6 +114,8 @@ class InputBar extends StatefulWidget {
     this.onRunBash,
     this.commands = const [],
     this.onCommandsRequested,
+    this.initialDraft = '',
+    this.onDraftChanged,
     this.disabled = false,
     this.streaming = false,
   });
@@ -120,6 +135,15 @@ class _InputBarState extends State<InputBar> {
   // handling would consume Enter before an ancestor ever sees it.
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onComposerKey);
   bool _empty = true;
+  // Draft persistence bookkeeping: [Timer] keeps a fast typer from writing
+  // the box on every keystroke; [_draftWritePending] means a scheduled write
+  // never landed, so dispose must flush it; [_lastSavedDraft] is the last
+  // text handed to [onDraftChanged] (scheduled counts — the store may still
+  // hold an older value, hence the pending flag).
+  static const Duration _draftDebounce = Duration(milliseconds: 400);
+  Timer? _draftTimer;
+  bool _draftWritePending = false;
+  String _lastSavedDraft = '';
   /// Whether the `/` palette is on screen (mirrors `_commandQuery != null`, kept
   /// as state so the visible/invisible transition drives one fetch).
   bool _paletteVisible = false;
@@ -133,8 +157,20 @@ class _InputBarState extends State<InputBar> {
   @override
   void initState() {
     super.initState();
+    // Seed the stored draft BEFORE the listener so it doesn't round-trip
+    // straight back out as a "change". The host loaded it from the draft
+    // store, so [_lastSavedDraft] starts in sync.
+    _seedDraft(widget.initialDraft);
     _controller.addListener(_onTextChange);
     _subscribeTranscripts();
+  }
+
+  void _seedDraft(String text) {
+    _lastSavedDraft = text;
+    _controller.text = text;
+    _controller.selection = TextSelection.collapsed(offset: text.length);
+    _empty = text.isEmpty;
+    _paletteVisible = _commandQuery != null;
   }
 
   @override
@@ -143,6 +179,15 @@ class _InputBarState extends State<InputBar> {
     if (!identical(old.voice, widget.voice)) {
       _transcriptSub?.cancel();
       _subscribeTranscripts();
+    }
+    // The room key (peer epk) resolves asynchronously — the PeerRecord load
+    // finishes a few frames after mount, so the stored draft often arrives as
+    // a rebuild, not in [initialDraft] at initState. Hydrate it now, but only
+    // while the field is still empty: typed text always wins.
+    if (widget.initialDraft != old.initialDraft &&
+        widget.initialDraft.isNotEmpty &&
+        _controller.text.isEmpty) {
+      _seedDraft(widget.initialDraft);
     }
   }
 
@@ -159,6 +204,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _onTextChange() {
+    _persistDraft();
     final next = _controller.text.isEmpty;
     final paletteVisible = _commandQuery != null;
     final wasVisible = _paletteVisible;
@@ -175,9 +221,43 @@ class _InputBarState extends State<InputBar> {
     if (paletteVisible && !wasVisible) widget.onCommandsRequested?.call();
   }
 
+  /// Writes the field's text back to the host: immediate on clear (a sent
+  /// or erased draft must not linger in storage), debounced otherwise, and a
+  /// no-op when nothing new is pending.
+  void _persistDraft() {
+    final save = widget.onDraftChanged;
+    if (save == null) return;
+    final text = _controller.text;
+    if (text.isEmpty) {
+      _draftTimer?.cancel();
+      _draftWritePending = false;
+      if (_lastSavedDraft.isNotEmpty) {
+        _lastSavedDraft = '';
+        save('');
+      }
+      return;
+    }
+    if (text == _lastSavedDraft) return;
+    _draftTimer?.cancel();
+    _lastSavedDraft = text;
+    _draftWritePending = true;
+    _draftTimer = Timer(_draftDebounce, () {
+      _draftWritePending = false;
+      save(text);
+    });
+  }
+
   @override
   void dispose() {
     _transcriptSub?.cancel();
+    // Flush a pending write: leaving the room (or the app) mid-keystroke must
+    // not lose the draft.
+    _draftTimer?.cancel();
+    final save = widget.onDraftChanged;
+    final text = _controller.text;
+    if (save != null && (_draftWritePending || text != _lastSavedDraft)) {
+      save(text);
+    }
     _controller.removeListener(_onTextChange);
     _controller.dispose();
     _focusNode.dispose();

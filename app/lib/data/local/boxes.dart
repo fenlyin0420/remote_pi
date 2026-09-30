@@ -7,6 +7,7 @@
 //
 //   DURABLE  msgs_<epk>__<roomId>   key = seq (int)        → MessageRecord
 //   DURABLE  sessions_index         key = <epk>:<roomId>   → SessionIndexRecord
+//   DURABLE  drafts                 key = <epk>:<roomId>   → String (composer draft)
 //   VOLATILE runtime  (wiped@boot)  key = <epk>:<roomId>   → RuntimeRecord
 
 import 'package:app/data/transport/epk_encoding.dart';
@@ -14,6 +15,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 const String _kNamespace = 'rp_v2';
 const String _kSessionsIndex = 'sessions_index';
+const String _kDrafts = 'drafts';
 const String _kRuntime = 'runtime';
 
 /// Facade over the v2 Hive boxes. A single instance is shared by the
@@ -43,11 +45,15 @@ class LocalBoxes {
 
   static Future<void> _openCommon() async {
     await Hive.openBox<dynamic>(_kSessionsIndex);
+    await Hive.openBox<dynamic>(_kDrafts);
     final runtime = await Hive.openBox<dynamic>(_kRuntime);
     await runtime.clear(); // VOLATILE — zero on boot (#3)
   }
 
   Box<dynamic> sessionsIndexBox() => Hive.box<dynamic>(_kSessionsIndex);
+
+  /// Per-room composer drafts (unsent text, keyed by [sessionKey]).
+  Box<dynamic> draftsBox() => Hive.box<dynamic>(_kDrafts);
 
   Box<dynamic> runtimeBox() => Hive.box<dynamic>(_kRuntime);
 
