@@ -9,6 +9,7 @@ import 'package:app/data/background/method_channel_notifier.dart';
 import 'package:app/data/mesh/mesh_client.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/local/boxes.dart';
+import 'package:app/data/local/draft_store.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/home_read_repository.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
@@ -75,6 +76,10 @@ Future<void> setupDependencies() async {
   // Plan 31 — local SSOT box facade (boxes already opened + runtime wiped in
   // bootstrap before this runs).
   _injector.addInstance<LocalBoxes>(LocalBoxes());
+
+  // Per-room composer drafts (unsent text) — same key space as the local
+  // SSOT boxes; the chat page reads it in its first frame (getSync).
+  _injector.addInstance<DraftStore>(DraftStore(_injector.get<LocalBoxes>()));
 
   // Plan 23 — Owner-key sync. The store talks to the native plugin
   // (iCloud Keychain on iOS, Block Store on Android); the bridge sits

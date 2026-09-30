@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:app/config/dependencies.dart' show injector;
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
+import 'package:app/data/local/draft_store.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/domain/value_objects/session_label.dart';
@@ -459,8 +461,21 @@ class ChatPage extends StatelessWidget {
         !isRevoked &&
         !isPeerOffline &&
         !isPresenceOffline;
+    // Per-room composer draft: stored under (epk, roomId) so the text
+    // survives leaving and re-entering the room. The peer record loads async,
+    // so the key is null for the first frames — InputBar re-hydrates the
+    // stored draft when the key resolves (see its didUpdateWidget).
+    final draftEpk = vm.activePeer?.remoteEpk;
+    final drafts = injector.get<DraftStore>();
+    final initialDraft =
+        draftEpk == null ? '' : (drafts.read(draftEpk, vm.activeRoomId) ?? '');
 
     return InputBar(
+      initialDraft: initialDraft,
+      onDraftChanged:
+          draftEpk == null
+              ? null
+              : (text) => unawaited(drafts.save(draftEpk, vm.activeRoomId, text)),
       disabled:
           !isReady ||
           isOffline ||
