@@ -2160,11 +2160,12 @@ function _attachOwner(
   _attachPeerChannel(appPeerId, channel);
   _refreshFooter();
 
-  _safeNotify(
-    `[remote-pi] Owner attached: peer=${peerShort}, name=${peerName} ` +
-    `(${_activePeers.size} active)`,
-    "info",
-  );
+  // LOCAL PATCH (fenlyin): no user-visible popup for owner attach — the
+  // presence banner in the TUI footer (_refreshFooter) is the only signal.
+  // Upstream shows an info notification each time the app (re)connects,
+  // which pings every new session.
+  void peerShort;
+  void peerName;
 
   if (firstInner) {
     // The PlainPeerChannel listener fired on the same line that triggered
