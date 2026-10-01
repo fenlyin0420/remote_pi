@@ -1,5 +1,6 @@
 import 'package:app/config/dependencies.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/settings/settings_page.dart';
 import 'package:app/ui/settings/viewmodels/background_delivery_viewmodel.dart';
@@ -16,12 +17,10 @@ import 'package:provider/provider.dart';
 ///     screen to a pushed route.
 ///   • phone        → the existing full-screen `/settings` push.
 void openSettings(BuildContext context) {
-  // Same reason as the composer's own overlays: whatever held focus (e.g. the
-  // tablet's chat composer) would be restored when Settings closes, popping
-  // the soft keyboard back up. Give the focus up scope-wise first.
-  FocusManager.instance.primaryFocus?.unfocus(
-    disposition: UnfocusDisposition.scope,
-  );
+  // Settings is a route/sheet either way: drop whatever holds focus first (the
+  // tablet's chat composer), or closing it restores the composer and the soft
+  // keyboard springs back up over the chat.
+  ChatPage.dismissComposerFocus();
   if (isWideLayout(context)) {
     showSettingsSheet(context);
   } else {

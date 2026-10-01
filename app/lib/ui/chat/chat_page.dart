@@ -26,6 +26,19 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
 class ChatPage extends StatelessWidget {
+  /// Drops the composer's focus, wherever it is in the tree.
+  ///
+  /// Scoped disposition: the focus is handed back to the enclosing scope
+  /// rather than to another field, so nothing is left for a popped overlay
+  /// route to restore — restoring the composer is exactly what re-opened the
+  /// soft keyboard after closing Settings, the ⚙ sheet or the session-info
+  /// dialog.
+  static void dismissComposerFocus() {
+    FocusManager.instance.primaryFocus?.unfocus(
+      disposition: UnfocusDisposition.scope,
+    );
+  }
+
   /// Plan/24-fix-title: optional title hint passed via `go_router`
   /// `extra` from the Home tile. Used as the peer-label fallback in
   /// the AppBar so the user sees the right name *immediately* on
@@ -67,41 +80,50 @@ class ChatPage extends StatelessWidget {
 
     final scaffold = Scaffold(
       backgroundColor: context.colors.bg,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildTopBar(context, state),
-            // Pairing revocation is the only banner kept — it's a hard
-            // failure (can't proceed without re-pairing), red, with an
-            // explicit action. Plain offline / Pi-gone / presence-off
-            // banners were removed: the AppBar status line already
-            // surfaces those, and stacking duplicates noise the surface.
-            if (state is ChatReady && state.pairingRevoked)
-              _RevokedBanner(onRePair: () => context.go('/pair')),
-            // The notify strip floats OVER the transcript rather than sitting
-            // in this column: as a layout sibling it shifted every message up
-            // by its height the moment a command answered.
-            Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    key: const Key('chat-transcript'),
-                    child: _buildBody(context, state, vm),
-                  ),
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: _NoticeStrip(
-                      text: vm.notice,
-                      onDismiss: vm.dismissNotice,
+      // Tapping anywhere that isn't the composer itself dismisses it: the
+      // keyboard goes down and the field's focus is gone, so a later overlay
+      // route can't restore it. Buttons deeper in the tree still win their own
+      // taps — the ones that open a page or sheet unfocus explicitly (see
+      // ChatPage._showSessionInfo, InputBar._sheetOpener, openSettings).
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: ChatPage.dismissComposerFocus,
+        child: SafeArea(
+          child: Column(
+            children: [
+              _buildTopBar(context, state),
+              // Pairing revocation is the only banner kept — it's a hard
+              // failure (can't proceed without re-pairing), red, with an
+              // explicit action. Plain offline / Pi-gone / presence-off
+              // banners were removed: the AppBar status line already
+              // surfaces those, and stacking duplicates noise the surface.
+              if (state is ChatReady && state.pairingRevoked)
+                _RevokedBanner(onRePair: () => context.go('/pair')),
+              // The notify strip floats OVER the transcript rather than sitting
+              // in this column: as a layout sibling it shifted every message up
+              // by its height the moment a command answered.
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      key: const Key('chat-transcript'),
+                      child: _buildBody(context, state, vm),
                     ),
-                  ),
-                ],
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: _NoticeStrip(
+                        text: vm.notice,
+                        onDismiss: vm.dismissNotice,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            _buildInput(context, state, vm),
-          ],
+              _buildInput(context, state, vm),
+            ],
+          ),
         ),
       ),
     );
@@ -290,6 +312,10 @@ class ChatPage extends StatelessWidget {
     RoomInfo? room,
     String name,
   ) {
+    // The dialog is a route: drop the composer's focus before pushing it, or
+    // popping the dialog hands the focus back to the field and the soft
+    // keyboard springs up over the chat.
+    ChatPage.dismissComposerFocus();
     final owner = (peer.nickname?.isNotEmpty ?? false)
         ? peer.nickname!
         : peer.sessionName.isNotEmpty

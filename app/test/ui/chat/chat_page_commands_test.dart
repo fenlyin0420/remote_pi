@@ -32,6 +32,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
 class _FakeChannel implements IChannel {
@@ -410,6 +411,62 @@ void main() {
     await tester.pump();
     expect(find.text('timeout'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    shutdown(app);
+  });
+
+  /// The composer's own FocusNode — the one InputBar passes to its TextField.
+  FocusNode composerFocus(WidgetTester tester) =>
+      tester.widget<TextField>(find.byType(TextField)).focusNode!;
+
+  testWidgets('tapping outside the composer dismisses it', (tester) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    expect(composerFocus(tester).hasFocus, isTrue);
+
+    // Blank space in the transcript — not a bubble, not a button.
+    await tester.tapAt(
+      tester.getCenter(find.byKey(const Key('chat-transcript'))),
+    );
+    await tester.pump();
+    expect(
+      composerFocus(tester).hasFocus,
+      isFalse,
+      reason: 'tap-to-dismiss must close the keyboard from blank space',
+    );
+
+    shutdown(app);
+  });
+
+  // Opening a page/dialog while the composer is focused used to hand the focus
+  // back on pop — the keyboard reappeared over the chat. The info dialog is the
+  // second entry point the user hit (Settings is covered by openSettings).
+  testWidgets('the session-info dialog drops the composer focus for good', (
+    tester,
+  ) async {
+    final actions = _FakeActions();
+    final app = await pumpChat(tester, actions);
+
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    expect(composerFocus(tester).hasFocus, isTrue);
+
+    await tester.tap(find.byIcon(LucideIcons.info));
+    await tester.pumpAndSettle();
+    expect(find.text('Session info'), findsOneWidget);
+    expect(composerFocus(tester).hasFocus, isFalse);
+
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+    expect(find.text('Session info'), findsNothing);
+    expect(
+      composerFocus(tester).hasFocus,
+      isFalse,
+      reason: 'popping the dialog must not restore the composer',
+    );
+
     shutdown(app);
   });
 }
