@@ -16,6 +16,12 @@ import 'package:provider/provider.dart';
 ///     screen to a pushed route.
 ///   • phone        → the existing full-screen `/settings` push.
 void openSettings(BuildContext context) {
+  // Same reason as the composer's own overlays: whatever held focus (e.g. the
+  // tablet's chat composer) would be restored when Settings closes, popping
+  // the soft keyboard back up. Give the focus up scope-wise first.
+  FocusManager.instance.primaryFocus?.unfocus(
+    disposition: UnfocusDisposition.scope,
+  );
   if (isWideLayout(context)) {
     showSettingsSheet(context);
   } else {

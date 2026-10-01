@@ -19,7 +19,6 @@ import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/voice/speech_service.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
-import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/routing/visible_session.dart';
@@ -213,6 +212,21 @@ void main() {
       // Status dot uses initialOnline before the runtime resolves → shows
       // "online" immediately instead of flashing offline/reconnecting.
       expect(find.text('online'), findsOneWidget);
+
+      // A mid-session model switch only touches room metadata — nothing in the
+      // ChatState changes — so the AppBar must repaint from the room update
+      // alone, not keep the previous model until the next message repaints it.
+      fakeChannel._control.add(
+        const RoomMetaUpdated(
+          peer: 'test-peer-epk',
+          roomId: 'main',
+          model: 'switched-model',
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+      expect(find.text('switched-model'), findsOneWidget);
+      expect(find.text('mac-model'), findsNothing);
 
       // Unmount + dispose in-body (the framework's pending-timer check runs
       // before addTearDown; conn's watchdog must be cancelled here).

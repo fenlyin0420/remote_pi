@@ -80,7 +80,7 @@ void main() {
     expectExpanded(tester);
   });
 
-  testWidgets('quick actions button hides (collapses) while typing', (
+  testWidgets('quick actions button stays visible while typing', (
     tester,
   ) async {
     await pumpBar(
@@ -90,9 +90,8 @@ void main() {
       onOpenQuickActions: () {},
     );
     await tester.enterText(find.byType(TextField), 'hello');
-    // Let the SizeTransition finish collapsing (it animates out over 320ms).
     await tester.pumpAndSettle();
-    expectCollapsed(tester);
+    expectExpanded(tester);
   });
 
   testWidgets('quick actions button hides (collapses) when disabled', (
@@ -287,7 +286,7 @@ void main() {
       findsOneWidget,
       reason: 'Stop remains reachable while the main action sends steering',
     );
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.tap(find.byKey(const Key('input-bar-action')));
     await tester.pump();
     expect(sent, 'quick follow-up');
   });
@@ -316,10 +315,11 @@ void main() {
     expectCollapsed(tester);
   });
 
-  // Hardware keyboard (iPad keyboard case): plain Enter SENDS, Shift+Enter
-  // inserts a newline. Touch behaviour is unaffected (soft Enter = newline via
-  // performAction, send via the button).
-  testWidgets('hardware Enter sends; Shift+Enter inserts a newline', (
+  // Enter NEVER sends — on any keyboard, hardware or soft. Sending is the
+  // composer button's job. This handler exists because several soft keyboards
+  // (CJK IMEs) deliver their Enter as a key event instead of the
+  // `performAction` path.
+  testWidgets('hardware Enter inserts a newline and never sends', (
     tester,
   ) async {
     final sent = <String>[];
@@ -340,23 +340,22 @@ void main() {
     await tester.enterText(field, 'hello');
     await tester.pump();
 
-    // Plain Enter → send + clear.
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
-    expect(sent, ['hello']);
+    expect(sent, isEmpty, reason: 'plain enter must not send');
     expect(
       tester.widget<TextField>(field).controller!.text,
-      isEmpty,
-      reason: 'submit clears the field',
+      'hello\n',
+      reason: 'plain enter inserts a newline at the caret',
     );
 
-    // Shift+Enter → newline, NOT a send.
+    // Shift+Enter behaves identically.
     await tester.enterText(field, 'line1');
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
     await tester.pump();
-    expect(sent, ['hello'], reason: 'shift+enter must not send');
+    expect(sent, isEmpty, reason: 'shift+enter must not send');
     expect(
       tester.widget<TextField>(field).controller!.text,
       'line1\n',
@@ -364,8 +363,9 @@ void main() {
     );
   });
 
-  // While there is no content, hardware Enter does nothing while streaming.
-  testWidgets('hardware Enter does nothing while streaming with empty text', (
+  // While there is no content, the composer only gains a newline — the
+  // message itself is still sent from the button.
+  testWidgets('hardware Enter while streaming with empty text only newlines', (
     tester,
   ) async {
     final sent = <String>[];
@@ -381,8 +381,14 @@ void main() {
         ),
       ),
     );
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     expect(sent, isEmpty);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      '\n',
+    );
   });
 }
