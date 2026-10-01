@@ -248,6 +248,13 @@ let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: Thinkin
 let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
+/**
+ * The level a session with no configured default gets — mirrors the SDK's
+ * `DEFAULT_THINKING_LEVEL` (core/defaults.js). Not re-exported by the package
+ * root, so it lives here as a copy rather than reaching into `dist/core/...`.
+ */
+const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+
 // ── Agent-network session (plano 19) ──────────────────────────────────────────
 // MeshNode owns both the local UDS mesh (SessionPeer) and the optional
 // cross-PC relay bridge (BrokerRemote + PiForwardClient). The bridge is
@@ -326,6 +333,33 @@ function _setCurrentModel(name: string): void {
   if (_relay && _myRoomId) {
     _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { model: name } });
   }
+}
+
+/**
+ * True when this process is a supervisor-spawned daemon starting a NEW session:
+ * daemon mode (the supervisor exports `REMOTE_PI_DAEMON=1`) and no `--continue`
+ * in argv — the child is spawned WITH `--continue` to resume, and the one-shot
+ * spawn without it is exactly «brand-new room» / the fresh-session restart
+ * behind «New session» (see daemon/rpc_child).
+ */
+function _isFreshDaemonSession(): boolean {
+  if (process.env["REMOTE_PI_DAEMON"] !== "1") return false;
+  return !process.argv.includes("--continue") && !process.argv.includes("-c");
+}
+
+/**
+ * Put the thinking level back to the SDK default. Called when a session is
+ * genuinely new (a fresh daemon room, or «New session» from the phone): the SDK
+ * persists every `setThinkingLevel` into the GLOBAL settings and a new session
+ * resolves its level from there, so without this a brand-new room/session
+ * inherits whatever was last picked anywhere on the machine. The change rides
+ * the normal `thinking_level_select` path (cache + `room_meta_update`), so the
+ * phone follows along.
+ */
+function _resetThinkingToDefault(): void {
+  try {
+    _pi?.setThinkingLevel(DEFAULT_THINKING_LEVEL);
+  } catch { /* never block a start/new-session on a thinking reset */ }
 }
 
 /**
@@ -3455,6 +3489,11 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // safe at this point — extension factory has been bound by the SDK
   // before any command handler fires. Future toggles go through the
   // `thinking_level_select` event handler above.
+  //
+  // A daemon starting a NEW session (new room, or the no-continue restart
+  // behind "New session") starts from the SDK default instead of the level
+  // inherited through the global settings — see _resetThinkingToDefault.
+  if (_isFreshDaemonSession()) _resetThinkingToDefault();
   try {
     _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
@@ -5277,6 +5316,11 @@ function _handleSessionNew(
         return;
       }
       sender.send({ type: "action_ok", in_reply_to: id, action });
+      // A new session resolves its thinking level from the GLOBAL settings,
+      // where the SDK persists every level the app ever set — so reset it to
+      // the default here, or "New session" would come back with the level the
+      // user last picked in some room.
+      _resetThinkingToDefault();
       _resetSessionForNew(id);
     } catch (e) {
       const emsg = String((e as Error)?.message ?? e ?? "");
