@@ -118,6 +118,15 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   model contextWindow — SDK API is `ctx.sessionManager.getBranch()`, NOT
   `ctx.session`); the relay passes `context` through hello / room_meta_update /
   snapshots (selfhosted relay 2026-10-01 rebuild, `~/relay-src/relay`).
+- **1.5.18 is released** (2026-10-01, plan/42): the room top bar shows the model
+  name (device name dropped), and the session-info dialog has a Context row
+  (`42% (168k / 400k tokens)`). Beta `1.5.18-beta.3`(+53) tested by the user; prod
+  `1.5.18`(+54) pushed to the production channel, Release
+  `v1.5.18-context-usage-arm64` (APK + `remote-pi-0.10.0.tgz`). Pi-extension 0.10.0
+  publishes `room_meta.context` on turn_end (30 s debounce, est. prompt chars/4 vs
+  model contextWindow — SDK API is `ctx.sessionManager.getBranch()`, NOT
+  `ctx.session`); the relay passes `context` through hello / room_meta_update /
+  snapshots (selfhosted relay 2026-10-01 rebuild, `~/relay-src/relay`).
 
 Don't use `agent_send` to report to Jarvis — report progress by replying to the user
 directly in this session.
