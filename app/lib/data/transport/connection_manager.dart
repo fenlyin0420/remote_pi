@@ -623,6 +623,7 @@ class ConnectionManager extends Service {
         :final model,
         :final thinking,
         :final working,
+        :final context,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
@@ -640,11 +641,14 @@ class ConnectionManager extends Service {
         // relay that omits it (null) keeps the cached value instead of
         // forcing the room back to idle.
         var preservedWorking = false;
+        // Plan/42 — context usage follows the same convention.
+        RoomContextUsage? preservedContext;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
+          preservedContext = list[existingIdx].context;
         }
         final next = RoomInfo(
           roomId: roomId,
@@ -654,6 +658,8 @@ class ConnectionManager extends Service {
           model: model,
           thinking: thinking ?? preservedThinking,
           working: working ?? preservedWorking,
+          // Plan/42 — same preserve convention as thinking/working.
+          context: context ?? preservedContext,
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;
@@ -694,6 +700,7 @@ class ConnectionManager extends Service {
         :final working,
         :final hasModel,
         :final hasThinking,
+        :final context,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
@@ -714,15 +721,20 @@ class ConnectionManager extends Service {
         // non-null sets it. This is what carries the relay's
         // turn_start/turn_end broadcast to the Home dot for EVERY room.
         final nextWorking = working ?? current.working;
+        // Plan/42 — `context` follows the nullable-as-absent convention:
+        // null preserves the cached estimate, non-null replaces it.
+        final nextContext = context ?? current.context;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
-            current.working == nextWorking) {
+            current.working == nextWorking &&
+            current.context == nextContext) {
           break; // dedup: nothing actually changed
         }
         list[idx] = current.copyWith(
           model: nextModel,
           thinking: nextThinking,
           working: nextWorking,
+          context: nextContext,
         );
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -751,6 +763,9 @@ class ConnectionManager extends Service {
             // `rooms_of` reads the current registry meta, so its
             // `working` reflects the latest turn_start/turn_end.
             working: r.working,
+            // Plan/42 — context rides along with the Pi's registry meta;
+            // a legacy Pi (no field) keeps the cached estimate.
+            context: r.context ?? byId[r.roomId]?.context,
           );
         }
         final newList = byId.values.toList();
@@ -922,6 +937,7 @@ class ConnectionManager extends Service {
               cwd: c.cwd,
               startedAt: c.startedAt,
               model: c.model,
+              context: c.context,
             ),
           )
           .toList();
@@ -962,6 +978,7 @@ class ConnectionManager extends Service {
             startedAt: r.startedAt,
             localName: localById[r.roomId],
             model: r.model,
+            context: r.context,
           ),
         )
         .toList();

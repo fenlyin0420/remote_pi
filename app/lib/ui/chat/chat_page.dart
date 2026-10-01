@@ -134,14 +134,13 @@ class ChatPage extends StatelessWidget {
   }
 
   Widget _buildTopBar(BuildContext context, ChatState state) {
-    // Plan-17 follow-up — two-line AppBar:
+    // Plan-17 follow-up / plan/42 — two-line AppBar:
     //   Line 1: ROOM name (cwd basename / room.name / fallback).
-    //   Line 2: peer (Mac nickname or sessionName) + presence dot.
+    //   Line 2: room model (room_meta.model) + presence dot.
     // The dot reads from the ChatReady.peerPresence flag (which the
     // ViewModel sources from `isRoomLive`).
     final colors = context.colors;
     final vm = context.watch<ChatViewModel>();
-    final peer = vm.activePeer;
     final room = vm.activeRoom;
     // Plan/32g — until the VM has read a real runtime, trust the `initialOnline`
     // hint Home passed (the tile's live dot) so the status dot doesn't flash
@@ -162,10 +161,6 @@ class ChatPage extends StatelessWidget {
     // the generic placeholders when the ViewModel hasn't finished
     // bootstrapping yet.
     final roomName = _roomDisplayName(room, state, initialTitle);
-    // Plan/32g — line 2 (device) falls back to `initialDevice` (the Mac name
-    // Home passed), NOT `initialTitle` (the room name) — so it shows the right
-    // device from frame 1 and doesn't flip when the PeerRecord loads.
-    final peerLabel = _peerDisplayName(peer, initialDevice);
 
     return Container(
       height: 56,
@@ -204,17 +199,18 @@ class ChatPage extends StatelessWidget {
                 const SizedBox(height: 6),
                 Row(
                   children: [
-                    Flexible(
-                      child: Text(
-                        _truncate(peerLabel, 24),
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: kMonoFamily,
-                          fontSize: 10,
-                          color: colors.muted,
+                    if ((room?.model ?? '').isNotEmpty)
+                      Flexible(
+                        child: Text(
+                          _truncate(room!.model!, 24),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: kMonoFamily,
+                            fontSize: 10,
+                            color: colors.muted,
+                          ),
                         ),
                       ),
-                    ),
                     const SizedBox(width: 6),
                     Builder(
                       builder: (_) {
@@ -330,6 +326,11 @@ class ChatPage extends StatelessWidget {
               _InfoRow(label: 'Owner', value: owner),
               if (model != null && model.isNotEmpty)
                 _InfoRow(label: 'Model', value: model),
+              if (room?.context != null)
+                _InfoRow(
+                  label: 'Context',
+                  value: _contextLabel(room!.context!),
+                ),
               _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
               _InfoRow(label: 'Paired', value: paired),
             ],
@@ -366,21 +367,6 @@ class ChatPage extends StatelessWidget {
     // `room.name`.
     if (initialTitle != null && initialTitle.isNotEmpty) return initialTitle;
     return 'Remote Pi';
-  }
-
-  static String _peerDisplayName(PeerRecord? peer, String? fallback) {
-    if (peer == null) {
-      // Plan/32g: while the ViewModel hasn't loaded the PeerRecord yet, fall
-      // back to the device label Home passed (initialDevice) — same value the
-      // PeerRecord resolves to, so no flicker on load.
-      if (fallback != null && fallback.isNotEmpty) return fallback;
-      return '—';
-    }
-    if (peer.nickname != null && peer.nickname!.isNotEmpty) {
-      return peer.nickname!;
-    }
-    if (peer.sessionName.isNotEmpty) return peer.sessionName;
-    return deviceLabel(peer);
   }
 
   static String _truncate(String s, int max) =>
@@ -760,6 +746,12 @@ class _RevokedBanner extends StatelessWidget {
 
 /// One labelled key/value row in the session-info dialog. The value is
 /// selectable so the user can copy the path / device name.
+/// Plan/42 — human rendering of a [RoomContextUsage] for the info dialog,
+/// e.g. `42% (168k / 400k tokens)`.
+String _contextLabel(RoomContextUsage c) =>
+    '${(c.used / c.limit * 100).toStringAsFixed(0)}% '
+    '(${c.used ~/ 1000}k / ${c.limit ~/ 1000}k tokens)';
+
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;

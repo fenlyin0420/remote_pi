@@ -244,7 +244,7 @@ let _myRoomId: string | null = null;   // this Pi's room id (derived from cwd)
 // open instead of starting null. The SDK fires `thinking_level_select`
 // on every change (initial load + user toggle), mirrored to room_meta
 // the same way model is — apps subscribe to one channel for both.
-let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean } | null = null;
+let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; context?: { used: number; limit: number } } | null = null;
 let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
@@ -326,6 +326,56 @@ function _setCurrentModel(name: string): void {
   if (_relay && _myRoomId) {
     _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { model: name } });
   }
+}
+
+/**
+ * Plan/42: estimate the session's context usage and publish it as
+ * room_meta (`context: { used, limit }`). The ratio drives the app's
+ * "Session info" context-usage row. `used` is estimated from the current
+ * branch's prompt chars (message entries only) ÷ 4 — pi's ~4-chars/token
+ * heuristic; tool inputs are stringified first. `limit` is the model's
+ * contextWindow. Best
+ * effort: silent no-op when the session/model can't be resolved, and the
+ * publish is debounced to at most once per 30 s so turn_end doesn't spam
+ * room_meta_update frames.
+ */
+let _lastContextPublish = 0;
+function _publishContextUsage(ctx: unknown): void {
+  const now = Date.now();
+  if (now - _lastContextPublish < 30000) return;
+  try {
+    // The Pi SDK's ExtensionContext exposes the session as `sessionManager`
+    // (ReadonlySessionManager) — there is no `ctx.session`. Count prompt
+    // chars across the entries on the current branch: `message` entries
+    // carry `message.content` part arrays (text / thinking / toolCall /
+    // toolResult parts).
+    const manager = (ctx as Partial<ExtensionContext> & { sessionManager?: { getBranch?: () => unknown[] } })
+      .sessionManager;
+    const branch = (manager?.getBranch?.() ?? []) as Array<{
+      type?: unknown;
+      message?: { content?: Array<{ type?: unknown; text?: unknown; thinking?: unknown; input?: unknown }> };
+    }>;
+    let chars = 0;
+    for (const entry of branch) {
+      if (entry.type !== "message") continue;
+      for (const part of entry.message?.content ?? []) {
+        if (typeof part.text === "string") chars += part.text.length;
+        if (typeof part.thinking === "string") chars += part.thinking.length;
+        if (part.input != null) chars += JSON.stringify(part.input).length;
+      }
+    }
+    // `ctx.model` is the live resolved model (ExtensionContext field).
+    const limit = (ctx as Partial<ExtensionContext> & { model?: { contextWindow?: number } | undefined })
+      .model?.contextWindow;
+    if (!limit || limit <= 0 || chars <= 0) return;
+    const used = Math.floor(chars / 4);
+    const context = { used, limit };
+    if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, context };
+    if (_relay && _myRoomId) {
+      _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { context } });
+      _lastContextPublish = now;
+    }
+  } catch { /* defensive — never block a turn on usage estimation */ }
 }
 
 /**
@@ -2705,12 +2755,14 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working: true } });
     }
   });
-  pi.on("turn_end", () => {
+  pi.on("turn_end", (event, ctx) => {
     // Plan/32 Part B: publish working=false as room_meta (raw, no debounce).
     if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, working: false };
     if (_relay && _myRoomId) {
       _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working: false } });
     }
+    // Plan/42: refresh the context-usage estimate after each turn settles.
+    _publishContextUsage(ctx);
     _maybeDrainQueuedItem();
   });
 

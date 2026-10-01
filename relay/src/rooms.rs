@@ -3,6 +3,15 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+/// Plan/42 — context-window usage for one room, as estimated by the Pi.
+/// `used` is the estimated prompt tokens currently in the session; `limit`
+/// is the model's context window. The relay forwards it opaquely.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RoomContext {
+    pub used: u64,
+    pub limit: u64,
+}
+
 /// Metadata about one active Pi room (sub-channel of a peer_id).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RoomMeta {
@@ -25,6 +34,9 @@ pub struct RoomMeta {
     /// auto-clears. Defaults to `false` until the Pi reports otherwise, and is
     /// always serialized so subscribers can rely on its presence.
     pub working: bool,
+    /// Context-window usage (plan/42). None = not reported yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<RoomContext>,
     pub started_at: i64,
 }
 
@@ -44,6 +56,10 @@ pub struct RoomMetaPatch {
     /// `None` = field absent (leave current), `Some(b)` = set to `b`. There is
     /// no "clear to null" — `false` *is* the cleared state.
     pub working: Option<bool>,
+    /// Plan/42 — context-window usage. Same nested-Option merge-patch
+    /// semantics as `model`/`thinking`: outer `None` = absent (leave
+    /// current), `Some(None)` = clear, `Some(c)` = set.
+    pub context: Option<Option<RoomContext>>,
 }
 
 impl RoomMetaPatch {
@@ -51,7 +67,10 @@ impl RoomMetaPatch {
     /// otherwise). Used by the registry to skip work when callers send empty
     /// `meta: {}`.
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.thinking.is_none() && self.working.is_none()
+        self.model.is_none()
+            && self.thinking.is_none()
+            && self.working.is_none()
+            && self.context.is_none()
     }
 }
 
