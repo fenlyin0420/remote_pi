@@ -6541,3 +6541,130 @@ describe("model meta", () => {
     }
   });
 });
+
+describe("thinking level default", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    relayRef.current = null;
+    relayInstances.length = 0;
+    _defaultConnectImpl = async () => undefined;
+    _setCurrentModelForTest(undefined);
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+  });
+
+  /** Fake pi whose level the test controls; records every setThinkingLevel. */
+  function fakeThinkingPi(initial: string) {
+    const levels: string[] = [];
+    const fake = {
+      current: initial,
+      getThinkingLevel: () => fake.current,
+      setThinkingLevel: (level: string) => { levels.push(level); fake.current = level; },
+      sendMessage: () => undefined,
+      sendUserMessage: () => undefined,
+    };
+    return { fake, levels };
+  }
+
+  /** process.argv/env surgery, restored by the caller once [run] settles. */
+  async function withDaemonArgv(
+    argv: string[],
+    env: string | undefined,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const prevArgv = process.argv;
+    const prevEnv = process.env["REMOTE_PI_DAEMON"];
+    process.argv = [...argv];
+    if (env === undefined) delete process.env["REMOTE_PI_DAEMON"];
+    else process.env["REMOTE_PI_DAEMON"] = env;
+    try {
+      await run();
+    } finally {
+      process.argv = prevArgv;
+      if (prevEnv === undefined) delete process.env["REMOTE_PI_DAEMON"];
+      else process.env["REMOTE_PI_DAEMON"] = prevEnv;
+    }
+  }
+
+  test("a fresh daemon session starts at the default (medium), not the inherited level", async () => {
+    const { fake, levels } = fakeThinkingPi("high");  // persisted by an earlier pick
+    const capturedOpts: Array<{ roomMeta?: { thinking?: string } }> = [];
+    _defaultConnectImpl = async (opts?: unknown) => {
+      capturedOpts.push(opts as { roomMeta?: { thinking?: string } });
+    };
+
+    captureHandler("remote-pi");
+    _setPiForTest(fake);
+    await withDaemonArgv(["node", "pi", "--mode", "rpc"], "1", async () => {
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-fresh-thinking"));
+    });
+
+    expect(levels).toEqual(["medium"]);
+    // The hello carries the RESET level, so the app hydrates medium too.
+    expect(capturedOpts[0]!.roomMeta?.thinking).toBe("medium");
+  });
+
+  test("a RESUMED daemon session keeps its level", async () => {
+    const { fake, levels } = fakeThinkingPi("high");
+    const capturedOpts: Array<{ roomMeta?: { thinking?: string } }> = [];
+    _defaultConnectImpl = async (opts?: unknown) => {
+      capturedOpts.push(opts as { roomMeta?: { thinking?: string } });
+    };
+
+    captureHandler("remote-pi");
+    _setPiForTest(fake);
+    await withDaemonArgv(
+      ["node", "pi", "--mode", "rpc", "--continue"],
+      "1",
+      async () => {
+        await _connectForTest(makeMockCtx("/tmp/remote-pi-resumed-thinking"));
+      },
+    );
+
+    expect(levels).toEqual([]);
+    expect(capturedOpts[0]!.roomMeta?.thinking).toBe("high");
+  });
+
+  test("an interactive (non-daemon) session keeps its level", async () => {
+    const { fake, levels } = fakeThinkingPi("low");
+
+    captureHandler("remote-pi");
+    _setPiForTest(fake);
+    await withDaemonArgv(["node", "pi"], undefined, async () => {
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-tui-thinking"));
+    });
+
+    expect(levels).toEqual([]);
+  });
+
+  test("New session resets the level to the default", async () => {
+    const { fake, levels } = fakeThinkingPi("high");
+
+    // The status handler is the one that parks its ctx in _lastCtx; give that
+    // ctx a newSession so the in-process path is taken. Capture the handler
+    // FIRST — registering it installs the harness's own pi, so the fake has to
+    // be swapped in after.
+    const status = captureHandler("remote-pi status");
+    _setPiForTest(fake);
+    await status("", {
+      ui: { notify: vi.fn() },
+      cwd: "/tmp/remote-pi-new-session-thinking",
+      newSession: async () => ({ cancelled: false }),
+    } as unknown as ReturnType<typeof makeMockCtx>);
+
+    const sender = { send: vi.fn() };
+    _routeClientMessageFrom(
+      sender as never,
+      { type: "session_new", id: "new-1" } as never,
+      { abort: vi.fn() } as never,
+    );
+    await new Promise<void>((r) => setImmediate(r));
+
+    expect(levels).toEqual(["medium"]);
+    expect(sender.send).toHaveBeenCalledWith({
+      type: "action_ok",
+      in_reply_to: "new-1",
+      action: "session_new",
+    });
+  });
+});
