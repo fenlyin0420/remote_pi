@@ -127,7 +127,16 @@ class ChatViewModel extends ViewModel<ChatState> {
     _queuedSub = _sync.queuedStream.listen(_onQueued);
     _eventSub = _sync.events.listen(_onEvent);
     _uiReqSub = _sync.extensionUiRequestStream.listen(_onExtensionUiRequest);
-    _roomsSub = _conn.roomsStream.listen((_) => _recompute());
+    _roomsSub = _conn.roomsStream.listen((_) {
+      _recompute();
+      // Room metadata (model / thinking) is not part of ChatReady's equality,
+      // so a change touching only the room head — a model switch, the common
+      // case — composes an identical state and `emit` swallows the
+      // notification. The AppBar reads the model straight off the room, so
+      // without this nudge it kept the old name until some other update (a
+      // message, a working tick) happened to repaint.
+      notifyListeners();
+    });
     _statusSub = _conn.statusStream.listen(_onStatus);
     // ignore: discarded_futures
     _bootstrap();

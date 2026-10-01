@@ -18,8 +18,8 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 // - Disabled (grayed) when offline.
 // - During streaming, empty composer shows Stop; typed text sends steering.
 // - Plan/28 — quick actions (⚙) icon sits to the left of the attach
-//   button and is visible only while the field is empty (so it never
-//   competes with the send affordance).
+//   button and stays visible for the whole turn: only the hold-to-talk
+//   strip covers it.
 // - Plan/29 — when [voice] is provided, the mic becomes hold-to-talk:
 //   long-press starts recording (a WhatsApp-style RecordingStrip replaces
 //   the row), slide left past the threshold cancels, release transcribes
@@ -327,6 +327,19 @@ class _InputBarState extends State<InputBar> {
     (widget.onRunCommand ?? widget.onSend)('/${command.name}');
   }
 
+  /// Wraps an "open an overlay from the composer" callback so the field's
+  /// focus is dropped first. An overlay route (quick actions, model picker,
+  /// attach sheet) restores the focused node it found when it pops — the
+  /// composer — which re-opened the soft keyboard over the chat on every
+  /// dismissal. Giving the focus up scope-wise leaves nothing to restore.
+  VoidCallback? _sheetOpener(VoidCallback? open) {
+    if (open == null) return null;
+    return () {
+      _focusNode.unfocus(disposition: UnfocusDisposition.scope);
+      open();
+    };
+  }
+
   void _editQueued(QueuedMsg item) {
     if (!item.editable) return;
     widget.onClearQueued?.call(item.id);
@@ -335,37 +348,26 @@ class _InputBarState extends State<InputBar> {
     _focusNode.requestFocus();
   }
 
-  /// Hardware-keyboard behaviour (iPad keyboard case, etc.): plain Enter
-  /// SENDS, Shift+Enter inserts a newline. On a touch soft-keyboard the
-  /// newline arrives via `performAction` (not a key event), so this never
-  /// fires there — the field keeps growing and the user sends with the
-  /// composer button, exactly as before.
+  /// Enter inserts a newline — never sends. Sending is the composer
+  /// button's job, so the gesture is identical on every keyboard.
+  ///
+  /// The key is intercepted here rather than left to the platform because
+  /// several soft keyboards (CJK IMEs in particular) deliver their Enter as a
+  /// key event instead of the `performAction` path; left alone, those
+  /// keyboards sent the message. Shift+Enter is treated the same way, so the
+  /// behaviour doesn't depend on the framework's default multiline handling.
   KeyEventResult _onComposerKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final isEnter =
         event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter;
     if (!isEnter) return KeyEventResult.ignored;
-    // TEMP diag (input multiline Enter): if this line never prints when you
-    // press Enter on the emulator, Android is routing it through the IME and
-    // NOT as a hardware key event — remove once the behaviour is confirmed.
-    debugPrint(
-      '[input.enter] shift=${HardwareKeyboard.instance.isShiftPressed} '
-      'disabled=${widget.disabled} streaming=${widget.streaming}',
-    );
     // Don't intercept while disabled, or mid-IME-composition (a CJK
     // candidate is confirmed with Enter, not sent) — let the field/IME deal.
     if (widget.disabled || !_controller.value.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
-    if (HardwareKeyboard.instance.isShiftPressed) {
-      // Shift+Enter → newline. Inserted explicitly (and consumed) so the
-      // behaviour is identical on every platform instead of depending on
-      // the framework's default multiline key handling.
-      _insertNewlineAtCursor();
-      return KeyEventResult.handled;
-    }
-    _submit();
+    _insertNewlineAtCursor();
     return KeyEventResult.handled;
   }
 
@@ -491,13 +493,10 @@ class _InputBarState extends State<InputBar> {
     // the per-room "Hide tool calls" switch is a purely local preference.
     // Hiding the entry point mid-turn used to strand exactly that switch:
     // the moment you wanted to hide the tool rows being streamed at you was
-    // the moment the button vanished.
+    // the moment the button vanished — and tying it to an empty field hid it
+    // for the whole time a draft was being typed.
     final showQuickActions =
-        _empty &&
-        !attached &&
-        canInteract &&
-        !showStrip &&
-        hasQuickActions;
+        canInteract && !showStrip && hasQuickActions;
 
     // During a working turn with typed content, the main action sends steering;
     // keep a compact Stop affordance beside it so cancellation remains reachable.
@@ -548,11 +547,11 @@ class _InputBarState extends State<InputBar> {
                 children: [
                   _QuickActionsButton(
                     show: showQuickActions,
-                    onPressed: widget.onOpenQuickActions,
+                    onPressed: _sheetOpener(widget.onOpenQuickActions),
                   ),
                   _AttachButton(
                     enabled: attachEnabled,
-                    onTap: widget.onOpenAttach,
+                    onTap: _sheetOpener(widget.onOpenAttach),
                   ),
                   const SizedBox(width: 10),
                   // Text field (doubles as the image caption when one is set).

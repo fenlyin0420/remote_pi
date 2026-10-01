@@ -7,7 +7,6 @@
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 
 WireCommand _cmd(
@@ -168,10 +167,8 @@ void main() {
   }
 
   Future<void> submit(WidgetTester tester) async {
-    // The composer's send path on a device with a keyboard is hardware Enter
-    // (see InputBar._onComposerKey); the on-screen button dispatches the same
-    // `_submit()`.
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    // Enter only newlines now; the on-screen button is the single send path.
+    await tester.tap(find.byKey(const Key('input-bar-action')));
     await tester.pump();
   }
 
@@ -267,7 +264,7 @@ void main() {
     expect(find.byKey(const Key('command-palette-compact')), findsNothing);
   });
 
-  testWidgets('Enter still submits while the palette is open', (tester) async {
+  testWidgets('the send button submits while the palette is open', (tester) async {
     final h = await pumpBar(tester, commands: catalogue);
     await type(tester, '/compact');
     expect(find.byKey(const Key('command-palette-compact')), findsOneWidget);

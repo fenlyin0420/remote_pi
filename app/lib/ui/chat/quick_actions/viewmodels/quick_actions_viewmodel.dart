@@ -179,8 +179,12 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     if (_disposed) return;
     final cur = state;
     // Compose the next state preserving the busy-action flag so an
-    // in-flight call doesn't lose its spinner mid-update.
-    final nextThinking = meta.thinking ?? cur.currentThinking;
+    // in-flight call doesn't lose its spinner mid-update. A room that has
+    // never published a level (a headless daemon whose SDK call didn't
+    // resolve one) defaults to medium — the SDK's own default
+    // (`DEFAULT_THINKING_LEVEL`) — instead of leaving the control blank.
+    final nextThinking =
+        meta.thinking ?? cur.currentThinking ?? ThinkingLevel.medium;
     final nextModelName = meta.model ?? cur.currentModelName;
     // If the meta's model differs from the structured `currentModel`
     // name (external switch), drop the structured model so the picker

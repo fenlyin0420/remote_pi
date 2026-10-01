@@ -3433,10 +3433,17 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
         const provider = sm.getDefaultProvider();
         const modelId = sm.getDefaultModel();
         if (modelId) {
-          const found = provider
-            ? ensureModelRegistry((c ?? _lastEventCtx ?? _lastCtx) as unknown as ActionCtx | null)
-                .find(provider, modelId)
-            : undefined;
+          // Resolve through the model catalog so room_meta carries the
+          // friendly `name` ("Qwen3.8-27B") rather than the raw id (a .gguf
+          // path). `find()` reads whatever the registry loaded at creation
+          // time, so refresh() first: a custom provider whose models.json
+          // entry hadn't been materialised yet left the id in room_meta, and
+          // the app showed it for the whole session.
+          const reg = ensureModelRegistry(
+            (c ?? _lastEventCtx ?? _lastCtx) as unknown as ActionCtx | null,
+          );
+          try { reg.refresh(); } catch { /* stale ctx — keep the loaded catalog */ }
+          const found = provider ? reg.find(provider, modelId) : undefined;
           _currentModel = found?.name ?? modelId;
         }
       }

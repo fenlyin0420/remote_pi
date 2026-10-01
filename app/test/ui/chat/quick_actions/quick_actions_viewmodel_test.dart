@@ -259,16 +259,30 @@ void main() {
       vm.dispose();
     });
 
-    test('adopts thinking pushed via activeRoomMetaStream', () async {
+    test('defaults thinking to medium until the Pi publishes a level', () async {
       final repo = _FakeActionsRepository();
       final vm = QuickActionsViewModel(repo);
-      expect(vm.currentThinking, isNull);
+      // Nothing published (a headless daemon that never resolved one) → the
+      // SDK's own default, medium, instead of a blank control.
+      expect(vm.currentThinking, ThinkingLevel.medium);
       repo.pushMeta(const ActiveRoomMeta(
         peerEpk: 'epk1',
         thinking: ThinkingLevel.medium,
       ));
       await Future<void>.delayed(const Duration(milliseconds: 1));
       expect(vm.currentThinking, ThinkingLevel.medium);
+      vm.dispose();
+    });
+
+    test('adopts thinking pushed via activeRoomMetaStream', () async {
+      final repo = _FakeActionsRepository();
+      final vm = QuickActionsViewModel(repo);
+      repo.pushMeta(const ActiveRoomMeta(
+        peerEpk: 'epk1',
+        thinking: ThinkingLevel.low,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      expect(vm.currentThinking, ThinkingLevel.low);
       vm.dispose();
     });
 
