@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
+import { _resetModelRegistryForTests } from "./actions/registry.js";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
 const _convertToPngMock = vi.hoisted(() => vi.fn(async () => null));
@@ -6321,6 +6322,54 @@ describe("model meta", () => {
       // The test registry won't know "acme-model-zzz" → falls back to the id.
       expect(capturedOpts[0]!.roomMeta?.model).toBe("acme-model-zzz");
     } finally {
+      if (prevAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
+      else process.env["PI_CODING_AGENT_DIR"] = prevAgentDir;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("hello prefers the catalog's friendly name over the raw settings id", async () => {
+    // A configured default whose id is a filename (`.gguf`) must still reach the
+    // app as its display name: the seeding path resolves it through the model
+    // registry — refreshes first, because `find()` only sees what the registry
+    // loaded at creation time, which is how a custom provider's real name used
+    // to be missed and the raw id shown for the whole session.
+    const cwd = mkdtempSync(join(tmpdir(), "pi-daemon-name-"));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({
+        defaultProvider: "local-llama-cpp",
+        defaultModel: "Qwen3.8-27B-APEX-I-Mini.gguf",
+      }),
+    );
+    const prevAgentDir = process.env["PI_CODING_AGENT_DIR"];
+    process.env["PI_CODING_AGENT_DIR"] = "/tmp/pi-no-such-agent-dir-name";
+    const refreshes: number[] = [];
+    try {
+      const capturedOpts: Array<{ roomMeta?: { model?: string } }> = [];
+      _defaultConnectImpl = async (opts?: unknown) => {
+        capturedOpts.push(opts as { roomMeta?: { model?: string } });
+      };
+
+      captureHandler("remote-pi");
+      await _connectForTest({
+        ...makeMockCtx(cwd),
+        modelRegistry: {
+          refresh: () => { refreshes.push(1); },
+          getAvailable: () => [],
+          find: (provider: string, modelId: string) =>
+            provider === "local-llama-cpp" && modelId === "Qwen3.8-27B-APEX-I-Mini.gguf"
+              ? { id: modelId, name: "Qwen3.8-27B", provider }
+              : undefined,
+        },
+      });
+
+      expect(capturedOpts).toHaveLength(1);
+      expect(capturedOpts[0]!.roomMeta?.model).toBe("Qwen3.8-27B");
+      expect(refreshes.length).toBeGreaterThan(0);
+    } finally {
+      _resetModelRegistryForTests();
       if (prevAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
       else process.env["PI_CODING_AGENT_DIR"] = prevAgentDir;
       rmSync(cwd, { recursive: true, force: true });
