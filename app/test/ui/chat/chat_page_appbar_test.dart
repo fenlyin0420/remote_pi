@@ -1,7 +1,6 @@
-// Plan/32g — the Chat AppBar's line 2 (paired-device name) must render from the
-// `initialDevice` hint Home passes, immediately, WITHOUT waiting for the async
-// PeerRecord. With no peer bound (activePeer == null), the device label still
-// shows — proving the subtitle no longer depends on the async load (no flicker).
+// Plan/42 — the Chat AppBar's line 2 shows the room's model (from the
+// RoomAnnounced room_meta), in place of the old device-name subtitle. The
+// label renders as soon as the room carries a model.
 
 import 'dart:async';
 import 'dart:io';
@@ -33,26 +32,69 @@ import 'package:hive/hive.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
-class _FakeChannel implements IChannel {
+class _FakeChannel implements IChannel, IControlLink {
   final _ctrl = StreamController<ServerMessage>.broadcast();
+  final _control = StreamController<ControlInbound>.broadcast();
   @override
   Stream<ServerMessage> get serverMessages => _ctrl.stream;
   @override
+  Stream<ControlInbound> get controlFrames => _control.stream;
+  @override
+  void sendControl(Map<String, dynamic> json) {}
+  @override
   Future<void> send(ClientMessage msg) async {}
   @override
-  Future<void> close() => _ctrl.close();
+  Future<void> close() async => _ctrl.close();
 }
 
-/// No peer paired → ChatViewModel stays with activePeer == null (the case we
-/// want: the subtitle must come from initialDevice, not the PeerRecord).
+/// One paired peer (epk `test-peer-epk`, room `main`) so the ChatViewModel
+/// bootstraps, connects, and subscribes to control frames — the model label
+/// must still come from the room announce, not the PeerRecord.
+const kEpk = 'test-peer-epk';
 class _FakeStorage extends PairingStorage {
   @override
-  Future<List<PeerRecord>> listPeers() async => const [];
+  Future<List<PeerRecord>> listPeers() async => [
+    const PeerRecord(
+      remoteEpk: kEpk,
+      sessionName: 'PC',
+      relayUrl: 'ws://relay',
+      pairedAt: '2026-01-01T00:00:00Z',
+      roomId: 'main',
+    ),
+  ];
   @override
-  Future<PeerRecord?> loadPeer(String epk) async => null;
+  Future<PeerRecord?> loadPeer(String epk) async =>
+      epk == kEpk
+          ? const PeerRecord(
+              remoteEpk: kEpk,
+              sessionName: 'PC',
+              relayUrl: 'ws://relay',
+              pairedAt: '2026-01-01T00:00:00Z',
+              roomId: 'main',
+            )
+          : null;
 }
 
 class _FakeSecureStorage implements FlutterSecureStorage {
+  final Map<String, String> _kv = {};
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    IOSOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    MacOsOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (value == null) {
+      _kv.remove(key);
+    } else {
+      _kv[key] = value;
+    }
+  }
+
   @override
   Future<String?> read({
     required String key,
@@ -62,7 +104,7 @@ class _FakeSecureStorage implements FlutterSecureStorage {
     WebOptions? webOptions,
     MacOsOptions? mOptions,
     WindowsOptions? wOptions,
-  }) async => null;
+  }) async => _kv[key];
   @override
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
@@ -96,23 +138,35 @@ void main() {
   });
 
   testWidgets(
-    'AppBar line 2 shows the device from initialDevice immediately — no '
-    'PeerRecord needed (plan/32g)',
+    'AppBar line 2 shows the model from the room announce (plan/42)',
     (tester) async {
+      final fakeChannel = _FakeChannel();
       final conn = ConnectionManager(
-        factory: (_, _) async => _FakeChannel(),
+        factory: (_, _) async => fakeChannel,
         storage: _FakeStorage(),
+        emitDebounce: Duration.zero,
+      );
+      // The widget harness can't pump the async bootstrap/connect chain
+      // (factory + loadPeer + ping timers), so drive it directly: bind the
+      // peer and watch control frames, exactly like _connect would.
+      await conn.switchTo(
+        const PeerRecord(
+          remoteEpk: kEpk,
+          sessionName: 'PC',
+          relayUrl: 'ws://relay',
+          pairedAt: '2026-01-01T00:00:00Z',
+          roomId: 'main',
+        ),
       );
       final boxes = LocalBoxes();
       final sync = SyncService(conn, boxes);
       final read = SessionReadRepository(boxes);
-      final prefs = Preferences(_FakeSecureStorage()); // no selected peer
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedRoom(epk: kEpk, roomId: 'main');
       final actions = ActionsRepository(conn);
       final vm = ChatViewModel(read, sync, conn, prefs, _FakeStorage(), VisibleSession());
       final voice = VoiceInputViewModel(_FakeSpeech());
       final attach = AttachmentViewModel(_FakePicker(), _FakeFilePicker(), actions);
-      final sel = SessionSelection();
-
       await tester.pumpWidget(
         MaterialApp(
           home: MultiProvider(
@@ -121,11 +175,9 @@ void main() {
               ChangeNotifierProvider<VoiceInputViewModel>.value(value: voice),
               ChangeNotifierProvider<AttachmentViewModel>.value(value: attach),
               ChangeNotifierProvider<Preferences>.value(value: prefs),
-              ChangeNotifierProvider<SessionSelection>.value(value: sel),
             ],
             child: const ChatPage(
               initialTitle: 'My Project',
-              initialDevice: 'MacBook de Jacob',
               initialOnline: true,
             ),
           ),
@@ -133,8 +185,23 @@ void main() {
       );
       await tester.pump();
 
-      // Line 2 = device (from initialDevice, even with no PeerRecord loaded).
-      expect(find.text('MacBook de Jacob'), findsOneWidget);
+      // The room announces itself with a model → line 2 shows it (the
+      // announce carries the model from the Pi's room_meta).
+      fakeChannel._control.add(
+        RoomAnnounced(
+          peer: 'test-peer-epk',
+          roomId: 'main',
+          startedAt: 0,
+          model: 'mac-model',
+        ),
+      );
+      // Let the announce frame + VM propagation settle (the debounced
+      // rooms emit is a Timer even at emitDebounce: zero).
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump();
+
+      // Line 2 = model (from the room announce).
+      expect(find.text('mac-model'), findsOneWidget);
       // Line 1 = room title (from initialTitle) — distinct from the device, so
       // we know the subtitle isn't just echoing the title fallback.
       expect(find.text('My Project'), findsOneWidget);
@@ -155,7 +222,6 @@ void main() {
       voice.dispose();
       actions.dispose();
       sync.dispose();
-      sel.dispose();
       conn.dispose();
     },
   );
