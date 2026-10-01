@@ -73,4 +73,19 @@ class MethodChannelApkInstaller implements ApkInstaller {
       // ditto
     }
   }
+
+  @override
+  Future<void> publishToDownloads(String path, String fileName) async {
+    try {
+      await _channel.invokeMethod<void>(
+        'publishToDownloads',
+        {'path': path, 'fileName': fileName},
+      );
+    } on PlatformException {
+      // Best-effort by contract: the install flow runs from the cache copy,
+      // so a failed publish must not surface as an error.
+    } on MissingPluginException {
+      // No platform implementation → nothing to publish.
+    }
+  }
 }

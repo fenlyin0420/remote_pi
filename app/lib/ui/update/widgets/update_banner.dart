@@ -76,8 +76,13 @@ class _UpdateBannerState extends State<UpdateBanner>
     return switch (state) {
       UpdateBannerHidden() => const SizedBox.shrink(),
       UpdateBannerVisible(:final info) => _UpdateCard(info: info),
-      UpdateBannerWorking(:final info, :final phase, :final progress) =>
-        _WorkingCard(info: info, phase: phase, progress: progress),
+      UpdateBannerWorking(:final info, :final phase, :final progress, :final resumed) =>
+        _WorkingCard(
+          info: info,
+          phase: phase,
+          progress: progress,
+          resumed: resumed,
+        ),
     };
   }
 }
@@ -168,11 +173,13 @@ class _WorkingCard extends StatelessWidget {
     required this.info,
     required this.phase,
     required this.progress,
+    this.resumed = false,
   });
 
   final UpdateInfo info;
   final UpdatePhase phase;
   final double? progress;
+  final bool resumed;
 
   @override
   Widget build(BuildContext context) {
@@ -210,7 +217,9 @@ class _WorkingCard extends StatelessWidget {
                     child: Text(
                       installing
                           ? 'Opening installer…'
-                          : 'Downloading v${info.version}…',
+                          : resumed
+                              ? 'Resuming v${info.version}…'
+                              : 'Downloading v${info.version}…',
                       overflow: TextOverflow.ellipsis,
                       style: context.typo.sansBody.copyWith(
                         color: colors.text,

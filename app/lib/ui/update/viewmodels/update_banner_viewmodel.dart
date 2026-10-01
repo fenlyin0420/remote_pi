@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:app/domain/contracts/apk_installer.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/update_checker.dart';
+import 'package:app/domain/entities/update_info.dart';
 import 'package:app/domain/value_objects/semver.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/update/states/update_banner_state.dart';
@@ -37,10 +38,11 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
   })  : _dio = dio ?? _defaultDio(),
         super(const UpdateBannerHidden());
 
-  /// File name inside the native update dir. The installer matches on the MIME
-  /// type we send, not this, but a real `.apk` name keeps the system's "install
-  /// this app?" screen readable.
-  static const String _kApkFileName = 'RemotePi-update.apk';
+  /// File name for the update APK: `RemotePi-<version>.apk`. The version in
+  /// the name is load-bearing — it is what makes a retry resume: the file
+  /// belongs to one specific manifest version, and it becomes the name the
+  /// copy gets in the device's public Downloads folder.
+  static String apkFileName(String version) => 'RemotePi-$version.apk';
 
   final UpdateChecker _checker;
   final DismissedUpdateStore _dismissed;
@@ -200,11 +202,13 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
 
   /// Baixa o APK e abre o instalador do sistema.
   ///
-  /// Fluxo: resolve o artefato do manifest → baixa para o cache do app →
-  /// confere a permissão de instalação → entrega ao instalador. Sem permissão,
-  /// abre a tela do sistema para concedê-la e mantém o card visível (o usuário
-  /// toca de novo depois de conceder). Qualquer outra falha volta para
-  /// [UpdateBannerVisible] e publica a mensagem em [errors].
+  /// Fluxo: resolve o artefato do manifest → baixa para o cache do app (com
+  /// retomada: um download interrompido continua de onde parou) → publica uma
+  /// cópia na pasta Downloads do aparelho → confere a permissão de instalação
+  /// → entrega ao instalador. Sem permissão, abre a tela do sistema para
+  /// concedê-la e mantém o card visível (o usuário toca de novo depois de
+  /// conceder). Qualquer outra falha volta para [UpdateBannerVisible] e
+  /// publica a mensagem em [errors].
   Future<void> downloadAndInstall() async {
     final current = state;
     if (current is! UpdateBannerVisible) return;
@@ -212,14 +216,31 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
     _busy = true;
 
     final info = current.info;
-    // Progresso só é re-emitido quando muda a fase (ver ==), então atualizar
-    // `progress` a cada chunk não custa rebuild.
     var working = UpdateBannerWorking(
       info: info,
       phase: UpdatePhase.downloading,
       progress: null,
     );
     emit(working);
+    // O progresso é re-emitido só quando muda o inteiro de percentagem — a
+    // barra se move a cada 1% sem reconstruir a lista a cada chunk.
+    var lastPercent = -1;
+
+    void reportProgress(double fraction) {
+      if (_disposed) return;
+      final percent = (fraction * 100).floor();
+      if (percent == lastPercent) return;
+      lastPercent = percent;
+      final next = UpdateBannerWorking(
+        info: info,
+        phase: UpdatePhase.downloading,
+        progress: fraction.clamp(0.0, 1.0),
+      );
+      if (next != working) {
+        working = next;
+        emit(next);
+      }
+    }
 
     try {
       final artifact = info.artifactFor(
@@ -231,6 +252,7 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
         _fail('This build has no APK for $platform/$arch');
         return;
       }
+      final fileName = apkFileName(info.version);
 
       // The installer confines the APK to its own cache dir, so ask the
       // platform where to write it (no path_provider dependency).
@@ -238,31 +260,69 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
       if (_disposed) return;
       final dir = Directory(dirPath);
       if (!dir.existsSync()) dir.createSync(recursive: true);
-      final target = File('${dir.path}/$_kApkFileName');
-      // Start from a clean file: a partial download from a previous attempt
-      // would otherwise be handed to the installer as a corrupt APK.
-      if (target.existsSync()) target.deleteSync();
+      final target = File('${dir.path}/$fileName');
 
-      await _dio.download(
-        artifact.url,
-        target.path,
-        onReceiveProgress: (received, total) {
-          if (_disposed) return;
-          if (total <= 0) return;
-          final next = UpdateBannerWorking(
-            info: info,
-            phase: UpdatePhase.downloading,
-            progress: received / total,
+      var existing = 0;
+      if (target.existsSync() && target.lengthSync() > 0) {
+        // The file belongs to this exact version (the name carries it), so a
+        // leftover is by definition a partial download to continue — not a
+        // corrupt file to throw away.
+        existing = target.lengthSync();
+      }
+
+      if (artifact.size > 0 && existing >= artifact.size) {
+        // A previous attempt already finished this version's file; just go
+        // straight to the permission gate.
+      } else if (existing > 0) {
+        working = UpdateBannerWorking(
+          info: info,
+          phase: UpdatePhase.downloading,
+          progress: existing / (artifact.size > 0 ? artifact.size : existing),
+          resumed: true,
+        );
+        emit(working);
+        // Progress stays on the resumed line for the whole 206 download.
+        final response = await _dio.download(
+          artifact.url,
+          target.path,
+          onReceiveProgress: (received, total) {
+            final int full;
+            if (artifact.size > 0) {
+              full = artifact.size;
+            } else if (total > 0) {
+              full = existing + total;
+            } else {
+              return;
+            }
+            reportProgress((existing + received) / full);
+          },
+          deleteOnError: false,
+          fileAccessMode: FileAccessMode.append,
+          options: Options(headers: {'Range': 'bytes=$existing-'}),
+        );
+        if (_disposed) return;
+
+        if (response.statusCode == 200) {
+          // The server ignored the Range header and sent the whole file, which
+          // dio appended on top of the partial file. Wipe and start fresh —
+          // the size check below would catch it anyway, but this keeps the
+          // user from waiting through a doomed double download.
+          target.deleteSync();
+          await _freshDownload(
+            artifact,
+            target,
+            onProgress: reportProgress,
           );
-          // `==` ignores progress, so emit unconditionally only when the
-          // phase changed; otherwise the state stays as-is (same value).
-          if (next != working) {
-            working = next;
-            emit(next);
-          }
-        },
-      );
-      if (_disposed) return;
+          if (_disposed) return;
+        }
+      } else {
+        await _freshDownload(
+          artifact,
+          target,
+          onProgress: reportProgress,
+        );
+        if (_disposed) return;
+      }
 
       // A zero-byte / truncated file means the download was cut short — never
       // hand that to the installer.
@@ -271,8 +331,23 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
         return;
       }
       if (artifact.size > 0 && target.lengthSync() != artifact.size) {
+        // The leftover is corrupt or mismatched, so a retry would resume from
+        // garbage — throw it away. With no known size the partial file stays:
+        // it is the resume anchor for the next attempt.
+        target.deleteSync();
         _fail('Download incomplete — tap to retry');
         return;
+      }
+
+      // Publish a copy to the device's public Downloads (best-effort — a
+      // failure here never blocks the install, which runs from the cache
+      // copy). Done before the system installer takes over the screen, so
+      // the file is in Downloads even if the user backs out of the install.
+      try {
+        await _installer.publishToDownloads(target.path, fileName);
+      } catch (_) {
+        // The contract says best-effort; MethodChannelApkInstaller already
+        // swallows, this is a guard for fakes/other implementations.
       }
 
       emit(UpdateBannerWorking(info: info, phase: UpdatePhase.installing));
@@ -301,6 +376,24 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
     } finally {
       _busy = false;
     }
+  }
+
+  /// Baixa do zero: arquivo limpo, modo write, delete-on-error ligado. A
+  /// retomada (Range + append) tem caminho próprio no [downloadAndInstall].
+  Future<void> _freshDownload(
+    UpdateArtifact artifact,
+    File target, {
+    required void Function(double) onProgress,
+  }) async {
+    if (target.existsSync()) target.deleteSync();
+    await _dio.download(
+      artifact.url,
+      target.path,
+      onReceiveProgress: (received, total) {
+        if (total <= 0) return;
+        onProgress(received / total);
+      },
+    );
   }
 
   /// Volta ao card de oferta e publica o motivo.

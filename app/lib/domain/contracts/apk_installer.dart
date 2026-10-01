@@ -27,6 +27,14 @@ abstract class ApkInstaller {
   /// Opens the system screen where the user can grant this app the
   /// unknown-sources permission. No-op on platforms without it.
   Future<void> openInstallSettings();
+
+  /// Best-effort copy of the APK at [path] into the device's public
+  /// Downloads folder under [fileName], so the user finds it in the file
+  /// manager (installable there without this app).
+  ///
+  /// Failure is a warning, not an error path: the install flow runs from the
+  /// app's own cache copy, so a failed publish must not block it.
+  Future<void> publishToDownloads(String path, String fileName);
 }
 
 /// Failure from [ApkInstaller], carrying the native error code.

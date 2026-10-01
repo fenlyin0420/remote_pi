@@ -660,6 +660,14 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
+                    "publishToDownloads" -> {
+                        publishToDownloads(
+                            call.argument<String>("path"),
+                            call.argument<String>("fileName"),
+                            result,
+                        )
+                    }
+
                     else -> {
                         result.notImplemented()
                     }
@@ -728,6 +736,48 @@ class MainActivity : FlutterActivity() {
             result.success(null)
         } catch (e: Exception) {
             result.error("install_failed", e.message ?: "Unknown install error", null)
+        }
+    }
+
+    /**
+     * Publishes a downloaded APK to the device's public Downloads folder so
+     * the user finds it in the file manager. Confined to the update dir like
+     * the installer; the actual write is [MediaSaver.saveApk] (MediaStore,
+     * scoped storage, no permission).
+     */
+    private fun publishToDownloads(
+        rawPath: String?,
+        fileName: String?,
+        result: MethodChannel.Result,
+    ) {
+        if (rawPath.isNullOrBlank() || fileName.isNullOrBlank()) {
+            result.error("bad_args", "APK path and file name are required", null)
+            return
+        }
+
+        val apk = File(rawPath)
+        val allowedRoot = File(cacheDir, UPDATE_DIR).canonicalFile
+        val target =
+            try {
+                apk.canonicalFile
+            } catch (e: Exception) {
+                result.error("bad_path", "Cannot resolve path: ${e.message}", null)
+                return
+            }
+        if (!target.path.startsWith(allowedRoot.path + File.separator)) {
+            result.error("bad_path", "APK must live under ${allowedRoot.path}", null)
+            return
+        }
+        if (!target.isFile || target.length() == 0L) {
+            result.error("missing_apk", "APK not found or empty", null)
+            return
+        }
+
+        try {
+            MediaSaver.saveApk(this, target, fileName)
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("publish_failed", e.message ?: "Unknown publish error", null)
         }
     }
 

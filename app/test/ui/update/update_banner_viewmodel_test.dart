@@ -70,6 +70,7 @@ class _FakeInstaller implements ApkInstaller {
   bool allowed = true;
 
   final List<String> installed = [];
+  final List<String> published = []; // fileName of the Downloads copy
   int canInstallCalls = 0;
   int settingsCalls = 0;
 
@@ -94,6 +95,11 @@ class _FakeInstaller implements ApkInstaller {
   @override
   Future<void> openInstallSettings() async {
     settingsCalls++;
+  }
+
+  @override
+  Future<void> publishToDownloads(String path, String fileName) async {
+    published.add(fileName);
   }
 }
 
@@ -515,6 +521,165 @@ void main() {
       expect(installer.canInstallCalls, 0,
           reason: 'the corrupt file must not reach the permission gate');
       expect(vm.state, isA<UpdateBannerVisible>());
+    });
+
+    test('completed download is published to Downloads with the version name',
+        () async {
+      // A finished APK must land in the user's Downloads folder under a
+      // version-stamped name, not a generic update file name.
+      final bytes = List<int>.filled(128, 1);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((req) {
+        req.response
+          ..statusCode = 200
+          ..headers.contentLength = bytes.length
+          ..add(bytes);
+        req.response.close();
+      });
+
+      final dir = Directory.systemTemp.createTempSync('rp-update-test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+
+      final installer = _FakeInstaller()..dir = dir.path;
+      final info = _info(
+        '1.2.0',
+        artifacts: [
+          UpdateArtifact(
+            platform: 'android',
+            arch: 'universal',
+            format: 'apk',
+            url: 'http://127.0.0.1:${server.port}/RemotePi.apk',
+            sha256: '',
+            size: bytes.length,
+          ),
+        ],
+      );
+      final vm = _vm(_FakeChecker(info), installer: installer);
+      await vm.check();
+
+      await vm.downloadAndInstall();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(installer.installed, hasLength(1));
+      expect(installer.installed.single, endsWith('RemotePi-1.2.0.apk'),
+          reason: 'the cache file is named after the version');
+      expect(installer.published, ['RemotePi-1.2.0.apk']);
+    });
+
+    test('an interrupted download resumes from the partial file', () async {
+      // 64 of 128 bytes are already on disk from a killed attempt; the server
+      // answers Range with 206, so the app must continue where it stopped and
+      // end with the full file — not re-download from zero.
+      final bytes = List<int>.generate(128, (i) => i % 256);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      var rangeRequests = 0;
+      var fullRequests = 0;
+      server.listen((req) {
+        final range = req.headers.value('Range');
+        if (range != null && range.startsWith('bytes=')) {
+          final start =
+              int.parse(range.substring('bytes='.length).split('-').first);
+          rangeRequests++;
+          req.response
+            ..statusCode = 206
+            ..headers.set(
+              'Content-Range',
+              ['bytes $start-${bytes.length - 1}/${bytes.length}'],
+            )
+            ..headers.contentLength = bytes.length - start
+            ..add(bytes.sublist(start));
+        } else {
+          fullRequests++;
+          req.response
+            ..statusCode = 200
+            ..headers.contentLength = bytes.length
+            ..add(bytes);
+        }
+        req.response.close();
+      });
+
+      final dir = Directory.systemTemp.createTempSync('rp-update-test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/RemotePi-1.2.0.apk').writeAsBytesSync(bytes.sublist(0, 64));
+
+      final installer = _FakeInstaller()..dir = dir.path;
+      final info = _info(
+        '1.2.0',
+        artifacts: [
+          UpdateArtifact(
+            platform: 'android',
+            arch: 'universal',
+            format: 'apk',
+            url: 'http://127.0.0.1:${server.port}/RemotePi.apk',
+            sha256: '',
+            size: bytes.length,
+          ),
+        ],
+      );
+      final vm = _vm(_FakeChecker(info), installer: installer);
+      await vm.check();
+
+      await vm.downloadAndInstall();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(rangeRequests, 1, reason: 'the retry carries a Range header');
+      expect(fullRequests, 0, reason: 'no full re-download when the server supports Range');
+      final file = File('${dir.path}/RemotePi-1.2.0.apk');
+      expect(file.lengthSync(), 128, reason: 'partial + tail = the full APK');
+      expect(file.readAsBytesSync(), bytes);
+      expect(installer.installed, hasLength(1));
+    });
+
+    test('a server that ignores Range gets a full re-download', () async {
+      // The partial file exists, but this server answers 200 (no partial
+      // content). Appending the full body on top of the partial file would
+      // corrupt the APK, so the app must wipe it and start over.
+      final bytes = List<int>.filled(64, 3);
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      final ranges = <String?>[];
+      server.listen((req) {
+        ranges.add(req.headers.value('Range'));
+        req.response
+          ..statusCode = 200
+          ..headers.contentLength = bytes.length
+          ..add(bytes);
+        req.response.close();
+      });
+
+      final dir = Directory.systemTemp.createTempSync('rp-update-test');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      File('${dir.path}/RemotePi-1.2.0.apk').writeAsBytesSync(bytes.sublist(0, 32));
+
+      final installer = _FakeInstaller()..dir = dir.path;
+      final info = _info(
+        '1.2.0',
+        artifacts: [
+          UpdateArtifact(
+            platform: 'android',
+            arch: 'universal',
+            format: 'apk',
+            url: 'http://127.0.0.1:${server.port}/RemotePi.apk',
+            sha256: '',
+            size: bytes.length,
+          ),
+        ],
+      );
+      final vm = _vm(_FakeChecker(info), installer: installer);
+      await vm.check();
+
+      await vm.downloadAndInstall();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(ranges.length, 2, reason: 'a resume attempt, then a fresh download');
+      expect(ranges.first, isNotNull, reason: 'the first attempt asked for a Range');
+      expect(ranges.last, isNull, reason: 'the retry starts from zero');
+      final file = File('${dir.path}/RemotePi-1.2.0.apk');
+      expect(file.readAsBytesSync(), bytes,
+          reason: 'the corrupt append was wiped and re-downloaded');
+      expect(installer.installed, hasLength(1));
     });
   });
 }
