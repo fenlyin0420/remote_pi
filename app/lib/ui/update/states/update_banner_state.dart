@@ -78,6 +78,7 @@ final class UpdateBannerWorking extends UpdateBannerState {
     required this.info,
     required this.phase,
     this.progress,
+    this.resumed = false,
   });
 
   final UpdateInfo info;
@@ -87,14 +88,21 @@ final class UpdateBannerWorking extends UpdateBannerState {
   /// Content-Length. Ignorado em [UpdatePhase.installing].
   final double? progress;
 
-  // Ignora oscilações de progresso: só re-emite quando muda a fase (o
-  // rebuild a cada % seria ruído à toa na lista da Home).
+  /// `true` quando o download continua de um arquivo parcial anterior (a UI
+  /// mostra "resuming" em vez de "downloading").
+  final bool resumed;
+
+  // O progresso participa da igualdade (a barra tem que se mover); o número
+  // de rebuilds fica pequeno porque o VM só re-emite quando muda o inteiro de
+  // porcentagem.
   @override
   bool operator ==(Object other) =>
       other is UpdateBannerWorking &&
       other.info.version == info.version &&
-      other.phase == phase;
+      other.phase == phase &&
+      other.progress == progress &&
+      other.resumed == resumed;
 
   @override
-  int get hashCode => Object.hash(info.version, phase);
+  int get hashCode => Object.hash(info.version, phase, progress, resumed);
 }

@@ -128,7 +128,37 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         ctype = CONTENT_TYPES.get(resolved.suffix, "application/octet-stream")
-        self._send_bytes(200, data, ctype, download_name=filename)
+
+        # Range requests: the app resumes interrupted APK downloads with
+        # `Range: bytes=N-`. Only the simple suffix form is handled; anything
+        # else (multi-range, unsatisfiable) falls through to a full 200, which
+        # the client detects and restarts from zero.
+        total = len(data)
+        range_header = (self.headers.get("Range") or "").strip()
+        if range_header.startswith("bytes=") and range_header.endswith("-"):
+            start_text = range_header[len("bytes="):].rstrip("-")
+            try:
+                start = int(start_text)
+            except ValueError:
+                start = None
+            if start is not None and 0 < start < total:
+                body = data[start:]
+                self._send_bytes(
+                    206,
+                    body,
+                    ctype,
+                    download_name=filename,
+                    content_range=f"bytes {start}-{total - 1}/{total}",
+                )
+                return
+
+        self._send_bytes(
+            200,
+            data,
+            ctype,
+            download_name=filename,
+            accept_ranges=True,
+        )
 
     def _send_bytes(
         self,
@@ -136,10 +166,18 @@ class Handler(BaseHTTPRequestHandler):
         body: bytes,
         content_type: str,
         download_name: str | None = None,
+        content_range: str | None = None,
+        accept_ranges: bool = False,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if accept_ranges:
+            # Advertise byte ranges even on a full response, so clients know
+            # this server supports resume.
+            self.send_header("Accept-Ranges", "bytes")
+        if content_range:
+            self.send_header("Content-Range", content_range)
         # The manifest must never be cached: the whole point is that a freshly
         # published version is visible on the next launch.
         if content_type.startswith("application/json"):

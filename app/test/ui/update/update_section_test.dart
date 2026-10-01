@@ -55,6 +55,8 @@ class _Installer implements ApkInstaller {
   Future<void> install(String path) async {}
   @override
   Future<void> openInstallSettings() async {}
+  @override
+  Future<void> publishToDownloads(String path, String fileName) async {}
 }
 
 UpdateInfo _info(String version) => UpdateInfo(
