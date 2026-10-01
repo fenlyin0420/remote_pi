@@ -37,6 +37,9 @@ sealed class ControlInbound {
         // or nested under `meta.working`; read both for forward-compat.
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
+        // Plan/42 — context usage arrives top-level or nested under
+        // `meta.context`, same forward-compat convention as the others.
+        final rawContext = _parseContext(j) ?? _parseContext(metaJson);
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -48,6 +51,7 @@ sealed class ControlInbound {
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
           working: rawWorking,
+          context: rawContext,
         );
       }(),
       'room_ended' => RoomEnded(
@@ -79,6 +83,7 @@ sealed class ControlInbound {
           working: meta?['working'] as bool?,
           hasModel: hasModel,
           hasThinking: hasThinking,
+          context: _parseContext(meta),
         );
       }(),
       _ => null,
@@ -194,6 +199,10 @@ class RoomInfo {
   /// (idle / not reported yet).
   final bool working;
 
+  /// Plan/42 — last published context usage (null = Pi hasn't reported
+  /// one yet — older extensions never publish this field).
+  final RoomContextUsage? context;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -202,6 +211,7 @@ class RoomInfo {
     this.model,
     this.thinking,
     this.working = false,
+    this.context,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -216,6 +226,7 @@ class RoomInfo {
           ? ThinkingLevel.fromWire(rawThinking)
           : null,
       working: (j['working'] as bool?) ?? false,
+      context: _parseContext(j),
     );
   }
 
@@ -227,6 +238,8 @@ class RoomInfo {
     'model': model,
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
+    if (context != null)
+      'context': {'used': context!.used, 'limit': context!.limit},
   };
 
   RoomInfo copyWith({
@@ -236,16 +249,20 @@ class RoomInfo {
     Object? model = _kRoomInfoUnset,
     Object? thinking = _kRoomInfoUnset,
     bool? working,
+    Object? context = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
     cwd: cwd ?? this.cwd,
     startedAt: startedAt ?? this.startedAt,
     model: identical(model, _kRoomInfoUnset) ? this.model : model as String?,
-    thinking: identical(thinking, _kRoomInfoUnset)
-        ? this.thinking
-        : thinking as ThinkingLevel?,
-    working: working ?? this.working,
+      thinking: identical(thinking, _kRoomInfoUnset)
+          ? this.thinking
+          : thinking as ThinkingLevel?,
+      working: working ?? this.working,
+      context: identical(context, _kRoomInfoUnset)
+          ? this.context
+          : context as RoomContextUsage?,
   );
 
   @override
@@ -257,12 +274,36 @@ class RoomInfo {
       other.startedAt == startedAt &&
       other.model == model &&
       other.thinking == thinking &&
-      other.working == working;
+      other.working == working &&
+      other.context == context;
 
   @override
   int get hashCode =>
       Object.hash(roomId, name, cwd, startedAt, model, thinking, working);
 }
+
+/// Plan/42 — best-effort context usage published by the Pi-extension
+/// (`room_meta.context`). [used] ≈ prompt tokens currently in the session,
+/// [limit] is the model's context window. The app renders the ratio as
+/// a percent in the session-info dialog.
+class RoomContextUsage {
+  final int used;
+  final int limit;
+  const RoomContextUsage({required this.used, required this.limit});
+
+  /// Parse the wire shape `{ "context": { "used": n, "limit": n } }`
+  /// from a flat map (top-level frame) or a nested `meta` envelope.
+  static RoomContextUsage? _parse(Map<String, dynamic> j) {
+    final c = j['context'] as Map<String, dynamic>?;
+    final used = c?['used'] as num?;
+    final limit = c?['limit'] as num?;
+    if (used == null || limit == null || limit <= 0) return null;
+    return RoomContextUsage(used: used.toInt(), limit: limit.toInt());
+  }
+}
+
+RoomContextUsage? _parseContext(Map<String, dynamic>? j) =>
+    j == null ? null : RoomContextUsage._parse(j);
 
 class RoomAnnounced extends ControlInbound {
   final String peer;
@@ -283,6 +324,9 @@ class RoomAnnounced extends ControlInbound {
   /// frame omitted it (legacy relay); the ConnectionManager then keeps
   /// any previously-known value instead of forcing `false`.
   final bool? working;
+
+  /// Plan/42 — context usage at announce time (null = not published).
+  final RoomContextUsage? context;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -292,6 +336,7 @@ class RoomAnnounced extends ControlInbound {
     this.model,
     this.thinking,
     this.working,
+    this.context,
   });
 }
 
@@ -347,6 +392,10 @@ class RoomMetaUpdated extends ControlInbound {
   /// set. No separate `hasWorking` flag is needed because `working` can
   /// never be "explicitly null" on the wire — `false` is the off state.
   final bool? working;
+
+  /// Plan/42 — context-usage patch. `null` = this update didn't carry
+  /// it (preserve the cached value).
+  final RoomContextUsage? context;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
@@ -355,6 +404,7 @@ class RoomMetaUpdated extends ControlInbound {
     this.working,
     this.hasModel = true,
     this.hasThinking = true,
+    this.context,
   });
 }
 

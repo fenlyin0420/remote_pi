@@ -204,6 +204,19 @@ class ChatPage extends StatelessWidget {
                 const SizedBox(height: 6),
                 Row(
                   children: [
+                    if ((room?.model ?? '').isNotEmpty)
+                      Flexible(
+                        child: Text(
+                          _truncate(room!.model!, 20),
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: kMonoFamily,
+                            fontSize: 10,
+                            color: colors.muted,
+                          ),
+                        ),
+                      ),
+                    const SizedBox(width: 6),
                     Flexible(
                       child: Text(
                         _truncate(peerLabel, 24),
@@ -330,6 +343,11 @@ class ChatPage extends StatelessWidget {
               _InfoRow(label: 'Owner', value: owner),
               if (model != null && model.isNotEmpty)
                 _InfoRow(label: 'Model', value: model),
+              if (room?.context != null)
+                _InfoRow(
+                  label: 'Context',
+                  value: _contextLabel(room!.context!),
+                ),
               _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
               _InfoRow(label: 'Paired', value: paired),
             ],
@@ -760,6 +778,12 @@ class _RevokedBanner extends StatelessWidget {
 
 /// One labelled key/value row in the session-info dialog. The value is
 /// selectable so the user can copy the path / device name.
+/// Plan/42 — human rendering of a [RoomContextUsage] for the info dialog,
+/// e.g. `42% (168k / 400k tokens)`.
+String _contextLabel(RoomContextUsage c) =>
+    '${(c.used / c.limit * 100).toStringAsFixed(0)}% '
+    '(${c.used ~/ 1000}k / ${c.limit ~/ 1000}k tokens)';
+
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;

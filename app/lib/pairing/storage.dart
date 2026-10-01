@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import 'package:app/protocol/protocol.dart' show PiHarness;
+import 'package:app/protocol/protocol.dart'
+    show PiHarness, RoomContextUsage;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -24,6 +25,10 @@ class PersistedRoom {
   /// Persisted so the subtitle survives cold starts.
   final String? model;
 
+  /// Plan/42 — last published context usage. Persisted so the
+  /// session-info row survives cold starts.
+  final RoomContextUsage? context;
+
   const PersistedRoom({
     required this.roomId,
     required this.startedAt,
@@ -31,6 +36,7 @@ class PersistedRoom {
     this.cwd,
     this.localName,
     this.model,
+    this.context,
   });
 
   Map<String, dynamic> toJson() => {
@@ -40,6 +46,8 @@ class PersistedRoom {
     'started_at': startedAt,
     'local_name': localName,
     'model': model,
+    if (context != null)
+      'context': {'used': context!.used, 'limit': context!.limit},
   };
 
   factory PersistedRoom.fromJson(Map<String, dynamic> j) => PersistedRoom(
@@ -49,7 +57,16 @@ class PersistedRoom {
     startedAt: (j['started_at'] as num).toInt(),
     localName: j['local_name'] as String?,
     model: j['model'] as String?,
+    context: _parsePersistedContext(j),
   );
+
+  static RoomContextUsage? _parsePersistedContext(Map<String, dynamic> j) {
+    final c = j['context'] as Map<String, dynamic>?;
+    final used = c?['used'] as num?;
+    final limit = c?['limit'] as num?;
+    if (used == null || limit == null || limit <= 0) return null;
+    return RoomContextUsage(used: used.toInt(), limit: limit.toInt());
+  }
 
   PersistedRoom copyWith({
     String? name,
@@ -57,6 +74,7 @@ class PersistedRoom {
     int? startedAt,
     Object? localName = _unset,
     Object? model = _unset,
+    Object? context = _unset,
   }) => PersistedRoom(
     roomId: roomId,
     name: name ?? this.name,
@@ -68,6 +86,9 @@ class PersistedRoom {
     model: identical(model, _unset)
         ? this.model
         : model as String?,
+    context: identical(context, _unset)
+        ? this.context
+        : context as RoomContextUsage?,
   );
 }
 
