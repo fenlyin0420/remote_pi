@@ -110,6 +110,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|m| m.get("working"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Plan/42 — context arrives as `{ "used": n, "limit": n }`; parse
+        // failure means absent (None) — never fail the hello over it.
+        let context = room_meta_val
+            .and_then(|m| m.get("context"))
+            .and_then(|v| serde_json::from_value::<crate::rooms::RoomContext>(v.clone()).ok());
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -121,6 +126,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             model,
             thinking,
             working,
+            context,
             started_at,
         }
     };
@@ -283,10 +289,17 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let working_patch = meta_obj
                                         .and_then(|m| m.get("working"))
                                         .and_then(|v| v.as_bool());
+                                    // Plan/42 — `meta.context` present → parse it
+                                    // (malformed object → Some(None), i.e. clear);
+                                    // key absent → None (leave current).
+                                    let context_patch = meta_obj
+                                        .and_then(|m| m.get("context"))
+                                        .map(|v| serde_json::from_value::<crate::rooms::RoomContext>(v.clone()).ok());
                                     let patch = RoomMetaPatch {
                                         model: model_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
+                                        context: context_patch,
                                     };
                                     if !registry
                                         .update_room_meta(&peer_id, &target_room, patch)

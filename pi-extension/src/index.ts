@@ -331,9 +331,10 @@ function _setCurrentModel(name: string): void {
 /**
  * Plan/42: estimate the session's context usage and publish it as
  * room_meta (`context: { used, limit }`). The ratio drives the app's
- * "Session info" context-usage row. `used` is estimated as
- * totalTokens / 3 (pi's heuristic — JSON tokens ≈ 3 chars, so chars / 4
- * tokens ≈ totalTokens / 3). `limit` is the model's contextWindow. Best
+ * "Session info" context-usage row. `used` is estimated from the current
+ * branch's prompt chars (message entries only) ÷ 4 — pi's ~4-chars/token
+ * heuristic; tool inputs are stringified first. `limit` is the model's
+ * contextWindow. Best
  * effort: silent no-op when the session/model can't be resolved, and the
  * publish is debounced to at most once per 30 s so turn_end doesn't spam
  * room_meta_update frames.
@@ -343,24 +344,29 @@ function _publishContextUsage(ctx: unknown): void {
   const now = Date.now();
   if (now - _lastContextPublish < 30000) return;
   try {
-    const session = (ctx as Partial<ExtensionContext> & { session?: unknown })
-      .session as
-      | { state?: { messages?: Array<{ messages?: unknown[] }>; tokenUsage?: { totalTokens?: number } } }
-      | undefined;
-    const messages = (session?.state?.messages ?? []) as Array<{
-      messages?: Array<{ text?: unknown; thinking?: unknown }>;
+    // The Pi SDK's ExtensionContext exposes the session as `sessionManager`
+    // (ReadonlySessionManager) — there is no `ctx.session`. Count prompt
+    // chars across the entries on the current branch: `message` entries
+    // carry `message.content` part arrays (text / thinking / toolCall /
+    // toolResult parts).
+    const manager = (ctx as Partial<ExtensionContext> & { sessionManager?: { getBranch?: () => unknown[] } })
+      .sessionManager;
+    const branch = (manager?.getBranch?.() ?? []) as Array<{
+      type?: unknown;
+      message?: { content?: Array<{ type?: unknown; text?: unknown; thinking?: unknown; input?: unknown }> };
     }>;
     let chars = 0;
-    for (const m of messages) {
-      for (const part of m.messages ?? []) {
+    for (const entry of branch) {
+      if (entry.type !== "message") continue;
+      for (const part of entry.message?.content ?? []) {
         if (typeof part.text === "string") chars += part.text.length;
         if (typeof part.thinking === "string") chars += part.thinking.length;
+        if (part.input != null) chars += JSON.stringify(part.input).length;
       }
     }
-    const model = ((ctx as Partial<ExtensionContext> & { getModel?: () => { contextWindow?: number } | undefined }).getModel?.()) as
-      | { contextWindow?: number }
-      | undefined;
-    const limit = model?.contextWindow;
+    // `ctx.model` is the live resolved model (ExtensionContext field).
+    const limit = (ctx as Partial<ExtensionContext> & { model?: { contextWindow?: number } | undefined })
+      .model?.contextWindow;
     if (!limit || limit <= 0 || chars <= 0) return;
     const used = Math.floor(chars / 4);
     const context = { used, limit };
