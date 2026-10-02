@@ -412,6 +412,24 @@ function _estimateContextUsed(ctx: unknown): number {
  * custom provider is not in it), so when it misses we build a throwaway
  * registry from the config files (cwd's + global models.json) and retry.
  */
+/**
+ * Pick the best ctx to resolve the HOST model registry from. A headless
+ * command ctx (`{ ui, cwd }`) carries no `modelRegistry`, so passing it to
+ * `ensureModelRegistry` yields the stub and `find()` misses — a raw model id
+ * then reaches room_meta and no context limit resolves. The live
+ * session_start / event ctxs DO carry the daemon's own registry (the pi
+ * version it actually runs), so always prefer them; the throwaway registry
+ * built from THIS package's possibly-older pi-ai data is a last resort.
+ */
+function _registryCtx(ctx: unknown): unknown {
+  for (const c of [_lastEventCtx, _lastCtx, ctx]) {
+    try {
+      if (c && typeof (c as { modelRegistry?: unknown }).modelRegistry === "object") return c;
+    } catch { /* stale ctx throws on property read — try the next */ }
+  }
+  return null;
+}
+
 function _resolveContextLimit(ctx: unknown): number | undefined {
   const c = ctx as Partial<ExtensionContext> & {
     model?: { contextWindow?: number };
@@ -429,7 +447,7 @@ function _resolveContextLimit(ctx: unknown): number | undefined {
     const provider = sm.getDefaultProvider();
     const modelId = sm.getDefaultModel();
     if (!provider || !modelId) return undefined;
-    const host = ensureModelRegistry(ctx as unknown as ActionCtx | null);
+    const host = ensureModelRegistry(_registryCtx(ctx) as unknown as ActionCtx | null);
     try { host.refresh(); } catch { /* stale ctx — keep the loaded catalog */ }
     const fromHost = host.find(provider, modelId);
     if (fromHost?.contextWindow && fromHost.contextWindow > 0) return fromHost.contextWindow;
@@ -2685,14 +2703,20 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // SDK fires model_select on settings load + every user switch. We cache the
   // friendly name and broadcast a room_meta_update so the relay can fan it
   // out to subscribed apps without needing a new pair.
-  pi.on("model_select", (event) => {
-    const m = event?.model as { name?: string; id?: string } | undefined;
+  pi.on("model_select", (event, ctx) => {
+    const m = event?.model as { name?: string; id?: string; contextWindow?: number } | undefined;
     const modelName = m?.name ?? m?.id;
     if (!modelName) return;
     // Cache + fan out. Keeps the cached room_meta fresh so a future reconnect
     // carries the current model in its hello, and pushes a room_meta_update to
     // apps already subscribed.
     _setCurrentModel(modelName);
+    // The context LIMIT is the model's contextWindow, so a model switch must
+    // re-publish the usage row (it was seeded from the previous model at
+    // connect, and stays stale otherwise — e.g. llama.cpp → deepseek leaves
+    // the app showing the old model's window). Debounced like every other
+    // publish; the ctx here carries the freshly-resolved model.
+    _publishContextUsage(ctx);
   });
 
   // Plan/28 Wave D.1: mirror model's room_meta_update path for thinking
@@ -3592,7 +3616,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
           // entry hadn't been materialised yet left the id in room_meta, and
           // the app showed it for the whole session.
           const reg = ensureModelRegistry(
-            (c ?? _lastEventCtx ?? _lastCtx) as unknown as ActionCtx | null,
+            _registryCtx(c) as unknown as ActionCtx | null,
           );
           try { reg.refresh(); } catch { /* stale ctx — keep the loaded catalog */ }
           const found = provider ? reg.find(provider, modelId) : undefined;
