@@ -38,6 +38,15 @@ import type {
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { SettingsManager, convertToPng, getShellConfig } from "@earendil-works/pi-coding-agent";
+// The index module above is mocked in the test suite (convertToPng), so grab
+// these classes through the unmocked subpath for _resolveContextLimit's
+// throwaway registry (fresh daemon rooms in a multi-room supervisor).
+// The index-module import above is mocked in the test suite (convertToPng),
+// so grab the ModelRegistry class through the unmocked subpath for
+// _resolveContextLimit's throwaway registry (fresh daemon rooms in a
+// multi-room supervisor process). The main package re-exports both classes
+// from the same files.
+import { ModelRegistry as _RealModelRegistry, AuthStorage as _RealAuthStorage } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
 import { buildQRUri, qrSession, renderQRAscii, clampPairTtlMs, TOKEN_TTL_MS } from "./pairing/qr.js";
 import {
@@ -397,7 +406,11 @@ function _estimateContextUsed(ctx: unknown): number {
  * interactive Pi, and for a daemon once its first turn has lazily resolved
  * the model); a HEADLESS DAEMON at connect has neither, so fall back to the
  * configured default model (the one the daemon will actually run) via the
- * model registry.
+ * model registry. The host registry can be STALE for a fresh room in a
+ * process that already ran other rooms (the room-level instance is
+ * process-wide and seeded with the FIRST room's models.json — a later room's
+ * custom provider is not in it), so when it misses we build a throwaway
+ * registry from the config files (cwd's + global models.json) and retry.
  */
 function _resolveContextLimit(ctx: unknown): number | undefined {
   const c = ctx as Partial<ExtensionContext> & {
@@ -408,12 +421,29 @@ function _resolveContextLimit(ctx: unknown): number | undefined {
   if (live && live > 0) return live;
   try {
     const cwd = typeof (ctx as { cwd?: unknown }).cwd === "string" ? (ctx as { cwd: string }).cwd : process.cwd();
+    // The daemon runs the room's OWN configured default — the room's
+    // <cwd>/.pi/settings.json deep-merged over ~/.pi/settings.json. Passing
+    // the ROOM's cwd (not the extension process's, which serves several
+    // rooms) makes SettingsManager pick up the room's project settings.
     const sm = SettingsManager.create(cwd);
     const provider = sm.getDefaultProvider();
     const modelId = sm.getDefaultModel();
     if (!provider || !modelId) return undefined;
-    const reg = ensureModelRegistry(ctx as unknown as ActionCtx | null);
-    try { reg.refresh(); } catch { /* stale ctx — keep the loaded catalog */ }
+    const host = ensureModelRegistry(ctx as unknown as ActionCtx | null);
+    try { host.refresh(); } catch { /* stale ctx — keep the loaded catalog */ }
+    const fromHost = host.find(provider, modelId);
+    if (fromHost?.contextWindow && fromHost.contextWindow > 0) return fromHost.contextWindow;
+    // Host registry is stale/empty for this room's provider (fresh daemon
+    // room in a multi-room supervisor process: the room-level instance is
+    // process-wide and seeded with the FIRST room's models.json). Rebuild a
+    // throwaway registry from the config files — no explicit path: that
+    // merges the global ~/.pi/models.json, which is where these custom
+    // providers live (passing the room's <cwd>/.pi/models.json instead
+    // would skip it). The models.json read is synchronous and tiny.
+    const reg = _testThrowawayRegistryFactory
+      ? _testThrowawayRegistryFactory(_RealAuthStorage.create())
+      : _RealModelRegistry.create(_RealAuthStorage.create());
+    reg.refresh();
     return reg.find(provider, modelId)?.contextWindow;
   } catch { return undefined; }
 }
@@ -1364,6 +1394,18 @@ export function _getCachedPublicKeyForTest(): string | null {
 
 /** Test-only: force the context-usage debounce clock so a publish is allowed. */
 export function _setLastContextPublishForTest(ts: number): void { _lastContextPublish = ts; }
+
+/** Test-only: the throwaway ModelRegistry factory used when the host
+ *  registry is stale for the room's provider (fresh daemon room in a
+ *  multi-room supervisor process). */
+let _testThrowawayRegistryFactory: ((auth: unknown) => { find: (p: string, m: string) => { contextWindow?: number } | undefined; refresh: () => void }) | null = null;
+export function _setThrowawayRegistryFactoryForTest(
+  factory: typeof _testThrowawayRegistryFactory,
+): void { _testThrowawayRegistryFactory = factory; }
+
+/** Test-only: the contextWindow resolver (live model → host registry →
+ *  throwaway registry). */
+export function _resolveContextLimitForTest(ctx: unknown): number | undefined { return _resolveContextLimit(ctx); }
 
 export function _setMessageBufferForTest(msgs: unknown[]): void {
   _messageBuffer = msgs as BufferMsg[];

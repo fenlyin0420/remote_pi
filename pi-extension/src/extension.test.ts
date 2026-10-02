@@ -239,6 +239,8 @@ const {
   _startRelayForTest,
   _getCachedPublicKeyForTest,
   _setLastContextPublishForTest,
+  _setThrowawayRegistryFactoryForTest,
+  _resolveContextLimitForTest,
   _hasActivePeerForTest,
   _getActivePeerCountForTest,
   _checkSelfRevokeForTest,
@@ -6768,5 +6770,41 @@ describe("Plan/42: context-usage publishing", () => {
     expect(lastContextUpdate(relay)).toEqual({ used: 3000, limit: CONTEXT_LIMIT });
 
     await _stopForTest(ctx as never);
+  });
+
+  test("stale host registry: falls back to the throwaway registry for the limit", () => {
+    // A fresh daemon room in a multi-room supervisor process: the host
+    // registry (room-level, process-wide) is seeded with the FIRST room's
+    // models.json, so it misses this room's custom provider — the
+    // throwaway registry (rebuild from ~/.pi/models.json) must supply the
+    // contextWindow, or the room's hello ships no context at all and the
+    // app shows no Context row.
+    const cwd = mkdtempSync(join(tmpdir(), "rp-ctx-stale-registry-"));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ defaultProvider: "local-llama-cpp", defaultModel: "Qwen3.8.gguf" }),
+    );
+    try {
+      const ctx = {
+        cwd,
+        modelRegistry: {
+          refresh: () => undefined,
+          getAvailable: () => [] as unknown[],
+          find: () => undefined,
+        },
+      };
+      _setThrowawayRegistryFactoryForTest(() => ({
+        refresh: () => undefined,
+        find: (provider: string, modelId: string) =>
+          provider === "local-llama-cpp" && modelId === "Qwen3.8.gguf"
+            ? { contextWindow: 196_608 }
+            : undefined,
+      }));
+      expect(_resolveContextLimitForTest(ctx)).toBe(196_608);
+      _setThrowawayRegistryFactoryForTest(null);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
