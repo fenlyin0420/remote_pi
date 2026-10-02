@@ -118,6 +118,20 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   model contextWindow — SDK API is `ctx.sessionManager.getBranch()`, NOT
   `ctx.session`); the relay passes `context` through hello / room_meta_update /
   snapshots (selfhosted relay 2026-10-01 rebuild, `~/relay-src/relay`).
+- **1.5.20 is released** (2026-10-02): in-app update downloads upgraded — the
+  progress bar now moves in real time (emitted per whole percent), interrupted
+  downloads resume where they stopped (APK cached as `RemotePi-<version>.apk`,
+  `Range`/206 + dio append; a 200 reply means no Range support → clean retry),
+  and the finished APK is published to the phone's public Downloads folder
+  (MediaStore, `MediaSaver.saveApk`) under the version-stamped name. The
+  download server gained Range/206 support (`rp-s3/selfhost/download_server.py`,
+  deployed to cloud177). Beta `1.5.20-beta.1`(+57) + a throwaway
+  `1.5.20-beta.2`(+60) were tested by the user (resume verified); prod
+  `1.5.20`(+61) pushed to the production channel, Release
+  `v1.5.20-update-downloads-arm64` (APK only — no pi-extension change in this
+  release). The throwaway packages were reverted: prod channel = 1.5.20 prod,
+  beta channel = 1.5.20-beta.1. Next beta will be `1.5.21-beta.1`, next prod
+  code ≥ 62.
 - **1.5.19 is released** (2026-10-02): composer fixes (Enter always inserts a
   newline; keyboard no longer reopens returning from Settings/info panel;
   tap blank chat space to close the keyboard; gear button stays visible while
