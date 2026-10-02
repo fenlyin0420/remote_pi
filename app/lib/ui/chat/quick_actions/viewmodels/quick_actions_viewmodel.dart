@@ -181,8 +181,8 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     // Compose the next state preserving the busy-action flag so an
     // in-flight call doesn't lose its spinner mid-update. A room that has
     // never published a level (a headless daemon whose SDK call didn't
-    // resolve one) defaults to medium — the SDK's own default
-    // (`DEFAULT_THINKING_LEVEL`) — instead of leaving the control blank.
+    // resolve one) defaults to a concrete level instead of leaving the
+    // control blank.
     final nextThinking =
         meta.thinking ?? cur.currentThinking ?? ThinkingLevel.medium;
     final nextModelName = meta.model ?? cur.currentModelName;
