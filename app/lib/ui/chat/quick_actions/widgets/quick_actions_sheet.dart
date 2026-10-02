@@ -536,6 +536,17 @@ class _ThinkingRow extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           _ThinkingSegmented(current: current, disabled: busy, onPick: onPick),
+          if (current == ThinkingLevel.auto) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Picks the thinking strength from the task complexity.',
+              style: TextStyle(
+                fontFamily: kMonoFamily,
+                fontSize: 10,
+                color: colors.muted,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -595,6 +606,7 @@ class _ThinkingSegmented extends StatelessWidget {
   // ThinkingLevel order (off → xhigh).
   static const _labels = <ThinkingLevel, String>{
     ThinkingLevel.off: 'off',
+    ThinkingLevel.auto: 'auto',
     ThinkingLevel.minimal: 'min',
     ThinkingLevel.low: 'low',
     ThinkingLevel.medium: 'med',

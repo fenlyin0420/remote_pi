@@ -258,11 +258,25 @@ let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
 /**
- * The level a session with no configured default gets — mirrors the SDK's
- * `DEFAULT_THINKING_LEVEL` (core/defaults.js). Not re-exported by the package
- * root, so it lives here as a copy rather than reaching into `dist/core/...`.
+ * The running SDK's `ThinkingLevel` union. The wire union is a superset — it
+ * carries `"auto"`, which newer Pi builds know and the bundled SDK types
+ * predate — so every SDK call crosses this cast at the boundary.
  */
-const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+type SdkThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
+
+/**
+ * The level a new session resets to on a Pi build that knows it. `"auto"` is a
+ * session-level concept resolved per request from the task complexity; newer
+ * builds also make it the default for a new session.
+ */
+const AUTO_THINKING_LEVEL: ThinkingLevel = "auto";
+/**
+ * The concrete default a Pi build without `"auto"` support resets to. Such
+ * builds clamp an unknown level instead of refusing it — to `"off"`, which
+ * would silently mute thinking — so `"auto"` is only kept after a probe
+ * confirms it stuck (see [_resetThinkingToDefault]).
+ */
+const LEGACY_DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 // ── Agent-network session (plano 19) ──────────────────────────────────────────
 // MeshNode owns both the local UDS mesh (SessionPeer) and the optional
@@ -357,17 +371,26 @@ function _isFreshDaemonSession(): boolean {
 }
 
 /**
- * Put the thinking level back to the SDK default. Called when a session is
- * genuinely new (a fresh daemon room, or «New session» from the phone): the SDK
- * persists every `setThinkingLevel` into the GLOBAL settings and a new session
- * resolves its level from there, so without this a brand-new room/session
- * inherits whatever was last picked anywhere on the machine. The change rides
- * the normal `thinking_level_select` path (cache + `room_meta_update`), so the
- * phone follows along.
+ * Put the thinking level back to the build's own default. Called when a session
+ * is genuinely new (a fresh daemon room, or «New session» from the phone):
+ * settings persisted in GLOBAL settings otherwise leak in, so without this a
+ * brand-new room/session inherits whatever was last picked anywhere on the
+ * machine. Newer Pi builds default to `"auto"`; older builds clamp it away,
+ * so the concrete legacy default applies there. The change rides the normal
+ * `thinking_level_select` path (cache + `room_meta_update`), so the phone
+ * follows along.
  */
 function _resetThinkingToDefault(): void {
   try {
-    _pi?.setThinkingLevel(DEFAULT_THINKING_LEVEL);
+    const pi = _pi;
+    if (!pi) return;
+    // Probe instead of trusting a version: set `"auto"` and read it back. A
+    // build that knows it keeps the session level at `"auto"` (the SDK
+    // special-cases it for any reasoning model); a legacy build clamps the
+    // unknown level to `"off"`, so fall back to the concrete default.
+    pi.setThinkingLevel(AUTO_THINKING_LEVEL as SdkThinkingLevel);
+    if (pi.getThinkingLevel() === AUTO_THINKING_LEVEL) return;
+    pi.setThinkingLevel(LEGACY_DEFAULT_THINKING_LEVEL as SdkThinkingLevel);
   } catch { /* never block a start/new-session on a thinking reset */ }
 }
 
@@ -5569,7 +5592,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
 ];
 
 const COMMAND_THINKING_LEVELS: readonly ThinkingLevel[] = [
-  "off", "minimal", "low", "medium", "high", "xhigh",
+  "off", "auto", "minimal", "low", "medium", "high", "xhigh",
 ];
 
 /** Default ceiling for an app-triggered shell command. The app may lower it
@@ -5890,7 +5913,7 @@ async function _handleCommandInvoke(
         if (!COMMAND_THINKING_LEVELS.includes(level)) {
           throw new Error(`usage: /thinking <${COMMAND_THINKING_LEVELS.join("|")}>`);
         }
-        pi.setThinkingLevel(level);
+        pi.setThinkingLevel(level as SdkThinkingLevel);
         trace("ok");
         return done();
       }

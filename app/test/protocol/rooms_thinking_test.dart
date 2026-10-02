@@ -20,6 +20,18 @@ void main() {
       expect(upd.hasModel, isFalse);
     });
 
+    test('parses auto level (session-level concept)', () {
+      final m = ControlInbound.tryFromJson({
+        'type': 'room_meta_updated',
+        'peer': 'peer1',
+        'room_id': 'r1',
+        'meta': {'thinking': 'auto'},
+      });
+      final upd = m! as RoomMetaUpdated;
+      expect(upd.thinking, ThinkingLevel.auto);
+      expect(upd.hasThinking, isTrue);
+    });
+
     test('thinking + model both present', () {
       final m = ControlInbound.tryFromJson({
         'type': 'room_meta_updated',
@@ -104,6 +116,15 @@ void main() {
         'thinking': 'minimal',
       });
       expect(r.thinking, ThinkingLevel.minimal);
+    });
+
+    test('fromJson reads auto', () {
+      final r = RoomInfo.fromJson({
+        'room_id': 'r1',
+        'started_at': 1,
+        'thinking': 'auto',
+      });
+      expect(r.thinking, ThinkingLevel.auto);
     });
 
     test('toJson omits thinking when null, includes when set', () {

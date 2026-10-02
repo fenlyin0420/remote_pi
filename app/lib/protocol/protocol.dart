@@ -718,12 +718,16 @@ enum ActionName {
   }
 }
 
-/// Plan/28 — Mirror of the SDK's `ThinkingLevel`. Six fixed values; the
+/// Plan/28 — Mirror of the SDK's `ThinkingLevel`. Seven fixed values; the
 /// wire format is the lower-case string. `xhigh` is honored only by
 /// select models — the app surfaces every level and the SDK falls back
-/// when the active model doesn't support the requested one.
+/// when the active model doesn't support the requested one. `auto` is a
+/// session-level concept newer Pi builds resolve per request from the
+/// task complexity; a Pi that predates it clamps the level away, so a
+/// room only reports it when the running build understands it.
 enum ThinkingLevel {
   off('off'),
+  auto('auto'),
   minimal('minimal'),
   low('low'),
   medium('medium'),

@@ -280,6 +280,17 @@ void main() {
     expect(s.repo.thinking, ThinkingLevel.medium);
   });
 
+  testWidgets('auto segment forwards auto and explains itself', (tester) async {
+    final s = await _openSheet(tester);
+    await tester.tap(find.byKey(const Key('qa-thinking-auto')));
+    await tester.pumpAndSettle();
+    expect(s.repo.thinking, ThinkingLevel.auto);
+    expect(
+      find.text('Picks the thinking strength from the task complexity.'),
+      findsOneWidget,
+    );
+  });
+
   test('QuickActionsState equality covers idle + busy', () {
     expect(const QuickActionsIdle(), const QuickActionsIdle());
     expect(

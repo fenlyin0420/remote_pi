@@ -530,11 +530,15 @@ export interface WireCommand {
  * Note: `"xhigh"` is only honored by select model families — the SDK uses
  * each `Model.thinkingLevelMap` to decide if the requested level is
  * supported, falling back to a sensible neighbour when not. The app
- * surfaces all 6 buttons but can grey out unsupported ones using the
+ * surfaces every button but can grey out unsupported ones using the
  * model's metadata if the picker fetches it later.
+ *
+ * `"auto"` is a session-level concept newer Pi builds resolve per request
+ * from the task complexity; builds that predate it clamp an unknown level
+ * (to `"off"`), so callers must probe support before seeding it.
  */
 export type ThinkingLevel =
-  | "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  | "off" | "auto" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /**
  * Plan/28 — Wire shape for one model entry in the app's model picker.

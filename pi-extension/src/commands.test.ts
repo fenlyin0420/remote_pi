@@ -352,6 +352,15 @@ describe("command_invoke — implemented builtins", () => {
     expect(pi.setThinkingLevel).toHaveBeenCalledWith("xhigh");
   });
 
+  test('/thinking accepts the session-level auto level', async () => {
+    const pi = makePi();
+    _setPiForTest(pi);
+    const sender = makeSender();
+    route({ type: "command_invoke", id: "c6", text: "/thinking auto" }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(pi.setThinkingLevel).toHaveBeenCalledWith("auto");
+  });
+
   test('/thinking rejects a level outside the fixed enum', async () => {
     _setPiForTest(makePi());
     const sender = makeSender();

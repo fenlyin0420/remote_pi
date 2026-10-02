@@ -206,6 +206,42 @@ void main() {
       cm.dispose();
     });
 
+    test('RoomMetaUpdated carries the auto level through unchanged',
+        () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      ch.pushControl(const RoomAnnounced(
+        peer: 'epk_test',
+        roomId: 'r1',
+        startedAt: 1,
+        thinking: ThinkingLevel.auto,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      // The Pi publishes auto again on reconnect; the room must keep it,
+      // not fall back to a concrete level.
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_test',
+        roomId: 'r1',
+        thinking: ThinkingLevel.auto,
+        hasModel: false,
+        hasThinking: true,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+
+      final room = cm.roomsFor('epk_test').single;
+      expect(room.thinking, ThinkingLevel.auto);
+
+      cm.dispose();
+    });
+
     test('RoomsSnapshot preserves previously-known thinking when omitted',
         () async {
       final ch = _ControllableChannel();

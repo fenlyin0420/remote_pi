@@ -50,9 +50,10 @@ void main() {
   });
 
   group('ThinkingLevel — wire round-trip', () {
-    test('all six values parse from their wire string', () {
+    test('all seven values parse from their wire string', () {
       const expected = [
         ('off', ThinkingLevel.off),
+        ('auto', ThinkingLevel.auto),
         ('minimal', ThinkingLevel.minimal),
         ('low', ThinkingLevel.low),
         ('medium', ThinkingLevel.medium),

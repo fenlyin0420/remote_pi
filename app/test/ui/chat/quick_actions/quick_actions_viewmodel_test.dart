@@ -286,6 +286,22 @@ void main() {
       vm.dispose();
     });
 
+    test('keeps an auto level reported by the room on reconnect', () async {
+      final repo = _FakeActionsRepository();
+      repo.meta = const ActiveRoomMeta(
+        peerEpk: 'epk1',
+        thinking: ThinkingLevel.auto,
+      );
+      final vm = QuickActionsViewModel(repo);
+      // "auto" is the room's real level, not the fallback default: the control
+      // must show it (and never nudge the Pi into thinking_set on its own).
+      expect(vm.currentThinking, ThinkingLevel.auto);
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      expect(vm.currentThinking, ThinkingLevel.auto);
+      expect(repo.lastThinking, isNull);
+      vm.dispose();
+    });
+
     test('external model change drops structured currentModel', () async {
       final repo = _FakeActionsRepository();
       const opus = WireModel(
