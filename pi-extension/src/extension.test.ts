@@ -235,8 +235,10 @@ const {
   _getCurrentTurnIdForTest,
   _getPendingSteerIdsForTest,
   _connectForTest,
+  _stopForTest,
   _startRelayForTest,
   _getCachedPublicKeyForTest,
+  _setLastContextPublishForTest,
   _hasActivePeerForTest,
   _getActivePeerCountForTest,
   _checkSelfRevokeForTest,
@@ -6666,5 +6668,105 @@ describe("thinking level default", () => {
       in_reply_to: "new-1",
       action: "session_new",
     });
+  });
+});
+
+// ── Plan/42: context-usage publishing (room_meta.context) ─────────────────────
+
+describe("Plan/42: context-usage publishing", () => {
+  const CONTEXT_LIMIT = 400_000;
+
+  function makeSessionCtx(cwd: string, branch: unknown[]) {
+    return {
+      ui: { notify: vi.fn() },
+      cwd,
+      model: { contextWindow: CONTEXT_LIMIT },
+      getModel: () => ({ contextWindow: CONTEXT_LIMIT }),
+      sessionManager: { getBranch: () => branch, getEntries: () => [] },
+      abort: vi.fn(),
+    };
+  }
+
+  function lastContextUpdate(relay: MockRelay): { used: number; limit: number } | null {
+    for (const [arg] of [...relay.sendControl.mock.calls].reverse()) {
+      const msg = arg as { type?: string; meta?: { context?: { used: number; limit: number } } };
+      if (msg.type === "room_meta_update" && msg.meta?.context) return msg.meta.context;
+    }
+    return null;
+  }
+
+  test("fresh session: the relay hello announces 0 % context", async () => {
+    const branch: unknown[] = [];
+    const ctx = makeSessionCtx("/tmp/rp-ctx-fresh", branch);
+    await _connectForTest(ctx as never);
+    const relay = relayRef.current!;
+    const opts = relay.connect.mock.calls.at(-1)![0] as { roomMeta?: { context?: { used: number; limit: number } } };
+    expect(opts.roomMeta?.context).toEqual({ used: 0, limit: CONTEXT_LIMIT });
+    await _stopForTest(ctx as never);
+  });
+
+  test("session_start resets the previous session's cached context and republishes 0", async () => {
+    const oldBranch: unknown[] = [{
+      type: "message",
+      message: { content: [{ type: "text", text: "x".repeat(4000) }] },
+    }];
+    const oldCtx = makeSessionCtx("/tmp/rp-ctx-stale", oldBranch);
+    await _connectForTest(oldCtx as never);
+    const relay = relayRef.current!;
+    // Simulate the previous session's usage having been published.
+    _setLastContextPublishForTest(Date.now() - 4000);
+    (captureEventHandler("turn_end") as (e: unknown, ctx: unknown) => void)({}, oldCtx);
+    expect(lastContextUpdate(relay)).toEqual({ used: 1000, limit: CONTEXT_LIMIT });
+
+    // A brand-new session replaces the old one: the app's row must reset to 0,
+    // not keep showing the previous session's numbers.
+    const newCtx = makeSessionCtx("/tmp/rp-ctx-stale", []);
+    _setLastContextPublishForTest(Date.now() - 4000);
+    relay.sendControl.mockClear();
+    (captureEventHandler("session_start") as (e: unknown, ctx: unknown) => void)({}, newCtx);
+    expect(lastContextUpdate(relay)).toEqual({ used: 0, limit: CONTEXT_LIMIT });
+    await _stopForTest(newCtx as never);
+  });
+
+  test("context refreshes as a turn grows, debounced to once per 3 s", async () => {
+    const branch: unknown[] = [];
+    const ctx = makeSessionCtx("/tmp/rp-ctx-grow", branch);
+    await _connectForTest(ctx as never);
+    const relay = relayRef.current!;
+    const onMessageEnd = captureEventHandler("message_end") as (e: unknown, ctx: unknown) => void;
+    const onToolEnd = captureEventHandler("tool_execution_end") as (e: unknown, ctx: unknown) => void;
+
+    // First persisted message → first publish (used 0).
+    relay.sendControl.mockClear();
+    _setLastContextPublishForTest(Date.now() - 4000);
+    onMessageEnd({ message: { role: "user" } }, ctx);
+    expect(lastContextUpdate(relay)).toEqual({ used: 0, limit: CONTEXT_LIMIT });
+
+    // The assistant reply grows the context → republished once the debounce
+    // window passes.
+    branch.push({
+      type: "message",
+      message: { content: [{ type: "text", text: "x".repeat(8000) }] },
+    });
+    _setLastContextPublishForTest(Date.now() - 4000);
+    onMessageEnd({ message: { role: "assistant" } }, ctx);
+    expect(lastContextUpdate(relay)).toEqual({ used: 2000, limit: CONTEXT_LIMIT });
+    const publishesSoFar = relay.sendControl.mock.calls.length;
+
+    // A further tool result within the 3 s window is debounced — no new
+    // room_meta_update frame.
+    onToolEnd({ toolCallId: "t1", toolName: "bash", isError: false, result: "ok" }, ctx);
+    expect(relay.sendControl.mock.calls.length).toBe(publishesSoFar);
+
+    // And once the window passes, the next hook publishes again.
+    branch.push({
+      type: "message",
+      message: { content: [{ type: "text", text: "y".repeat(4000) }] },
+    });
+    _setLastContextPublishForTest(Date.now() - 4000);
+    onToolEnd({ toolCallId: "t2", toolName: "bash", isError: false, result: "ok" }, ctx);
+    expect(lastContextUpdate(relay)).toEqual({ used: 3000, limit: CONTEXT_LIMIT });
+
+    await _stopForTest(ctx as never);
   });
 });

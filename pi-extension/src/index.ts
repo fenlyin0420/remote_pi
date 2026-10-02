@@ -363,46 +363,93 @@ function _resetThinkingToDefault(): void {
 }
 
 /**
+ * Plan/42 fallback: estimate the session's context tokens from the current
+ * branch's prompt chars (message entries only) ÷ 4 — pi's ~4-chars/token
+ * heuristic; tool inputs are stringified first. The Pi SDK's
+ * ExtensionContext exposes the session as `sessionManager`
+ * (ReadonlySessionManager) — there is no `ctx.session`. Count prompt chars
+ * across the entries on the current branch: `message` entries carry
+ * `message.content` part arrays (text / thinking / toolCall / toolResult
+ * parts).
+ */
+function _estimateContextUsed(ctx: unknown): number {
+  const manager = (ctx as Partial<ExtensionContext> & { sessionManager?: { getBranch?: () => unknown[] } })
+    .sessionManager;
+  const branch = (manager?.getBranch?.() ?? []) as Array<{
+    type?: unknown;
+    message?: { content?: Array<{ type?: unknown; text?: unknown; thinking?: unknown; input?: unknown }> };
+  }>;
+  let chars = 0;
+  for (const entry of branch) {
+    if (entry.type !== "message") continue;
+    for (const part of entry.message?.content ?? []) {
+      if (typeof part.text === "string") chars += part.text.length;
+      if (typeof part.thinking === "string") chars += part.thinking.length;
+      if (part.input != null) chars += JSON.stringify(part.input).length;
+    }
+  }
+  return Math.max(0, Math.floor(chars / 4));
+}
+
+/**
+ * Resolve the model's contextWindow for context-usage publishing. Prefers
+ * the live resolved model (`ctx.getModel()` / `ctx.model` — populated for an
+ * interactive Pi, and for a daemon once its first turn has lazily resolved
+ * the model); a HEADLESS DAEMON at connect has neither, so fall back to the
+ * configured default model (the one the daemon will actually run) via the
+ * model registry.
+ */
+function _resolveContextLimit(ctx: unknown): number | undefined {
+  const c = ctx as Partial<ExtensionContext> & {
+    model?: { contextWindow?: number };
+    getModel?: () => { contextWindow?: number } | undefined;
+  };
+  const live = c.getModel?.()?.contextWindow ?? c.model?.contextWindow;
+  if (live && live > 0) return live;
+  try {
+    const cwd = typeof (ctx as { cwd?: unknown }).cwd === "string" ? (ctx as { cwd: string }).cwd : process.cwd();
+    const sm = SettingsManager.create(cwd);
+    const provider = sm.getDefaultProvider();
+    const modelId = sm.getDefaultModel();
+    if (!provider || !modelId) return undefined;
+    const reg = ensureModelRegistry(ctx as unknown as ActionCtx | null);
+    try { reg.refresh(); } catch { /* stale ctx — keep the loaded catalog */ }
+    return reg.find(provider, modelId)?.contextWindow;
+  } catch { return undefined; }
+}
+
+/**
  * Plan/42: estimate the session's context usage and publish it as
  * room_meta (`context: { used, limit }`). The ratio drives the app's
- * "Session info" context-usage row. `used` is estimated from the current
- * branch's prompt chars (message entries only) ÷ 4 — pi's ~4-chars/token
- * heuristic; tool inputs are stringified first. `limit` is the model's
- * contextWindow. Best
- * effort: silent no-op when the session/model can't be resolved, and the
- * publish is debounced to at most once per 30 s so turn_end doesn't spam
- * room_meta_update frames.
+ * "Session info" context-usage row. `used`/`limit` come from the SDK's
+ * `ctx.getContextUsage()` (estimated tokens + the model's contextWindow);
+ * when the SDK value is unavailable (no model yet, or `tokens` is null
+ * right after compaction) we fall back to `_estimateContextUsed` +
+ * `_resolveContextLimit`. `used` is 0 for a brand-new session, so a fresh
+ * room reports 0 % immediately instead of the previous session's numbers.
+ * Best effort: silent no-op when the session/model can't be resolved, and
+ * the publish is debounced to at most once per 3 s so the per-message
+ * hooks don't spam room_meta_update frames.
  */
 let _lastContextPublish = 0;
 function _publishContextUsage(ctx: unknown): void {
   const now = Date.now();
-  if (now - _lastContextPublish < 30000) return;
+  if (now - _lastContextPublish < 3000) return;
   try {
-    // The Pi SDK's ExtensionContext exposes the session as `sessionManager`
-    // (ReadonlySessionManager) — there is no `ctx.session`. Count prompt
-    // chars across the entries on the current branch: `message` entries
-    // carry `message.content` part arrays (text / thinking / toolCall /
-    // toolResult parts).
-    const manager = (ctx as Partial<ExtensionContext> & { sessionManager?: { getBranch?: () => unknown[] } })
-      .sessionManager;
-    const branch = (manager?.getBranch?.() ?? []) as Array<{
-      type?: unknown;
-      message?: { content?: Array<{ type?: unknown; text?: unknown; thinking?: unknown; input?: unknown }> };
-    }>;
-    let chars = 0;
-    for (const entry of branch) {
-      if (entry.type !== "message") continue;
-      for (const part of entry.message?.content ?? []) {
-        if (typeof part.text === "string") chars += part.text.length;
-        if (typeof part.thinking === "string") chars += part.thinking.length;
-        if (part.input != null) chars += JSON.stringify(part.input).length;
-      }
+    const c = ctx as Partial<ExtensionContext> & {
+      getContextUsage?: () => { tokens?: number | null; contextWindow?: number } | undefined;
+    };
+    const sdk = c.getContextUsage?.();
+    let used: number;
+    let limit: number | undefined;
+    if (sdk && sdk.tokens != null && sdk.contextWindow) {
+      used = Math.max(0, sdk.tokens);
+      limit = sdk.contextWindow;
+    } else {
+      limit = _resolveContextLimit(ctx);
+      used = _estimateContextUsed(ctx);
     }
-    // `ctx.model` is the live resolved model (ExtensionContext field).
-    const limit = (ctx as Partial<ExtensionContext> & { model?: { contextWindow?: number } | undefined })
-      .model?.contextWindow;
-    if (!limit || limit <= 0 || chars <= 0) return;
-    const used = Math.floor(chars / 4);
+    if (!limit || limit <= 0) return;
     const context = { used, limit };
     if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, context };
     if (_relay && _myRoomId) {
@@ -1314,6 +1361,9 @@ export function _getCachedPublicKeyForTest(): string | null {
     ? Buffer.from(_cachedEd25519.publicKey).toString("base64")
     : null;
 }
+
+/** Test-only: force the context-usage debounce clock so a publish is allowed. */
+export function _setLastContextPublishForTest(ts: number): void { _lastContextPublish = ts; }
 
 export function _setMessageBufferForTest(msgs: unknown[]): void {
   _messageBuffer = msgs as BufferMsg[];
@@ -2674,7 +2724,13 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     });
   });
 
-  pi.on("tool_execution_end", (event) => {
+  pi.on("tool_execution_end", (event, ctx) => {
+    // Plan/42: refresh the context usage after every tool result lands, so
+    // the app's context row tracks a long turn instead of jumping only at
+    // turn_end (debounced to at most once per 3 s). Runs before the peer
+    // early-return — a room with no active app peer still updates its
+    // room_meta context.
+    _publishContextUsage(ctx);
     if (!_anyPeerActive()) return;
     if (event.toolName === SEND_TO_PHONE_TOOL) return;
     // Stringify like the history mapper (same helper) so the live text == what
@@ -2701,7 +2757,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // turn — including turns initiated from the Pi terminal (source:"interactive")
   // or RPC. Previous impl overwrote on `agent_end` and lost everything but the
   // last turn (see diagnostics 14, 15).
-  pi.on("message_end", (event) => {
+  pi.on("message_end", (event, ctx) => {
+    // Plan/42: refresh the context usage after every persisted message
+    // (user / assistant / toolResult) so the app's row tracks a turn's
+    // growth (debounced to at most once per 3 s).
+    _publishContextUsage(ctx);
     const m = event?.message as { role?: string; content?: unknown; stopReason?: string; errorMessage?: string } | undefined;
     if (!m) return;
     if (m.role === "user" && _anyPeerActive()) {
@@ -2814,7 +2874,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     }
     _publishWorking(true);
   });
-  pi.on("session_compact", (event) => {
+  pi.on("session_compact", (event, ctx) => {
     const entry = event?.compactionEntry as { summary?: unknown; tokensBefore?: unknown } | undefined;
     const summary = typeof entry?.summary === "string" ? entry.summary : "";
     const tokensBefore = typeof entry?.tokensBefore === "number" ? entry.tokensBefore : 0;
@@ -2827,6 +2887,10 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     _broadcastToActive({ type: "compaction", summary, tokens_before: tokensBefore, ts });
     // (3) Working ends.
     _publishWorking(false);
+    // Plan/42: compaction shrinks the context dramatically — publish the new
+    // usage right away (the SDK's tokens estimate is null right after
+    // compaction, so this rides the branch heuristic).
+    _publishContextUsage(ctx);
     _maybeDrainQueuedItem();
   });
 
@@ -2837,6 +2901,18 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
     _lastEventCtx = ctx;
+    // Plan/42: context is per-session. A session replacement (new / fork /
+    // switch / reload) starts from a different — possibly empty — branch, so
+    // drop the previous session's cached usage + debounce clock and publish
+    // the fresh estimate (0 for a brand-new session). Without this a
+    // module-reuse host keeps serving the PREVIOUS session's context row
+    // until its first turn ends.
+    _lastContextPublish = 0;
+    if (_myRoomMeta?.context) {
+      const { context: _staleContext, ...freshRoomMeta } = _myRoomMeta;
+      _myRoomMeta = freshRoomMeta;
+    }
+    _publishContextUsage(ctx);
     // LOCAL PATCH (fenlyin): prefill the history mirror with the resumed
     // session's conversation so a room keeps its history across restarts.
     _seedMessageBufferFromSession(ctx);
@@ -3498,7 +3574,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel } = { name: sessionName, cwd };
+  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; context?: { used: number; limit: number } } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (_currentThinking) roomMeta.thinking = _currentThinking;
@@ -3506,6 +3582,19 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // this, reconnect issues a bare hello and the relay creates a "default room"
   // entry that surfaces in the app as a phantom legacy session.
   _myRoomMeta = roomMeta;
+  // Plan/42: announce the session's context usage in the HELLO. The relay
+  // room survives a session replacement (same cwd + name), so without an
+  // explicit value the room's snapshot keeps serving the PREVIOUS session's
+  // usage to the app until the first turn ends. A fresh session reports 0 %;
+  // a resumed session (--continue) reports its real usage.
+  {
+    const limit = _resolveContextLimit(ctx);
+    if (limit && limit > 0) {
+      const context = { used: _estimateContextUsed(ctx), limit };
+      roomMeta.context = context;
+      _myRoomMeta = { ..._myRoomMeta, context };
+    }
+  }
 
   ctx.ui.notify(`[remote-pi] Connecting to relay ${relayUrl} (source: ${source}, room: ${roomId})…`, "info");
 
