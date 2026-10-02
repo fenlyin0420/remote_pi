@@ -94,7 +94,7 @@ final class UpdateBannerWorking extends UpdateBannerState {
 
   // O progresso participa da igualdade (a barra tem que se mover); o número
   // de rebuilds fica pequeno porque o VM só re-emite quando muda o inteiro de
-  // porcentagem.
+  // percentagem.
   @override
   bool operator ==(Object other) =>
       other is UpdateBannerWorking &&

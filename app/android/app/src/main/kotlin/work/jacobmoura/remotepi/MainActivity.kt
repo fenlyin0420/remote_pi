@@ -180,11 +180,12 @@ class MainActivity : FlutterActivity() {
                         // app-owned file". The data dir is still exactly the
                         // right boundary: nothing outside it is ours to copy.
                         val root = File(applicationInfo.dataDir).canonicalFile
-                        val inside = try {
-                            file.canonicalPath.startsWith(root.path + File.separator)
-                        } catch (_: Exception) {
-                            false
-                        }
+                        val inside =
+                            try {
+                                file.canonicalPath.startsWith(root.path + File.separator)
+                            } catch (_: Exception) {
+                                false
+                            }
                         if (!inside) {
                             result.error("bad_path", "not an app-owned file", null)
                             return@setMethodCallHandler
@@ -199,11 +200,12 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
-                    else -> result.notImplemented()
+                    else -> {
+                        result.notImplemented()
+                    }
                 }
             }
     }
-
 
     /**
      * Backs the "keep connected in the background" switch.

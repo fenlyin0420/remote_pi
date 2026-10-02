@@ -36,33 +36,42 @@ object MediaSaver {
      * @return a human-readable location, e.g. `Pictures/Remote Pi/shot.png`.
      * @throws IllegalArgumentException when [source] is missing or unreadable.
      */
-    fun save(context: Context, source: File, mime: String, displayName: String): String {
+    fun save(
+        context: Context,
+        source: File,
+        mime: String,
+        displayName: String,
+    ): String {
         if (!source.isFile) throw IllegalArgumentException("no such file: ${source.path}")
         val isImage = mime.startsWith("image/")
-        val collection = if (isImage) {
-            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        } else {
-            MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        }
-        val relative = if (isImage) {
-            "${Environment.DIRECTORY_PICTURES}/$ALBUM"
-        } else {
-            "${Environment.DIRECTORY_DOWNLOADS}/$ALBUM"
-        }
-        val name = sanitize(displayName)
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, mime.ifEmpty { "application/octet-stream" })
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, relative)
-                // Don't let the system index a half-written file.
-                put(MediaStore.MediaColumns.IS_PENDING, 1)
+        val collection =
+            if (isImage) {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             }
-        }
+        val relative =
+            if (isImage) {
+                "${Environment.DIRECTORY_PICTURES}/$ALBUM"
+            } else {
+                "${Environment.DIRECTORY_DOWNLOADS}/$ALBUM"
+            }
+        val name = sanitize(displayName)
+        val values =
+            ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime.ifEmpty { "application/octet-stream" })
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relative)
+                    // Don't let the system index a half-written file.
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+            }
 
         val resolver = context.contentResolver
-        val target: Uri = resolver.insert(collection, values)
-            ?: throw IllegalStateException("MediaStore refused the insert")
+        val target: Uri =
+            resolver.insert(collection, values)
+                ?: throw IllegalStateException("MediaStore refused the insert")
         try {
             resolver.openOutputStream(target)?.use { out ->
                 FileInputStream(source).use { input -> input.copyTo(out) }
@@ -95,20 +104,25 @@ object MediaSaver {
      * A previous copy with the same name is deleted first, so a retry after a
      * release never leaves two APKs claiming to be the same version.
      */
-    fun saveApk(context: Context, source: File, displayName: String): String {
+    fun saveApk(
+        context: Context,
+        source: File,
+        displayName: String,
+    ): String {
         if (!source.isFile) throw IllegalArgumentException("no such file: ${source.path}")
         val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val name = sanitize(displayName)
 
         val resolver = context.contentResolver
         val collectionUri = collection
-        val existing = resolver.query(
-            collectionUri,
-            arrayOf(MediaStore.Downloads._ID),
-            "${MediaStore.Downloads.DISPLAY_NAME} = ?",
-            arrayOf(name),
-            null,
-        )
+        val existing =
+            resolver.query(
+                collectionUri,
+                arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME} = ?",
+                arrayOf(name),
+                null,
+            )
         if (existing != null) {
             val idColumn = existing.getColumnIndex(MediaStore.Downloads._ID)
             val ids = mutableListOf<Long>()
@@ -121,19 +135,21 @@ object MediaSaver {
             }
         }
 
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
-            put(MediaStore.MediaColumns.SIZE, source.length())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                // Don't let the system offer a half-written APK for install.
-                put(MediaStore.MediaColumns.IS_PENDING, 1)
+        val values =
+            ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+                put(MediaStore.MediaColumns.SIZE, source.length())
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    // Don't let the system offer a half-written APK for install.
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
             }
-        }
 
-        val target: Uri = resolver.insert(collectionUri, values)
-            ?: throw IllegalStateException("MediaStore refused the insert")
+        val target: Uri =
+            resolver.insert(collectionUri, values)
+                ?: throw IllegalStateException("MediaStore refused the insert")
         try {
             resolver.openOutputStream(target)?.use { out ->
                 FileInputStream(source).use { input -> input.copyTo(out) }
@@ -160,12 +176,13 @@ object MediaSaver {
      * so it is untrusted input.
      */
     private fun sanitize(raw: String): String {
-        val cleaned = raw
-            .replace(Regex("[\\u0000-\\u001f\\u007f]"), "")
-            .replace("/", "_")
-            .replace("..", "_")
-            .trim()
-            .trim('.')
+        val cleaned =
+            raw
+                .replace(Regex("[\\u0000-\\u001f\\u007f]"), "")
+                .replace("/", "_")
+                .replace("..", "_")
+                .trim()
+                .trim('.')
         return cleaned.take(120).ifEmpty { "file" }
     }
 }
