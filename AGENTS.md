@@ -90,19 +90,18 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
-- **1.5.21-beta.1 is on the beta channel** (2026-10-03, unreleased): the Quick
-  Actions thinking picker gained **auto** (session-level; Pi resolves it per
-  request from the task complexity). The app now parses `auto` from `room_meta`
-  (before, the unknown string fell back to medium, so a room reported auto as
-  medium), and pi-extension 0.11.0 seeds `auto` on a genuinely new session —
-  probing support first (set, read back) and falling back to medium only when
-  the running build clamps it away, so legacy rooms are unaffected. Beta
-  `1.5.21-beta.1`(+62) pushed to `app-beta` only. Needs a supervisor restart to
-  pick up the rebuilt extension; then the acceptance test is a fresh session in
-  a room on the dev-source Pi (e.g. fenlyin) → pick auto in the app →
-  `PI_DEBUG_AUTO_THINKING=1 journalctl -u remote-pi-supervisord` shows
-  `[auto-thinking] resolved … (source: classifier|heuristic)`, and the level
-  survives a reconnect.
+- **1.5.21 is released** (2026-10-03, branch `feat/thinking-auto`, merged + deleted):
+  the Quick Actions thinking picker gained **auto** (session-level; Pi resolves it
+  per request from the task complexity). The app now parses `auto` from
+  `room_meta` (before, the unknown string fell back to medium, so a room that
+  reported auto showed medium), and pi-extension 0.11.0 seeds `auto` on a
+  genuinely new session — probing support first (set, read back) and falling back
+  to medium only when the running build clamps it away, so rooms on older Pi
+  builds are unaffected. Beta `1.5.21-beta.1`(+62) was tested by the user
+  (confirmed: the picker shows auto and the level sticks across reconnects);
+  prod `1.5.21`(+63) pushed to the production channel, Release
+  `v1.5.21-thinking-auto-arm64` (APK + `remote-pi-0.11.0.tgz`, installed into
+  `~/.pi/agent/npm`). Next beta will be `1.5.22-beta.1`, next prod code ≥ 64.
 
 - **Room management (`SPEC-room-management.md`) is delivered** (merged into `dev` and
   released with the 1.5.x series; PR #199 to the original author is still open, so
