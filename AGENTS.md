@@ -90,19 +90,20 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
-- **Beta `1.5.22-beta.1` (+64) is on the beta channel** (2026-10-04, branch
-  `fix/viewer-theme`, merged into `dev` + deleted), awaiting the user's test: the
-  full-screen file viewer ("show all", or tapping an image card) no longer forces
-  a black page. A text file follows the app theme (background, chrome, spinner,
-  error color) and renders through `AgentMarkdown` — themed code cards, real
-  links, selectable — while an image keeps the black backdrop it is read against
-  (the user chose exactly that split). The ugly part had a second root cause: the
-  viewer had no `codeBuilder` and the hand-rolled `ColorScheme` left
-  `surfaceContainerHighest` at Material's *light* default, so gpt_markdown drew a
-  white table header and a white "Copy code" slab onto the black page in dark
-  mode (see `.agents/memory/remote-pi-colorscheme-light-defaults.md`). Next:
-  prod `1.5.22` (+65) once confirmed; if another beta is needed,
-  `1.5.22-beta.2`.
+- **1.5.22 is released** (2026-10-04, branch `fix/viewer-theme`, merged into
+  `dev` + deleted): the full-screen file viewer ("show all", or tapping an image
+  card) no longer forces a black page. A text file follows the app theme
+  (background, chrome, spinner, error color) and renders through `AgentMarkdown`
+  — themed code cards, real links, selectable — while an image keeps the black
+  backdrop it is read against (the user chose exactly that split). The ugly part
+  had a second root cause: the viewer had no `codeBuilder` and the hand-rolled
+  `ColorScheme` left `surfaceContainerHighest` at Material's *light* default, so
+  gpt_markdown drew a white table header and a white "Copy code" slab onto the
+  black page in dark mode — the chat's tables were fixed with it (see
+  `.agents/memory/remote-pi-colorscheme-light-defaults.md`). Beta
+  `1.5.22-beta.1` (+64) was tested by the user; prod `1.5.22` (+65) pushed to the
+  production channel, Release `v1.5.22-viewer-theme-arm64` (APK only — no
+  pi-extension change). Next beta will be `1.5.23-beta.1`, next prod code ≥ 66.
 - **1.5.21 is released** (2026-10-03, branch `feat/thinking-auto`, merged + deleted):
   the Quick Actions thinking picker gained **auto** (session-level; Pi resolves it
   per request from the task complexity). The app now parses `auto` from
