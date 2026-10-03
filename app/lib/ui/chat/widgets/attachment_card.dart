@@ -338,6 +338,20 @@ class _AttachmentCardState extends State<AttachmentCard> {
             // Prose/code highlighting would fight the mono card; the raw text
             // is what a file preview is for.
             highlightBuilder: (context, text, style) => Text(text, style: style),
+            // A fenced block in a PREVIEW has to stay flat: the package's
+            // default code card is Material-light (a white slab on a dark
+            // chat) and scrolls horizontally, which fights the chat list.
+            codeBuilder: (_, _, code, _) => Container(
+              width: double.infinity,
+              margin: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                color: colors.codeBg,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: colors.border),
+              ),
+              child: Text(code.trimRight(), style: context.typo.mono),
+            ),
           ),
           if (cut)
             GestureDetector(

@@ -2,19 +2,19 @@
 import 'package:app/data/attachments/attachment_store.dart';
 import 'package:app/domain/contracts/media_saver.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// Full-screen look at a file the Pi sent, opened by tapping its card.
 ///
 /// An image gets pinch/double-tap zoom over a black backdrop (a screenshot has
 /// to be READABLE — a 220 px thumbnail in a chat bubble is not); a text file
-/// gets the whole content, scrollable and selectable, past the inline preview's
-/// cap. Both carry the same save action, because "I can see it" and "I want to
-/// keep it" are the same request.
+/// gets the whole content, scrollable and selectable on the app's own
+/// background, past the inline preview's cap. Both carry the same save action,
+/// because "I can see it" and "I want to keep it" are the same request.
 class AttachmentViewer extends StatefulWidget {
   const AttachmentViewer({
     super.key,
@@ -137,11 +137,22 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
+    // An image is READ against black — separating it from the chrome is the
+    // whole point of the full-screen view — so that page keeps the dark
+    // backdrop and white-on-black chrome. Text is a document: it follows the
+    // app's palette, because a light-theme user should not drop into a black
+    // page (and the markdown then stops inheriting light-only defaults).
+    final image = widget.message.isImage;
+    final backdrop = image ? Colors.black : colors.bg;
+    final foreground = image ? Colors.white : colors.text;
+    final dim = image ? Colors.white60 : colors.muted;
+    final errorColor = image ? Colors.redAccent : colors.error;
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: backdrop,
       appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
+        backgroundColor: backdrop,
+        foregroundColor: foreground,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -153,7 +164,7 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
               style: TextStyle(
                 fontFamily: kMonoFamily,
                 fontSize: 14,
-                color: Colors.white,
+                color: foreground,
               ),
             ),
             Text(
@@ -162,7 +173,7 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
               style: TextStyle(
                 fontFamily: kMonoFamily,
                 fontSize: 10,
-                color: _saveError != null ? Colors.redAccent : Colors.white60,
+                color: _saveError != null ? errorColor : dim,
               ),
             ),
           ],
@@ -172,11 +183,11 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
             key: const Key('viewer-save'),
             tooltip: 'Save to phone',
             icon: _saving
-                ? const SizedBox(
+                ? SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(
-                      color: Colors.white70,
+                      color: dim,
                       strokeWidth: 1.5,
                     ),
                   )
@@ -192,11 +203,11 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
                 child: Text(
                   _error!,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  style: TextStyle(color: dim, fontSize: 13),
                 ),
               ),
             )
-          : widget.message.isImage
+          : image
           ? _image()
           : _text(context),
     );
@@ -237,22 +248,22 @@ class _AttachmentViewerState extends State<AttachmentViewer> {
   Widget _text(BuildContext context) {
     final bytes = _bytes;
     if (bytes == null) {
-      return const Center(
-        child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2),
+      return Center(
+        child: CircularProgressIndicator(
+          color: context.colors.muted,
+          strokeWidth: 2,
+        ),
       );
     }
     final text = AttachmentStore.textPreview(bytes, maxChars: 200000) ?? '';
-    return SelectionArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 32),
-        child: GptMarkdown(
-          text.isEmpty ? '(no readable text)' : text,
-          style: context.typo.mono.copyWith(color: Colors.white),
-          highlightBuilder: (context, text, style) => Text(
-            text,
-            style: style.copyWith(color: Colors.white),
-          ),
-        ),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 32),
+      // The same renderer as an agent reply, so a file the Pi sent reads
+      // exactly like its message: themed code cards with a copy button, real
+      // links, themed tables. Selectable — a snippet can come out of the page.
+      child: AgentMarkdown(
+        text.isEmpty ? '(no readable text)' : text,
+        selectable: true,
       ),
     );
   }
