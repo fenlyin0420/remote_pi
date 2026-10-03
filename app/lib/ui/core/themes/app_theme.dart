@@ -29,6 +29,10 @@ ThemeData _buildTheme({
       error: colors.error,
       onError: colors.onAccent,
       outline: colors.border,
+      // gpt_markdown reads this slot directly for a table's header row. Left
+      // unset, the Material default is a LIGHT lavender, which showed up as a
+      // white bar across a table in dark mode.
+      surfaceContainerHighest: colors.surface,
     ),
     dividerColor: colors.border,
     extensions: <ThemeExtension<dynamic>>[colors, typo],
