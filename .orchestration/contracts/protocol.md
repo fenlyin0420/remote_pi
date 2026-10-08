@@ -1,7 +1,7 @@
 # Protocol — Remote Pi
 
 Fonte de verdade do protocolo de mensagens entre **app** (Flutter) e
-**pi-extension** (Node), trafegando através do **relay** (Rust). Cada
+**pi-remote** (Node), trafegando através do **relay** (Rust). Cada
 subprojeto implementa tipos derivados desta spec; mudanças aqui disparam
 realinhamento nos 3 lados.
 
@@ -20,7 +20,7 @@ realinhamento nos 3 lados.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  Inner envelope (app ↔ pi-extension)                                  │
+│  Inner envelope (app ↔ pi-remote)                                  │
 │  Semântica do produto. JSON em claro.                                 │
 │  Schema: { type, id?, in_reply_to?, ...payload }                      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -152,7 +152,7 @@ pelo relay e/ou empurrados pelo relay. Identificáveis por `type` no topo.
 
 ## Inner envelope — tipos do MVP
 
-> **Approval gate removido (plano 10.2 revisado, 2026-05-19)**: o pi-extension
+> **Approval gate removido (plano 10.2 revisado, 2026-05-19)**: o pi-remote
 > do MVP **não usa** `approve_tool`. Tool calls executam direto, sem prompt.
 > Quando ecossistema Pi padronizar permissions, plano futuro religa o gate
 > sem mudar shape.

@@ -136,14 +136,14 @@ and 27 (see [`plan/`](plan/) directory for design history).
   wire format, identity model, ACK protocol, cross-PC routing, mesh
   membership, pairing flow, honest trust model, threat model, failure modes,
   and architectural roadmap.
-- Linked from `pi-extension/README.md`, `pi-extension/CLAUDE.md`,
+- Linked from `pi-remote/README.md`, `pi-remote/CLAUDE.md`,
   `relay/README.md`, and the site's `/docs#protocol` section (plus footer).
 
-#### Daemon mode (pi-extension)
+#### Daemon mode (pi-remote)
 - Pi can now run as a managed background daemon (`launchd` on macOS,
   `systemd --user` on Linux) for "always on" coding-agent mesh participation.
 
-#### Multi-channel pi-extension (Wave 2D)
+#### Multi-channel pi-remote (Wave 2D)
 - Pi-extension now accepts multiple paired Owners simultaneously via
   `_activePeers: Map<peer_id, PlainPeerChannel>` (no longer a singleton). The
   pair flow no longer rejects new pair requests when one Owner is already
@@ -204,7 +204,7 @@ and 27 (see [`plan/`](plan/) directory for design history).
   decodes both forms and compares bytes (new `mesh/encoding.ts` helper).
 
 #### "Already paired" rejection on second pairing
-- The first iteration of pi-extension treated a non-idle paired state as a
+- The first iteration of pi-remote treated a non-idle paired state as a
   hard refusal of new pair requests. With concurrent Owners (`plan/25` Wave
   2D), this blocked legitimate pair attempts. `_cmdPair` is now permissive
   and routes a new pair through the multi-channel registry.
@@ -245,7 +245,7 @@ and 27 (see [`plan/`](plan/) directory for design history).
     authenticated channel (Ed25519 challenge-response)" and similar.
   - `site/src/app/docs/page.tsx` "The relay" section — now points to the
     real trust model in `PROTOCOL.md`.
-  - `pi-extension/README.md` — substituted "Encryption uses Curve25519 +
+  - `pi-remote/README.md` — substituted "Encryption uses Curve25519 +
     ChaCha20-Poly1305; the relay sees only ciphertext" with a TLS-only
     statement and a pointer to `PROTOCOL.md`. (Two further occurrences
     flagged in the file for a follow-up cleanup wave.)
@@ -256,7 +256,7 @@ and 27 (see [`plan/`](plan/) directory for design history).
 
 ### Removed
 
-- `keytar` dependency removed from pi-extension (deprecated upstream;
+- `keytar` dependency removed from pi-remote (deprecated upstream;
   replaced by `@napi-rs/keyring`). 29 transitive packages dropped.
 
 ### Decided (architectural)
@@ -271,7 +271,7 @@ Documented for context:
   alternative is **wrappers**: when Claude Code or OpenCode support is
   needed, `remote-pi claude` will spawn the harness and register as a peer
   on the existing local UDS broker. Reuses the envelope JSONL protocol,
-  requires zero pi-extension refactor, and keeps each harness isolatable.
+  requires zero pi-remote refactor, and keeps each harness isolatable.
 - **Pi-key hardware-bound storage** (Secure Enclave / TPM / CNG) discarded
   for now. Constraint accepted: "one Pi-key per PC; hardware swap = re-pair".
   Software user-bound storage (Keychain / libsecret / Credential Manager)
@@ -286,7 +286,7 @@ on the Pi's disk to the phone, and it shows up as a card in the chat timeline.
 
 ### Added
 
-- **`send_to_phone(path, note?)` tool** (pi-extension 0.10.0): an image renders
+- **`send_to_phone(path, note?)` tool** (pi-remote 0.10.0): an image renders
   inline in the app, a text file shows its name and a preview. One file per
   call. What counts as an image or as text is decided by the bytes, never by
   the name (same rule as the upload direction), and `path` is reported through

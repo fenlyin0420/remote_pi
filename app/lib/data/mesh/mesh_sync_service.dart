@@ -115,7 +115,7 @@ class MeshSyncService extends ChangeNotifier {
   /// reordering) would round-trip back to the relay. Worse: a race
   /// between the apply-phase intermediate states and a concurrent
   /// `publish()` could observe an empty PairingStorage and ship
-  /// members=[] — the bug reproduced by the user, where pi-extension
+  /// members=[] — the bug reproduced by the user, where pi-remote
   /// self-revoked after the app silently published v2 empty.
   Future<void> _replaceLocalCacheWith(MeshBlob blob) async {
     final existing = {
@@ -201,7 +201,7 @@ class MeshSyncService extends ChangeNotifier {
     // (SettingsViewModel.revoke); every other caller passes
     // `allowEmpty:false` so we still refuse races (transient
     // PairingStorage state, apply mid-flight, mistaken Owner-key
-    // reset) that would self-revoke pi-extension on every Pi the user
+    // reset) that would self-revoke pi-remote on every Pi the user
     // owns.
     if (peers.isEmpty && _lastVersion > 0 && !allowEmpty) {
       return const MeshPublishFailure('refused empty-on-existing');

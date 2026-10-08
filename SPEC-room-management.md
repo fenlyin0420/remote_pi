@@ -10,7 +10,7 @@ git remote：`origin` = 自己的 fork（唯一 push 目标）；`upstream` = �
 
 ## 功能 1：手机 App 新建 room（daemon + App）
 
-### Daemon 侧（`pi-extension/`）
+### Daemon 侧（`pi-remote/`）
 
 1. `src/protocol/types.ts`：
    - `ClientMessage` 增加两个成员：
@@ -43,7 +43,7 @@ git remote：`origin` = 自己的 fork（唯一 push 目标）；`upstream` = �
    - 注意：这两个 handler 与 session 无关，不依赖 `_pi`/ctx；但 index.ts 是
      单例模块，直接加函数即可。错误处理要 catch-all，绝不让异常冒泡到 WS
      回调（参考同文件 model_set 的 try/catch 风格）。
-3. 跑 `cd pi-extension && npx vitest run`（或 package.json 里的 test script，需要时先
+3. 跑 `cd pi-remote && npx vitest run`（或 package.json 里的 test script，需要时先
    `npm install`）确认全绿；再跑 `npx tsc --noEmit`（typecheck script）。
    可以顺手为两个新 handler 补少量单测（看现有 extension.test.ts 风格，非强制）。
 
@@ -138,7 +138,7 @@ key `prefs.hide_tool_calls`），UI 在 `lib/ui/settings/settings_page.dart:342`
 
 ## 验收标准
 
-- `pi-extension` typecheck + 全部测试绿。
+- `pi-remote` typecheck + 全部测试绿。
 - `flutter analyze` 干净 + `flutter test` 绿。
 - 分支已推到自己的 fork；Release 已创建且带 APK 附件。
 - 改动风格贴合仓库现有代码（注释密度、命名、错误处理），不要引入新依赖
@@ -146,6 +146,6 @@ key `prefs.hide_tool_calls`），UI 在 `lib/ui/settings/settings_page.dart:342`
 
 ## 环境备注
 
-- Node 在 PATH（v25.9.0）。pi-extension 若没 node_modules，先 `npm install`。
+- Node 在 PATH（v25.9.0）。pi-remote 若没 node_modules，先 `npm install`。
 - 网络直连可用（GitHub、Google 存储均可达）。
 - 这是 fork 仓库，`origin` remote 是自己的 fork——push/gh 操作一律用 `origin`。

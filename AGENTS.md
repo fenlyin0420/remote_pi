@@ -79,14 +79,16 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
    name the APK `remote-pi-<version>-arm64-signed.apk`; afterwards self-check with
    `gh release view --json` + re-download and compare sha256. **Never push to
    `upstream` (the original author), never open a PR.**
-6. Pi-side (pi-extension) changes must also be made usable for the user: `npm pack` to
-   produce a tgz, attach it to the same Release, then
-   `cd ~/.pi/agent/npm && npm install ./remote-pi-<version>.tgz`.
+6. Pi-side (pi-remote) changes: the local Pi loads the repo path package
+   (`~/.pi/agent/settings.json` packages → `/home/fenlyin/Documents/GitHub/remote_pi/pi-remote`),
+   so the user side is just `cd pi-remote && npm run build` (keeps the local patches in
+   source) + restarting the supervisor. For other users: `npm pack` and attach
+   `remote-pi-<version>.tgz` to the same Release.
    **Restarting supervisor kills every turn currently running in every room (including
    this session) — only remind the user to do it themselves; locally it is a system
    unit and sudo needs a password, so you can use `kill -TERM <supervisord pid>` and let
    systemd (`Restart=always`) bring it back up, but always send your reply first. See
-   `remote-pi-extension-load-path`.**
+   `remote-pi-remote-load-path`.**
 
 ## Current state
 
@@ -103,12 +105,12 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   `.agents/memory/remote-pi-colorscheme-light-defaults.md`). Beta
   `1.5.22-beta.1` (+64) was tested by the user; prod `1.5.22` (+65) pushed to the
   production channel, Release `v1.5.22-viewer-theme-arm64` (APK only — no
-  pi-extension change). Next beta will be `1.5.23-beta.1`, next prod code ≥ 66.
+  pi-remote change). Next beta will be `1.5.23-beta.1`, next prod code ≥ 66.
 - **1.5.21 is released** (2026-10-03, branch `feat/thinking-auto`, merged + deleted):
   the Quick Actions thinking picker gained **auto** (session-level; Pi resolves it
   per request from the task complexity). The app now parses `auto` from
   `room_meta` (before, the unknown string fell back to medium, so a room that
-  reported auto showed medium), and pi-extension 0.11.0 seeds `auto` on a
+  reported auto showed medium), and pi-remote 0.11.0 seeds `auto` on a
   genuinely new session — probing support first (set, read back) and falling back
   to medium only when the running build clamps it away, so rooms on older Pi
   builds are unaffected. Beta `1.5.21-beta.1`(+62) was tested by the user
@@ -129,7 +131,7 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   templates over the RPC channel, the rest are mapped by hand) and `!shell` (local
   shell, renders a bash card; `!!` output does not enter the model context).
   Design docs: the "Canal de comandos" section of `PROTOCOL.md` +
-  `pi-extension/README.md`; implementation notes are in
+  `pi-remote/README.md`; implementation notes are in
   `.agents/memory/remote-pi-command-channel.md`.
 - **The beta channel (`beta` flavor + the `app-beta` download site) is set up**: the
   first test build `1.5.12-beta.1`(+32) has been pushed to the beta channel (appId
@@ -155,7 +157,7 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   deployed to cloud177). Beta `1.5.20-beta.1`(+57) + a throwaway
   `1.5.20-beta.2`(+60) were tested by the user (resume verified); prod
   `1.5.20`(+61) pushed to the production channel, Release
-  `v1.5.20-update-downloads-arm64` (APK only — no pi-extension change in this
+  `v1.5.20-update-downloads-arm64` (APK only — no pi-remote change in this
   release). The throwaway packages were reverted: prod channel = 1.5.20 prod,
   beta channel = 1.5.20-beta.1. Next beta will be `1.5.21-beta.1`, next prod
   code ≥ 62.

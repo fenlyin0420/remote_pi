@@ -75,12 +75,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Test artifacts — pi-extension model-persist test writes a real settings.json
-pi-extension/test/.pi/
+# Test artifacts — pi-remote model-persist test writes a real settings.json
+pi-remote/test/.pi/
 
 # Per-cwd remote-pi runtime config (agent_name, auto_start_relay) — machine-local
 # state written by `remote-pi claude` / the wizard, never repo content. Matches
-# any `.pi/` dir at any depth (root, pi-extension/, subprojects).
+# any `.pi/` dir at any depth (root, pi-remote/, subprojects).
 .pi/
 
 # Cockpit: tasks.json é versionado (config do Task Run); resto do .cockpit/ não

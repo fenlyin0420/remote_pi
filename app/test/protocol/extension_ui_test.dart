@@ -1,5 +1,5 @@
 // Plan/57 — protocol surface for the extension_ui_request bridge (ask_user via
-// pi-ask). Mirrors the contract in `pi-extension/src/protocol/types.ts`:
+// pi-ask). Mirrors the contract in `pi-remote/src/protocol/types.ts`:
 //   ServerMessage: extension_ui_request (select/confirm/input/editor/notify + ask)
 //   ClientMessage: extension_ui_response (value/confirmed/cancelled + ask)
 

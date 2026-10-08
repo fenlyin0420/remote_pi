@@ -86,7 +86,7 @@ class MeshMember {
 /// ```
 ///
 /// The same canonicalization rules are enforced by the relay
-/// (`relay/src/mesh/verify.rs`) and the pi-extension self-revoke
+/// (`relay/src/mesh/verify.rs`) and the pi-remote self-revoke
 /// client. Any divergence breaks Ed25519 verification — when in doubt,
 /// compare bytes from [toCanonicalBytes].
 @immutable

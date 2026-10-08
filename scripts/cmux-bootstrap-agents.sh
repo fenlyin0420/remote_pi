@@ -77,7 +77,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 agents=(
   "App|app"
   "Relay|relay"
-  "Extension|pi-extension"
+  "Extension|pi-remote"
   "Site|site"
 )
 

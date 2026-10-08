@@ -21,7 +21,7 @@ exist yet, or from a partial install.
 
 ```bash
 # Dev clone:
-cd pi-extension && pnpm build
+cd pi-remote && pnpm build
 
 # Production install:
 npm install -g remote-pi      # or pnpm install -g remote-pi

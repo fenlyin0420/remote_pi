@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * pi-extension — remote-pi slash commands + AgentBridge wiring
+ * pi-remote — remote-pi slash commands + AgentBridge wiring
  *
  * Exported as ExtensionFactory (default export) to be loaded by Pi SDK:
  *   pi -e $(pwd)/dist/index.js
@@ -2477,7 +2477,7 @@ function _installAutoListener(relay: RelayClient): () => void {
 }
 
 /**
- * Plan/27 Wave A: lazily resolve the pi-extension package version from
+ * Plan/27 Wave A: lazily resolve the pi-remote package version from
  * disk so the `pair_ok.harness.version` field reflects what's actually
  * shipped. The lookup is best-effort — a parse failure (or running this
  * file out-of-tree) falls back to "0.0.0" which is still semver-valid

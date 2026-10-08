@@ -51,7 +51,7 @@ class QrPairPayload {
       // r is no longer required — plan 14 dropped it from the canonical
       // contract. Legacy QRs continue to include it; we capture it for
       // mismatch detection but don't reject when absent.
-      // rm is optional too — legacy pi-extension didn't emit it, and
+      // rm is optional too — legacy pi-remote didn't emit it, and
       // the app falls back to 'main' / discovery in that case.
       if (t == null || epk == null || n == null) return null;
       if (base64Url.decode(_pad(t)).length != 16) return null;

@@ -6,7 +6,7 @@ O **Cockpit** (app desktop) ganhou um botão **"Reiniciar supervisor"** na aba
 "Daemon Agents". Ele faz shell-out `remote-pi restart-supervisor`.
 
 Por que isso é necessário: o `pi-supervisord` é um processo Node long-running e
-**não faz hot-reload**. Toda vez que o `dist` do pi-extension é rebuildado, o
+**não faz hot-reload**. Toda vez que o `dist` do pi-remote é rebuildado, o
 supervisor em execução continua rodando o código antigo em memória até o
 **processo** ser reiniciado. Isso já mordeu 3x nesta leva (stop{id}/restart{id} e
 o modelo nome-no-registry só passaram a valer depois de reiniciar o supervisor à

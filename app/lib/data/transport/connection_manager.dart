@@ -577,7 +577,7 @@ class ConnectionManager extends Service {
     //
     // Dedup contract: relay re-pushes `peer_online`, `presence`, and
     // `rooms` aggressively (every reconnect of every device, every
-    // pi-extension restart, periodically as keep-alive). Without
+    // pi-remote restart, periodically as keep-alive). Without
     // de-duplication every push fires `_presenceController` /
     // `_roomsController`, which propagates to `HomeViewModel`, which
     // rebuilds the whole list, which keeps the CPU busy and the

@@ -1,11 +1,11 @@
-# [ORCH:probe-extension-folder] Estrutura de pastas pi-extension
+# [ORCH:probe-extension-folder] Estrutura de pastas pi-remote
 
 **Status**: done
 **Arquivos tocados**: nenhum
 
 ## Resumo
 
-Árvore do cwd `/pi-extension/` (3 níveis, sem node_modules/dist/.git):
+Árvore do cwd `/pi-remote/` (3 níveis, sem node_modules/dist/.git):
 
 ```
 CLAUDE.md

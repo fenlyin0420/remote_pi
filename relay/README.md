@@ -1,7 +1,7 @@
 # Remote Pi — Relay
 
 A lightweight WebSocket relay server that connects the **Remote Pi** mobile app to
-`pi-extension` processes running on your operating system. It handles peer routing,
+`pi-remote` processes running on your operating system. It handles peer routing,
 presence, authorized Pi-to-Pi forwarding, and signed membership metadata.
 
 For a full overview of the project, see the
@@ -99,7 +99,7 @@ surfaces at once:
 - `GET /health` — health check (returns `200 OK`)
 - `GET / POST /mesh/<owner_pk_hash>` — signed membership versions
 
-Point your app and `pi-extension` to `ws://<your-server-ip>:3000` (or `wss://`
+Point your app and `pi-remote` to `ws://<your-server-ip>:3000` (or `wss://`
 if you put it behind a TLS-terminating reverse proxy such as Caddy or nginx).
 
 **`/data` volume**: the relay stores its SQLite database (signed membership
@@ -181,7 +181,7 @@ relay.yourdomain.com {
 }
 ```
 
-Then set your app and `pi-extension` relay URL to `wss://relay.yourdomain.com`.
+Then set your app and `pi-remote` relay URL to `wss://relay.yourdomain.com`.
 
 ---
 

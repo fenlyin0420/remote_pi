@@ -371,9 +371,9 @@ export type ServerMessage =
       room_id: string;
       /**
        * Plan/27 Wave A: identifies the host coding agent driving this
-       * pi-extension instance. `name` is hardcoded to "Pi coding agent"
+       * pi-remote instance. `name` is hardcoded to "Pi coding agent"
        * today; future Pi forks (Claude Code, OpenCode) populate their own
-       * here. `version` is the pi-extension `package.json` version.
+       * here. `version` is the pi-remote `package.json` version.
        * Optional in the wire schema so app-side parsing tolerates older
        * Pi builds that predate this field — every new pairing emits both.
        */

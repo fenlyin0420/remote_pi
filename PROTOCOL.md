@@ -8,7 +8,7 @@ Atualizada em 2026-07-18.
 ## Visão de 30 segundos
 
 - **Mesh de agentes coding** rodando em múltiplos PCs do mesmo usuário
-- **Cada PC** roda o `pi-extension` (Node.js daemon) com **uma Pi-key** Ed25519 no Keychain do sistema (macOS/Linux/Windows)
+- **Cada PC** roda o `pi-remote` (Node.js daemon) com **uma Pi-key** Ed25519 no Keychain do sistema (macOS/Linux/Windows)
 - **Celular** é o **autenticador inicial** (estilo WhatsApp Web QR) — depois do pareamento, PCs operam autonomamente entre si
 - **Owner-key** Ed25519 vive no Keychain do celular (iOS Keychain / Android Block Store), sincroniza entre devices do mesmo Apple ID / Google Account
 - **Relay** WebSocket roteia e armazena/verifica `mesh_versions` assinadas pelo Owner; autoriza co-membership direta
@@ -21,7 +21,7 @@ Atualizada em 2026-07-18.
 | Chave | Algoritmo | Onde mora | Quem cria | Quem usa |
 |---|---|---|---|---|
 | **Owner-key** | Ed25519 | iOS Keychain (sync iCloud) / Android Block Store (sync Google) | App mobile no 1º boot | Assina `mesh_versions`, prova autoridade pra parear/revogar PCs |
-| **Pi-key** | Ed25519 | `@napi-rs/keyring` no PC (Keychain macOS / libsecret Linux / Credential Manager Windows). Fallback `~/.pi/remote/identity.json` (`0600`) com warning em sistemas headless | pi-extension no 1º boot | Autentica a conexão WS no relay e fornece a identidade técnica canônica usada no `from_pc` autenticado e no roteamento por `to_pc`; não assina envelopes cross-PC individuais |
+| **Pi-key** | Ed25519 | `@napi-rs/keyring` no PC (Keychain macOS / libsecret Linux / Credential Manager Windows). Fallback `~/.pi/remote/identity.json` (`0600`) com warning em sistemas headless | pi-remote no 1º boot | Autentica a conexão WS no relay e fornece a identidade técnica canônica usada no `from_pc` autenticado e no roteamento por `to_pc`; não assina envelopes cross-PC individuais |
 | **App-key** | Ed25519 efêmera | RAM do app mobile | App por sessão de pareamento | Establishment de canal autenticado durante pair |
 
 **Identidade técnica** de cada Pi/PC é a chave pública Ed25519 bruta de 32 bytes. Nas fronteiras do protocolo, Pi-key e Owner-key usam Base64 RFC 4648 padrão **com padding** como representação canônica; entradas URL-safe ou sem padding podem ser aceitas apenas para normalização. Nicknames e aliases locais efetivos nunca substituem essa identidade técnica.
@@ -223,7 +223,7 @@ Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão d
 
 O **canal de comandos** (`/slash` e `!shell`) é um caminho irmão, não uma exceção a este desenho: o app manda a linha crua e quem classifica é o Pi (que é quem conhece o vocabulário). Os dois convivem — as ações tipadas continuam sendo o que a UI estruturada usa, e `/` existe pro que só tem nome.
 
-| Action | ClientMessage | SDK call no pi-extension |
+| Action | ClientMessage | SDK call no pi-remote |
 |---|---|---|
 | Compact context | `session_compact` | `ctx.compact()` |
 | New session | `session_new` | `ctx.newSession()` |
@@ -646,7 +646,7 @@ Detalhes em `plan/04-pairing.md`.
 ### O que NÃO está protegido (declarado honestamente)
 
 - **Relay vê plaintext do conteúdo atual**. TLS protege o trânsito, mas App↔Pi usa `ct` como Base64 de JSON em claro (pode ser encaminhado sem parse, não é ciphertext), e conteúdo Pi↔Pi, controle/routing/erros e membership assinada são parseados em memória pelo relay conforme necessário. Operador vê quem manda para quem e o conteúdo. Mitigação: **self-hosting** do relay (open source)
-- **Não há E2E** entre app e pi-extension nem entre Pis cross-PC. **Não afirmamos E2E em copy nenhuma do produto**
+- **Não há E2E** entre app e pi-remote nem entre Pis cross-PC. **Não afirmamos E2E em copy nenhuma do produto**
 - **Headless Linux** (Docker, VPS sem D-Bus session): Pi-key cai pra arquivo `0600` em disco com warning loud. Atacante com acesso ao user pode ler. Recomenda-se GNOME Keyring / KWallet pra hardening real
 - **Backup encriptado completo** (Time Machine, iCloud Drive criptografado etc) pode carregar a Keychain. Atacante precisa do user passphrase do backup
 - **Clone detection ainda não implementado**: 2 PCs com mesma Pi-key (via cópia de arquivo headless ou comprometimento) podem coexistir no relay sem alerta. Em roadmap (plan/27 Wave E3)
@@ -669,7 +669,7 @@ Detalhes em `plan/04-pairing.md`.
 
 | Falha | Comportamento |
 |---|---|
-| Relay desconecta | pi-extension reconnect com backoff; agentes locais continuam falando entre si via UDS broker |
+| Relay desconecta | pi-remote reconnect com backoff; agentes locais continuam falando entre si via UDS broker |
 | Pi-B offline durante envio cross-PC | Sender recebe `timeout` com `transport_error: offline` imediatamente. Sem queue offline no relay |
 | Nenhum blob corretamente assinado lista Pi-A e Pi-B diretamente | Sender recebe `denied` com `transport_error: not_authorized`; a checagem ocorre antes de presença |
 | Owner revoga Pi-A da mesh | Pi-A detecta na próxima poll de mesh_versions, faz self-revoke, sai gracefully |
@@ -697,7 +697,7 @@ Longo prazo:
 ## Implementações de referência
 
 - **Relay** (Rust, axum): [`relay/src/`](relay/src/)
-- **Pi-extension** (Node/TS): [`pi-extension/src/`](pi-extension/src/)
+- **Pi-extension** (Node/TS): [`pi-remote/src/`](pi-remote/src/)
 - **App mobile** (Flutter): [`app/lib/`](app/lib/)
 - **Planos arquiteturais**: [`plan/`](plan/) (especialmente `plan/03-protocol.md`, `plan/23-owner-key-sync.md`, `plan/24-mesh-membership.md`, `plan/25-pc-mesh-bootstrap.md`)
 

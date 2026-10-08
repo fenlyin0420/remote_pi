@@ -34,12 +34,12 @@ If Flutter defaults to release and fails with `app-release.apk does not exist`, 
   chunks/done. As a defensive fallback, any app `user_message` received while
   the room is already working is also echoed with steering semantics even if the
   wire field is missing.
-- Rebuild run: `cd pi-extension && corepack pnpm build`.
+- Rebuild run: `cd pi-remote && corepack pnpm build`.
 
 ## 2. Single-owner steering smoke
 
-1. Start Pi with the updated `pi-extension` build, then reload/restart Pi so it
-   loads the rebuilt `pi-extension/dist`.
+1. Start Pi with the updated `pi-remote` build, then reload/restart Pi so it
+   loads the rebuilt `pi-remote/dist`.
 2. Open the paired Android room.
 3. Send a prompt that keeps the agent working long enough to steer.
    - Example: ask it to inspect multiple files or perform a multi-step analysis.

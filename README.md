@@ -30,7 +30,7 @@
 | Package | Stack | Role |
 |---|---|---|
 | [`app/`](./app) | Flutter (iOS / Android) | Mobile client |
-| [`pi-extension/`](./pi-extension) | Node + TypeScript | Pi extension exposing `/remote-pi` |
+| [`pi-remote/`](./pi-remote) | Node + TypeScript | Pi extension exposing `/remote-pi` |
 | [`relay/`](./relay) | Rust + Tokio | WebSocket routing + signed mesh membership storage |
 | [`site/`](./site) | NextJS | Landing page + legal pages |
 
@@ -119,5 +119,5 @@ The MVP is functional. Planning notes and roadmap live in [`plan/`](./plan).
 
 ## License
 
-License is per-package — see each subproject's `LICENSE` file (the `pi-extension`
+License is per-package — see each subproject's `LICENSE` file (the `pi-remote`
 is MIT). A repository-wide license decision is pending.

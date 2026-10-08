@@ -1,6 +1,6 @@
 # Contrato — Pareamento (rollback E2E, 2026-05-19)
 
-Fonte de verdade do pareamento entre **app** (Flutter) e **pi-extension**
+Fonte de verdade do pareamento entre **app** (Flutter) e **pi-remote**
 (Node), com **relay** (Rust) só roteando payload opaco. Modelo MVP:
 **1 pareamento = 1 sessão Pi**.
 
@@ -42,7 +42,7 @@ Campos (query string, URL-encoded):
 
 **Regras**:
 - QR rotaciona a cada 60s no terminal do Pi
-- Cada token aceita **1 uso** — pi-extension marca consumido após `pair_request` válido
+- Cada token aceita **1 uso** — pi-remote marca consumido após `pair_request` válido
 - Novo `/remote-pi pair` invalida o token anterior (um pair em curso = um QR ativo)
 - Token expirado/consumido/desconhecido → Pi responde `pair_error` (não fecha WS)
 

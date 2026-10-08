@@ -1,5 +1,5 @@
 /**
- * Mesh-membership types — pi-extension side. Mirrors the wire shape defined
+ * Mesh-membership types — pi-remote side. Mirrors the wire shape defined
  * in plan/24-mesh-membership.md and must stay bit-compatible with the Dart
  * (app) and Rust (relay) implementations of the same protocol.
  *

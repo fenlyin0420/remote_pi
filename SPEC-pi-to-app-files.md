@@ -3,7 +3,7 @@
 > Entrega em duas fatias (escopo escolhido pelo usuário 2026-09-28):
 > **① imagem** (thumbnail inline, com downscale automático no Pi quando passa do teto)
 > **② arquivo de texto pequeno** (preview). Binários/large = recusado com mensagem clara.
-> Roda `app/` + `pi-extension/`; **relay não muda**.
+> Roda `app/` + `pi-remote/`; **relay não muda**.
 
 ## O problema
 
@@ -147,7 +147,7 @@ relay entrega o offer a todo owner paired do room (mesma semântica do echo de
 
 ## Verificação
 
-- pi-extension: tool envia offer com/sem downscale, recusa > teto e binário,
+- pi-remote: tool envia offer com/sem downscale, recusa > teto e binário,
   `file_get` responde, mapper de histórico emite `attachment` (e o par
   tool_request/tool_result sai) — `pnpm test` + `tsc`.
 - app: parse do offer, upsert sem perder bytes, store write/read/prune, card

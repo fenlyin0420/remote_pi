@@ -19,7 +19,7 @@
   "keywords": [
     "pi",
     "pi-package",
-    "pi-extension",
+    "pi-remote",
     "pi-coding-agent",
     "remote-control",
     "mobile",
@@ -42,7 +42,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jacobaraujo7/remote_pi.git",
-    "directory": "pi-extension"
+    "directory": "pi-remote"
   },
   "homepage": "https://remote-pi.jacobmoura.work",
   "bugs": {

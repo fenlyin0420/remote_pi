@@ -152,7 +152,7 @@ class OwnerIdentityBridge extends ChangeNotifier {
   /// spurious `wipeAll`. That cleared the freshly-paired peer set,
   /// and a downstream `_maybeAdoptLegacyRoom` (driven by an incoming
   /// `room_announced`) would then re-publish v=N+1 with members=[],
-  /// causing the pi-extension to self-revoke ~60s later.
+  /// causing the pi-remote to self-revoke ~60s later.
   ///
   /// Defence: when `_current` is null at observation time, treat the
   /// event as the platform's initial-snapshot and *adopt without

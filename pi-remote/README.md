@@ -194,7 +194,7 @@ with the reason.
 
 The app can attach **one image** (camera or gallery) to a message. It's
 compressed on the device and rides **inline** in the `user_message` — the
-optional `images` field carries `{ data: <base64>, mime }`. The pi-extension
+optional `images` field carries `{ data: <base64>, mime }`. The pi-remote
 turns it into the SDK's multimodal content (an `ImageContent` followed by the
 caption `TextContent`) and calls `sendUserMessage(content)`, so the model sees
 the picture plus your text.

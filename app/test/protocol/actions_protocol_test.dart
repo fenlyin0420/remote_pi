@@ -1,6 +1,6 @@
 // Plan/28 Wave C — protocol surface for typed app actions.
 //
-// Mirrors the contract in `pi-extension/src/protocol/types.ts`:
+// Mirrors the contract in `pi-remote/src/protocol/types.ts`:
 //   ClientMessage:  session_compact, session_new, model_set,
 //                   thinking_set, list_models
 //   ServerMessage:  action_ok, action_error, models_list
