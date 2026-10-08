@@ -92,6 +92,21 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.23 is released** (2026-10-08, on `dev`): an image a tool produces — a
+  `computer_screen` screenshot, a diagram a tool read — now renders **inside that
+  tool's call card** instead of as a card floating under the call. The Pi encodes
+  every image block of a successful, non-nested tool call to its own attachment
+  store (a tool that reuses `shot.png` would otherwise make an old card show the
+  newest picture), and remembers the history half at `message_end` so a re-sync
+  keeps the live order; `tool_call_id` is additive, so an older app keeps the old
+  separate card. App-side tests: the card is folded into the matching tool row
+  and sits **outside** the fold (`embedded`, no second frame/file header); an
+  attachment whose tool row is not in the history slice falls back to its own
+  card. Beta `1.5.23-beta.1` (+66) was tested by the user; prod `1.5.23` (+67)
+  pushed to the production channel, Release `v1.5.23-tool-images-arm64` (APK +
+  `remote-pi-0.12.0.tgz`, the Pi side of this change → restart the supervisor).
+  See `.agents/memory/remote-pi-tool-image-auto-cards.md`. Next beta will be
+  `1.5.24-beta.1`, next prod code ≥ 68.
 - **1.5.22 is released** (2026-10-04, branch `fix/viewer-theme`, merged into
   `dev` + deleted): the full-screen file viewer ("show all", or tapping an image
   card) no longer forces a black page. A text file follows the app theme
@@ -105,7 +120,7 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   `.agents/memory/remote-pi-colorscheme-light-defaults.md`). Beta
   `1.5.22-beta.1` (+64) was tested by the user; prod `1.5.22` (+65) pushed to the
   production channel, Release `v1.5.22-viewer-theme-arm64` (APK only — no
-  pi-remote change). Next beta will be `1.5.23-beta.1`, next prod code ≥ 66.
+  pi-remote change).
 - **1.5.21 is released** (2026-10-03, branch `feat/thinking-auto`, merged + deleted):
   the Quick Actions thinking picker gained **auto** (session-level; Pi resolves it
   per request from the task complexity). The app now parses `auto` from
