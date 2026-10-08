@@ -80,7 +80,7 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
    `gh release view --json` + re-download and compare sha256. **Never push to
    `upstream` (the original author), never open a PR.**
 6. Pi-side (pi-remote) changes: the local Pi loads the repo path package
-   (`~/.pi/agent/settings.json` packages → `/home/fenlyin/Documents/GitHub/remote_pi/pi-remote`),
+   (`~/.pi/agent/settings.json` packages → `/home/fenlyin/Documents/GitHub/pi-remote/pi-remote`),
    so the user side is just `cd pi-remote && npm run build` (keeps the local patches in
    source) + restarting the supervisor. For other users: `npm pack` and attach
    `remote-pi-<version>.tgz` to the same Release.
