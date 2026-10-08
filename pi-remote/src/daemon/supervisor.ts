@@ -74,6 +74,10 @@ const RPC_PASSTHROUGH: ReadonlySet<string> = new Set([
   "new_session",
   "clone",
   "set_session_name",
+  // Session picker (plan/59): the daemon continues a different stored
+  // session for the same cwd. Session-shaping like `new_session`; the
+  // child answers at preflight.
+  "switch_session",
   "get_state",
   "get_commands",
   "get_session_stats",

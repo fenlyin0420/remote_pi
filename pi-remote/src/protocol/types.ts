@@ -202,6 +202,12 @@ export type ClientMessage =
   // `action_error` back. Visible side-effects (chat output, model change
   // broadcasts, compaction notice) still flow through the normal channels.
   | { type: "session_new"; id: string }
+  // Session picker (plan/59): the app lists the sessions stored for THIS
+  // room's cwd and can continue any of them. `session` is a full session
+  // file path or a (partial) session id — the Pi resolves it against the
+  // room's cwd.
+  | { type: "session_list"; id: string }
+  | { type: "session_switch"; id: string; session: string }
   | { type: "session_compact"; id: string }
   | { type: "model_set"; id: string; provider: string; model_id: string }
   | { type: "thinking_set"; id: string; level: ThinkingLevel }
@@ -467,6 +473,10 @@ export type ServerMessage =
   | { type: "action_ok"; in_reply_to: string; action: ActionName }
   | { type: "action_error"; in_reply_to: string; action: ActionName; error: string }
   | { type: "models_list"; in_reply_to: string; models: WireModel[]; current?: WireModel }
+  // Reply to `session_list` — the session picker's catalogue. Sorted by
+  // `modified` (newest first), capped by the Pi. Additive: an older app
+  // simply never asks for it.
+  | { type: "sessions_list"; in_reply_to: string; sessions: WireSession[] }
   // Reply to `list_commands` — the app's `/` palette. Builtins remote-pi
   // implements itself, plus whatever the SDK reports for this session
   // (extension commands, prompt templates, skills). Additive: a client that
@@ -502,7 +512,9 @@ export type ActionName =
   | "room_delete"
   | "command_invoke"
   | "bash_exec"
-  | "list_commands";
+  | "list_commands"
+  | "session_list"
+  | "session_switch";
 
 /**
  * One entry of the app's `/` palette (reply to `list_commands`).
@@ -527,6 +539,27 @@ export interface WireCommand {
   /** False when remote-pi recognises the name but has no implementation here
    *  (a TUI-only builtin). The app renders it disabled. */
   supported: boolean;
+}
+
+/**
+ * Plan/59 — one entry of the session picker's catalogue (reply to
+ * `session_list`). Mirrors the SDK's `SessionInfo` onto the wire, trimmed
+ * to what the app renders: display name (falling back to the first user
+ * message), size, last activity and whether this is the session the room
+ * is currently on. `id` is the session file's UUID — the app hands it back
+ * verbatim on `session_switch`.
+ */
+export interface WireSession {
+  id: string;
+  /** User-set display name; absent when the session never named itself. */
+  name?: string;
+  /** First user message, truncated — the picker's subtitle. */
+  first_message: string;
+  message_count: number;
+  /** ISO-8601 of the session file's last write. */
+  modified: string;
+  /** True for the session the room is currently on. */
+  is_current: boolean;
 }
 
 /**

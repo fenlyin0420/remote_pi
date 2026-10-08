@@ -983,6 +983,9 @@ class SyncService extends Service {
       // `!` shell execution rides the normal tool stream as a `bash` card.
       // Nothing here belongs in the transcript.
       case CommandsList():
+      // Session picker (plan/59): consumed by the ActionsRepository (it asked
+      // for it). Nothing belongs in the transcript.
+      case SessionsList():
         break;
     }
   }

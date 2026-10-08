@@ -81,6 +81,12 @@ class _FakeRepo implements IActionsRepository {
       const [];
 
   @override
+  Future<List<WireSession>> listSessions() async => const [];
+
+  @override
+  Future<void> switchSession(String session) async {}
+
+  @override
   void dispose() {}
 }
 

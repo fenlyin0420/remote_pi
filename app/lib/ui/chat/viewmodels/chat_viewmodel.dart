@@ -437,6 +437,27 @@ class ChatViewModel extends ViewModel<ChatState> {
     await actions.runBash(command, excludeFromContext: excludeFromContext);
   }
 
+  // --- Session picker (plan/59) ---
+
+  /// The stored sessions of this room's cwd (newest first). Throws
+  /// [ActionFailure] when the room is offline or the Pi predates the
+  /// picker — the picker page surfaces both as an error state.
+  Future<List<WireSession>> listSessions() async {
+    final actions = _actions;
+    if (actions == null) throw const ActionFailure('offline');
+    return actions.listSessions();
+  }
+
+  /// Continues the stored session [session] in this room. Resolves on
+  /// `action_ok`; the room's new history then arrives as the Pi's
+  /// broadcast `session_history`, which the sync service substitutes
+  /// wholesale — there is nothing to clear locally.
+  Future<void> switchSession(String session) async {
+    final actions = _actions;
+    if (actions == null) return;
+    await actions.switchSession(session);
+  }
+
   // --- Commands (writer = SyncService; lifecycle = ConnectionManager) ---
 
   Future<void> sendMessage(

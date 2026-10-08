@@ -37,7 +37,7 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { SettingsManager, convertToPng, getShellConfig } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, SessionManager, convertToPng, getShellConfig } from "@earendil-works/pi-coding-agent";
 // The index module above is mocked in the test suite (convertToPng), so grab
 // these classes through the unmocked subpath for _resolveContextLimit's
 // throwaway registry (fresh daemon rooms in a multi-room supervisor).
@@ -1601,6 +1601,18 @@ export function _setPiForTest(pi: unknown): void {
   _pi = pi as typeof _pi;
 }
 
+/** Test-only: set the captured command ctx the `session_switch` interactive
+ *  leg calls `switchSession` on. */
+export function _setLastCtxForTest(ctx: unknown): void {
+  _lastCtx = ctx as typeof _lastCtx;
+}
+
+/** Test-only: anchor the `is_current` flag on `session_list` + the
+ *  session-replacement detection to a known file. */
+export function _setLastKnownSessionFileForTest(file: string | null): void {
+  _lastKnownSessionFile = file;
+}
+
 /**
  * Persist a model change to the PROJECT settings (`<cwd>/.pi/settings.json`) so
  * a model picked from the app survives a Pi/daemon restart. `pi.setModel` only
@@ -1766,6 +1778,9 @@ function _jsonBytes(value: unknown): number {
 // already on disk: read it once at session_start and prefill the mirror.
 // Display-only — the agent's own context is untouched.
 let _historySeeded = false;
+/** Last session file this instance saw (session_start). Feeds `is_current`
+ *  on `session_list` and anchors the replacement detection below. */
+let _lastKnownSessionFile: string | null = null;
 const SEEDED_ROLES = new Set(["user", "assistant", "toolResult"]);
 
 /** Prefills `_messageBuffer` with the resumed session's messages (once per process). */
@@ -1774,9 +1789,13 @@ export function _seedMessageBufferFromSession(ctx: unknown): void {
   _historySeeded = true;
   if (_messageBuffer.length > 0) return;
   try {
-    const sm = (ctx as { sessionManager?: { getEntries?: () => unknown[] } } | null)
-      ?.sessionManager;
-    const entries = sm?.getEntries?.();
+    const sm = (ctx as {
+      sessionManager?: { getBranch?: () => unknown[]; getEntries?: () => unknown[] };
+    } | null)?.sessionManager;
+    // The ACTIVE leaf branch, not the flat entry list — a session is an
+    // append-only tree, and after TUI `/fork` or tree navigation the two
+    // diverge. The room should show what the agent's context actually is.
+    const entries = sm?.getBranch?.() ?? sm?.getEntries?.();
     if (!Array.isArray(entries)) return;
     const seeded: unknown[] = [];
     for (const entry of entries as Array<Record<string, unknown>>) {
@@ -3122,6 +3141,32 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
     _lastEventCtx = ctx;
+    // Plan/59 — session-replacement reset. The mirror is append-only by
+    // design (it survives stop/start on purpose), so when the SDK replaces
+    // the session — `/new`, `/resume`, `/fork` in the TUI, the app's
+    // session picker, another app's New session — the mirror would otherwise
+    // keep replaying the PREVIOUS conversation into this room: the "stray
+    // thinking block" the user saw. `previousSessionFile` is present exactly
+    // for new/resume/fork, so compare it against the replacement's file:
+    // clear the mirror, re-seed from the TARGET session and replay the new
+    // history to every owner (the app substitutes its cache wholesale on a
+    // `session_history`, so one broadcast fixes all of them).
+    const startFile = ((ctx as { sessionManager?: { getSessionFile?: () => string | undefined } })
+      .sessionManager?.getSessionFile?.()) ?? null;
+    const previousFile = ((_event as { previousSessionFile?: string }).previousSessionFile) ?? null;
+    const sessionReplaced = previousFile != null && startFile != null && previousFile !== startFile;
+    if (startFile) _lastKnownSessionFile = startFile;
+    if (sessionReplaced) {
+      _messageBuffer = [];
+      _historySeeded = false;
+      _pendingThinkingDurations.length = 0;
+      _thinkingStartedAt = null;
+      _pendingSteers = [];
+      _lastConsumedSteerText = null;
+      _currentTurnId = null;
+      _sessionStartedAt = Date.now();
+      _resetQueuedItems({ broadcast: false });
+    }
     // Plan/42: context is per-session. A session replacement (new / fork /
     // switch / reload) starts from a different — possibly empty — branch, so
     // drop the previous session's cached usage + debounce clock and publish
@@ -3137,6 +3182,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // LOCAL PATCH (fenlyin): prefill the history mirror with the resumed
     // session's conversation so a room keeps its history across restarts.
     _seedMessageBufferFromSession(ctx);
+    // Plan/59 — publish the replacement: every owner's room now shows the
+    // TARGET session (possibly empty for /new), never the old one.
+    if (sessionReplaced) _broadcastSessionHistoryReplay();
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the
     // bridge here; fresh-module hosts already created theirs in the factory.
@@ -5308,6 +5356,13 @@ export function _routeClientMessageFrom(
     _handleListCommands(sender, msg);
     return;
   }
+  // Plan/59 — pure disk read, so it goes before the pi-binding guard like
+  // list_commands: a room whose session is gone can still list its stored
+  // conversations.
+  if (msg.type === "session_list") {
+    void _handleSessionList(sender, msg);
+    return;
+  }
   // Before the pi-binding guard like the other file/command paths: rehydrating a
   // card after a re-sync must work in a room whose Pi session is gone.
   if (msg.type === "file_get") {
@@ -5433,6 +5488,12 @@ export function _routeClientMessageFrom(
       break;
     case "session_new": {
       _handleSessionNew(sender, msg.id);
+      break;
+    }
+    case "session_switch": {
+      // Plan/59 — needs `_pi` (the daemon RPC leg) or a command ctx;
+      // both sit behind this guard on purpose.
+      void _handleSessionSwitch(sender, msg);
       break;
     }
     case "model_set":
@@ -6203,6 +6264,152 @@ function _resetSessionForNew(inReplyTo: string): void {
     eos: true,
     truncated: false,
   });
+}
+
+/**
+ * Plan/59 — replays the CURRENT `_messageBuffer` to every attached owner as
+ * a wholesale `session_history`. The session-REPLACEMENT counterpart of
+ * `_resetSessionForNew` (which broadcasts an EMPTY one): after a
+ * `/resume`/`/fork`/picker switch the mirror holds the target session's
+ * seeded conversation, and every owner must see exactly it. Same byte
+ * budget as `_handleSessionSync` — the relay rejects oversized envelopes.
+ */
+function _broadcastSessionHistoryReplay(): void {
+  const allEvents = _mapAgentMessagesToEvents(_messageBuffer);
+  const budget = _getSyncMaxBytes();
+  let events = allEvents;
+  let bytes = _jsonBytes(events);
+  while (events.length > 1 && bytes > budget) {
+    events = events.slice(Math.max(1, Math.floor(events.length / 8)));
+    bytes = _jsonBytes(events);
+  }
+  process.stderr.write(
+    `[remote-pi] session replaced: replaying ${events.length}/${allEvents.length} history events\n`,
+  );
+  _broadcastToActive({
+    type: "session_history",
+    in_reply_to: `replay_${randomUUID()}`,
+    session_started_at: _sessionStartedAt ?? Date.now(),
+    events,
+    eos: true,
+    truncated: events.length !== allEvents.length,
+  });
+}
+
+/**
+ * Plan/59 — `session_list`: the session picker's catalogue for this room's
+ * cwd. Answered BEFORE the pi-binding guard, like `list_commands`: listing
+ * stored sessions is a pure disk read, so a room whose Pi process is down
+ * still shows what it could continue.
+ *
+ * Sorted newest-first, capped at 100 — the picker is for a single folder's
+ * recent sessions, not an archive browser.
+ */
+async function _handleSessionList(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "session_list" }>,
+): Promise<void> {
+  try {
+    const cwd = _myRoomMeta?.cwd ?? process.cwd();
+    const infos = await SessionManager.list(cwd);
+    const current = _lastKnownSessionFile;
+    const sessions = infos
+      .sort((a, b) => b.modified.getTime() - a.modified.getTime())
+      .slice(0, 100)
+      .map((i) => ({
+        id: i.id,
+        name: i.name,
+        first_message: (i.firstMessage ?? "").slice(0, 120),
+        message_count: i.messageCount,
+        modified: i.modified.toISOString(),
+        is_current: current != null && i.path === current,
+      }));
+    sender.send({ type: "sessions_list", in_reply_to: msg.id, sessions });
+  } catch (err) {
+    const emsg = err instanceof Error ? err.message : String(err);
+    sender.send({
+      type: "action_error",
+      in_reply_to: msg.id,
+      action: "session_list",
+      error: emsg,
+    });
+  }
+}
+
+/**
+ * Plan/59 — `session_switch`: continue a stored session in this room.
+ *
+ * The room is keyed by (cwd, agent name), so continuing a DIFFERENT session
+ * for the same cwd is legal: the session file changes, the room doesn't —
+ * which is exactly why the replacement broadcast (above) is what keeps the
+ * app's view honest.
+ *
+ * Two legs, one story:
+ *  - daemon rooms (REMOTE_PI_DAEMON=1) drive `switch_session` over the
+ *    supervisor's RPC passthrough — the extension can't write its own
+ *    stdin; the daemon owns the pipe;
+ *  - interactive rooms call `ctx.switchSession()` on the captured command
+ *    ctx, re-capturing the replacement ctx via `withSession` (the SDK
+ *    marks the pre-call ctx stale).
+ * `msg.session` is a session file path, or an (exact/partial) session id
+ * resolved against the room's cwd via `SessionManager.list`.
+ */
+async function _handleSessionSwitch(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "session_switch" }>,
+): Promise<void> {
+  const fail = (error: string) =>
+    sender.send({ type: "action_error", in_reply_to: msg.id, action: "session_switch", error });
+  const cwd = _myRoomMeta?.cwd ?? process.cwd();
+  let path: string;
+  if (msg.session.includes("/") || msg.session.includes("\\")) {
+    path = msg.session;
+  } else {
+    // The installed SDK has no `findById` — resolve through the cwd's list
+    // (exact id first, then a unique prefix match, like the TUI's picker).
+    try {
+      const infos = await SessionManager.list(cwd);
+      const exact = infos.find((i) => i.id === msg.session);
+      const prefix = infos.filter((i) => i.id.startsWith(msg.session));
+      path = exact?.path ?? (prefix.length === 1 ? prefix[0].path : "");
+    } catch {
+      path = "";
+    }
+    if (!path) {
+      fail(`session_not_found: ${msg.session}`);
+      return;
+    }
+  }
+  if (!existsSync(path)) {
+    fail(`session_not_found: ${path}`);
+    return;
+  }
+  try {
+    if (_commandChannelAvailable()) {
+      // `response` carries the child's own rejection text when it fails.
+      await _callDaemonRpc({ type: "switch_session", sessionPath: path });
+    } else {
+      const switchSession = (_lastCtx as ActionCtx | null)?.switchSession;
+      if (!switchSession) {
+        fail("switchSession unavailable (no command ctx yet)");
+        return;
+      }
+      const result = await switchSession.call(_lastCtx, path, {
+        withSession: (fresh) => {
+          _lastCtx = fresh as unknown as typeof _lastCtx;
+          return Promise.resolve();
+        },
+      });
+      if (result?.cancelled) {
+        fail("cancelled by extension hook");
+        return;
+      }
+    }
+    sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_switch" });
+  } catch (err) {
+    const emsg = err instanceof Error ? err.message : String(err);
+    fail(emsg || "session_switch failed");
+  }
 }
 
 type ToolArgs = Record<string, unknown>;

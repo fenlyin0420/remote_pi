@@ -130,6 +130,17 @@ abstract class IActionsRepository extends Repository {
   /// (peer, room) session if one exists; otherwise hits the Pi.
   Future<ModelsCatalogue> listModels({bool forceRefresh = false});
 
+  /// Session picker (plan/59) — the stored sessions of this room's cwd,
+  /// newest first. Never cached: sessions appear/disappear constantly, and
+  /// the picker opens rarely enough that a round-trip is the honest cost.
+  Future<List<WireSession>> listSessions();
+
+  /// Session picker (plan/59) — continue the stored session [session] (an
+  /// id or a file path) in this room. Resolves on `action_ok`; the room's
+  /// new history then arrives as the Pi's broadcast `session_history`,
+  /// which the sync service substitutes wholesale — nothing to clear here.
+  Future<void> switchSession(String session);
+
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
@@ -228,6 +239,11 @@ class ActionsRepository extends Repository implements IActionsRepository {
         if (p == null) return;
         p.timeout.cancel();
         if (!p.completer.isCompleted) p.completer.complete(commands);
+      case SessionsList(:final inReplyTo, :final sessions):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) p.completer.complete(sessions);
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -386,6 +402,18 @@ class ActionsRepository extends Repository implements IActionsRepository {
     // to, which is the live one when it resolves.
     _modelsCache[_sessionKey()] = result;
     return result;
+  }
+
+  @override
+  Future<List<WireSession>> listSessions() async {
+    return _dispatch<List<WireSession>>((id) => SessionList(id: id));
+  }
+
+  @override
+  Future<void> switchSession(String session) async {
+    await _dispatch<void>(
+      (id) => SessionSwitch(id: id, session: session),
+    );
   }
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {

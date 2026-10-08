@@ -71,6 +71,12 @@ class _FakeActions implements IActionsRepository {
   }
 
   @override
+  Future<List<WireSession>> listSessions() async => const [];
+
+  @override
+  Future<void> switchSession(String session) async {}
+
+  @override
   ActiveRoomMeta get activeRoomMeta => const ActiveRoomMeta();
 
   @override

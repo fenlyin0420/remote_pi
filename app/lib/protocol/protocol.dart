@@ -705,7 +705,11 @@ enum ActionName {
   // demultiplexes by `in_reply_to`.
   commandInvoke('command_invoke'),
   bashExec('bash_exec'),
-  listCommands('list_commands');
+  listCommands('list_commands'),
+  // Session picker (plan/59) — the room info panel lists the stored
+  // sessions of this room's cwd and continues any of them.
+  sessionList('session_list'),
+  sessionSwitch('session_switch');
 
   final String wire;
   const ActionName(this.wire);
@@ -862,6 +866,35 @@ class ListModels extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {'type': 'list_models', 'id': id};
+}
+
+/// Session picker (plan/59) — ask the Pi for the sessions stored for this
+/// room's cwd. Answered by a [SessionsList]; a Pi that predates the picker
+/// simply never replies, so the call times out (the UI reports that).
+class SessionList extends ClientMessage {
+  final String id;
+  SessionList({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'session_list', 'id': id};
+}
+
+/// Session picker (plan/59) — continue [session] in this room: a full
+/// session file path or an (exact/partial) session id; the Pi resolves it
+/// against the room's cwd and switches the session in place. Gets a
+/// plain [ActionOk]/[ActionError]; the room's new history then arrives as
+/// the Pi's broadcast `session_history` (the app substitutes its cache).
+class SessionSwitch extends ClientMessage {
+  final String id;
+  final String session;
+  SessionSwitch({required this.id, required this.session});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'session_switch',
+    'id': id,
+    'session': session,
+  };
 }
 
 /// Room management — register (and start) a supervisor daemon for the
@@ -1022,6 +1055,8 @@ sealed class ServerMessage {
       'action_ok' => ActionOk.fromJson(json),
       'action_error' => ActionError.fromJson(json),
       'models_list' => ModelsList.fromJson(json),
+      // Session picker (plan/59) — the room info panel's catalogue.
+      'sessions_list' => SessionsList.fromJson(json),
       // Command channel — the `/` palette's catalogue. Only sent in reply to
       // `list_commands`; the app renders the entries and greys out the ones
       // this room can't run (`supported == false`).
@@ -1833,6 +1868,67 @@ class WireCommand {
     source: CommandSource.fromWire((j['source'] as String?) ?? ''),
     scope: CommandScope.fromWire((j['scope'] as String?) ?? ''),
     supported: (j['supported'] as bool?) ?? false,
+  );
+}
+
+/// One entry of the session picker's catalogue (reply to [SessionList]).
+/// Mirrors the Pi's `WireSession` (`pi-remote/src/protocol/types.ts`).
+class WireSession {
+  /// The session file's UUID — handed back verbatim on [SessionSwitch].
+  final String id;
+
+  /// User-set display name; `null` when the session never named itself —
+  /// the UI falls back to [firstMessage].
+  final String? name;
+
+  /// First user message, truncated by the Pi — the picker's subtitle.
+  final String firstMessage;
+
+  final int messageCount;
+
+  /// ISO-8601 of the session file's last write.
+  final String modified;
+
+  /// True for the session the room is currently on.
+  final bool isCurrent;
+
+  const WireSession({
+    required this.id,
+    this.name,
+    required this.firstMessage,
+    required this.messageCount,
+    required this.modified,
+    required this.isCurrent,
+  });
+
+  factory WireSession.fromJson(Map<String, dynamic> j) => WireSession(
+    id: j['id'] as String,
+    name: j['name'] as String?,
+    firstMessage: (j['first_message'] as String?) ?? '',
+    messageCount: (j['message_count'] as num?)?.toInt() ?? 0,
+    modified: (j['modified'] as String?) ?? '',
+    isCurrent: (j['is_current'] as bool?) ?? false,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is WireSession && other.id == id && other.modified == modified;
+
+  @override
+  int get hashCode => Object.hash(id, modified);
+}
+
+/// Reply to [SessionList] — the room's stored sessions, newest first.
+class SessionsList extends ServerMessage {
+  final String inReplyTo;
+  final List<WireSession> sessions;
+  SessionsList({required this.inReplyTo, required this.sessions});
+
+  factory SessionsList.fromJson(Map<String, dynamic> j) => SessionsList(
+    inReplyTo: j['in_reply_to'] as String,
+    sessions: (j['sessions'] as List<dynamic>? ?? const <dynamic> [])
+        .map((e) => WireSession.fromJson(e as Map<String, dynamic>))
+        .toList(),
   );
 }
 
