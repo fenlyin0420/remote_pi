@@ -47,8 +47,8 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 1. Branch `feat/...`/`fix/...` off `dev`, get all tests + analyze/typecheck green, then
    merge back into `dev`.
 2. Build the APK. Environment:
-   `export PATH=$HOME/flutter/flutter/bin:$HOME/jdk-21.0.12.1+1/bin:$PATH`,
-   `JAVA_HOME=$HOME/jdk-21.0.12.1+1`, `ANDROID_HOME=$HOME/Android/Sdk`
+   `export PATH=$HOME/flutter/flutter/bin:$HOME/apps/jdk/21.0.12.1/bin:$PATH`,
+   `JAVA_HOME=$HOME/apps/jdk/21.0.12.1`, `ANDROID_HOME=$HOME/Android/Sdk`
    (the ones under the system `/usr/lib/jvm` are JREs — no `javac`). Run it under
    `app/` (**`--flavor` is mandatory**; without it both flavors get built and the beta
    build picks up the version from pubspec):
@@ -92,6 +92,26 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.24-beta.1 is pushed to the beta channel** (2026-10-09, on `dev`, commit
+  `08903147` / merge `b526bd7e`): the room info panel (ⓘ) gained a **Sessions**
+  entry — a picker page listing the stored sessions of the room's cwd
+  (`SessionManager.list`; id / name / first message / count / date / current
+  badge), and tapping one (after a confirm) `switchSession`s to it: the chat
+  clears and re-renders from the Pi's broadcast `session_history`. Wire:
+  `session_list`/`session_switch` actions + `sessions_list` reply + `WireSession`
+  (daemon rooms via the RPC `switch_session`, interactive via
+  `ctx.switchSession`; `switch_session` whitelisted in the supervisor). Same
+  commit also ships the **session-replacement reset**: `session_start` with a
+  `previousSessionFile` different from the one that seeded the mirror clears the
+  buffer, re-seeds from the target session's `getBranch()`, and broadcasts a
+  replay — so `/new`/`/resume`/`/fork` in the terminal no longer leave the old
+  conversation's stray thinking blocks in the room (the reported bug). Pi tests:
+  13 new (session list/switch/replacement), 927 pass; app: 856 pass, analyze
+  clean. Beta `1.5.24-beta.1` (+68) pushed to the beta channel (sha
+  `fc70aa2d…`); next prod code ≥ 69. **The Pi side needs `cd pi-remote &&
+  npm run build` + supervisor restart by the user** until then the picker's
+  list times out and says "older builds have no session picker". See
+  `.agents/memory/remote-pi-session-picker.md`.
 - **1.5.23 is released** (2026-10-08, on `dev`): an image a tool produces — a
   `computer_screen` screenshot, a diagram a tool read — now renders **inside that
   tool's call card** instead of as a card floating under the call. The Pi encodes
