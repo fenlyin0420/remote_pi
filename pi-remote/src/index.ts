@@ -2657,7 +2657,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // calls are mirrored to the app (and still shown on the desktop).
   _uiNotifyCapture?.dispose();
   _uiNotifyCapture = _createUiNotifyCapture(pi, _broadcastToActive, (text) => {
-    console.error(`[remote-pi] notify → app: ${text.slice(0, 120)}`);
+    // In TUI mode process.stderr is printed straight onto the terminal, so
+    // echoing the text here renders a second copy of the notification right
+    // above the editor — only log when stderr goes to a real log (daemon/
+    // supervisor journal), not to a TTY.
+    if (process.stderr.isTTY !== true) console.error(`[remote-pi] notify → app: ${text.slice(0, 120)}`);
   });
 
   // Plano 19: ensure ~/.pi/remote/{sessions,skills}/ exist and deploy the
@@ -3011,7 +3015,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (!_extensionUiBridge) {
       _extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
       _uiNotifyCapture = _createUiNotifyCapture(pi, _broadcastToActive, (text) => {
-        console.error(`[remote-pi] notify → app: ${text.slice(0, 120)}`);
+        if (process.stderr.isTTY !== true) console.error(`[remote-pi] notify → app: ${text.slice(0, 120)}`);
       });
     }
     // Rearm a reused-but-disposed instance. The session_shutdown teardown (below)
