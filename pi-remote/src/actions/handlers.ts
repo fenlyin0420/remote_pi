@@ -104,6 +104,16 @@ export interface ActionCtx {
   newSession?: (options?: {
     withSession?: (ctx: ActionCtx) => Promise<void>;
   }) => Promise<{ cancelled: boolean }>;
+  /**
+   * Continues a different stored session (the session picker, plan/59).
+   * `withSession` re-captures the command-capable ctx bound to the
+   * target session — the SDK marks the pre-call ctx stale, so callers
+   * MUST re-capture rather than reuse it. Command-ctx only, like
+   * `newSession`.
+   */
+  switchSession?: (sessionPath: string, options?: {
+    withSession?: (ctx: ActionCtx) => Promise<void>;
+  }) => Promise<{ cancelled: boolean }>;
   getModel?: () => Model<any> | undefined;
   /**
    * Live session registry from Pi's extension ctx. Includes providers/models

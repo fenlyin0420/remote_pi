@@ -8,7 +8,11 @@
  *     tests instead of only failing on a phone.
  */
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ServerMessage } from "./protocol/types.js";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 const h = vi.hoisted(() => ({
   callSupervisor: vi.fn(),
@@ -33,6 +37,8 @@ const {
   _setPiForTest,
   _setMessageBufferForTest,
   _getMessageBufferForTest,
+  _setLastCtxForTest,
+  _setLastKnownSessionFileForTest,
 } = indexModule;
 
 // ── Harness ───────────────────────────────────────────────────────────────────
@@ -631,6 +637,202 @@ describe("bash_exec", () => {
     expect(sender.last()).toMatchObject({
       type: "action_error",
       error: "no Pi session bound yet",
+    });
+  });
+});
+
+// ── session picker (plan/59) ─────────────────────────────────────────────────
+
+describe("session_list", () => {
+  afterEach(() => {
+    _setLastKnownSessionFileForTest(null);
+    vi.restoreAllMocks();
+  });
+
+  test("answers sessions_list newest-first, mapped to the wire shape, current flagged", async () => {
+    const infos: unknown[] = [
+      {
+        id: "s-old", path: "/p/old.jsonl", cwd: "/p", firstMessage: "old question",
+        messageCount: 3, created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-02T00:00:00Z"),
+      },
+      {
+        id: "s-new", path: "/p/new.jsonl", cwd: "/p", name: "fix login",
+        firstMessage: "why does login fail".repeat(20), messageCount: 9,
+        created: new Date("2026-01-03T00:00:00Z"), modified: new Date("2026-01-04T00:00:00Z"),
+      },
+    ];
+    vi.spyOn(SessionManager, "list").mockResolvedValue(infos as never);
+    _setLastKnownSessionFileForTest("/p/new.jsonl");
+
+    const sender = makeSender();
+    route({ type: "session_list", id: "sl1" }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+
+    const reply = sender.last() as Extract<ServerMessage, { type: "sessions_list" }>;
+    expect(reply.type).toBe("sessions_list");
+    expect(reply.in_reply_to).toBe("sl1");
+    expect(reply.sessions).toEqual([
+      {
+        id: "s-new", name: "fix login",
+        first_message: "why does login fail".repeat(20).slice(0, 120),
+        message_count: 9, modified: "2026-01-04T00:00:00.000Z", is_current: true,
+      },
+      {
+        id: "s-old", name: undefined,
+        first_message: "old question", message_count: 3,
+        modified: "2026-01-02T00:00:00.000Z", is_current: false,
+      },
+    ]);
+  });
+
+  test("a missing session dir answers action_error, not a crash", async () => {
+    vi.spyOn(SessionManager, "list").mockRejectedValue(new Error("ENOENT"));
+    const sender = makeSender();
+    route({ type: "session_list", id: "sl2" }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({ type: "action_error", action: "session_list" });
+  });
+
+  test("works with no Pi bound (pure disk read)", async () => {
+    _setPiForTest(null);
+    vi.spyOn(SessionManager, "list").mockResolvedValue([] as never);
+    const sender = makeSender();
+    route({ type: "session_list", id: "sl3" }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({ type: "sessions_list", sessions: [] });
+  });
+});
+
+describe("session_switch", () => {
+  const sessionFile = (name: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "rp-sess-switch-"));
+    const path = join(dir, `${name}.jsonl`);
+    writeFileSync(path, "{}\n");
+    return path;
+  };
+
+  afterEach(() => {
+    _setLastCtxForTest(null);
+    vi.restoreAllMocks();
+  });
+
+  test("interactive room: drives ctx.switchSession and recaptures the replacement ctx", async () => {
+    _setPiForTest(makePi());
+    const path = sessionFile("target");
+    const recaptured: unknown[] = [];
+    _setLastCtxForTest({
+      switchSession: vi.fn(async (_p: string, opts?: { withSession?: (c: unknown) => Promise<void> }) => {
+        await opts?.withSession?.({ fresh: true });
+        return { cancelled: false };
+      }).mockImplementation(async (_p: string, opts?: { withSession?: (c: unknown) => Promise<void> }) => {
+        recaptured.push("switch called");
+        await opts?.withSession?.({ fresh: true });
+        return { cancelled: false };
+      }),
+    });
+
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw1", session: path }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({ type: "action_ok", action: "session_switch" });
+    expect(recaptured).toEqual(["switch called"]);
+  });
+
+  test("a cancelled switch reports action_error", async () => {
+    _setPiForTest(makePi());
+    const path = sessionFile("cancelled");
+    _setLastCtxForTest({
+      switchSession: vi.fn(async () => ({ cancelled: true })),
+    });
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw2", session: path }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({
+      type: "action_error",
+      action: "session_switch",
+      error: "cancelled by extension hook",
+    });
+  });
+
+  test("no command ctx yet → honest action_error instead of a timeout", async () => {
+    _setPiForTest(makePi());
+    _setLastCtxForTest(null);
+    const path = sessionFile("no-ctx");
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw3", session: path }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({
+      type: "action_error",
+      action: "session_switch",
+      error: "switchSession unavailable (no command ctx yet)",
+    });
+  });
+
+  test("a session id is resolved against the room's cwd", async () => {
+    _setPiForTest(makePi());
+    const path = sessionFile("by-id");
+    vi.spyOn(SessionManager, "list").mockResolvedValue([
+      { id: "abc123", path },
+      { id: "abc999", path: "/elsewhere.jsonl" },
+    ] as never);
+    const switchSession = vi.fn(async () => ({ cancelled: false }));
+    _setLastCtxForTest({ switchSession });
+
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw4", session: "abc123" }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(switchSession).toHaveBeenCalledWith(path, expect.anything());
+    expect(sender.last()).toMatchObject({ type: "action_ok", action: "session_switch" });
+  });
+
+  test("an unknown id answers session_not_found", async () => {
+    _setPiForTest(makePi());
+    vi.spyOn(SessionManager, "list").mockResolvedValue([
+      { id: "abc123", path: sessionFile("known") },
+    ] as never);
+    _setLastCtxForTest({ switchSession: vi.fn(async () => ({ cancelled: false })) });
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw5", session: "zzz" }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect((sender.last() as { error: string }).error).toBe("session_not_found: zzz");
+  });
+
+  test("daemon room: drives switch_session over the supervisor RPC", async () => {
+    process.env["REMOTE_PI_DAEMON"] = "1";
+    _setPiForTest(makePi());
+    const path = sessionFile("daemon");
+    h.callSupervisor.mockResolvedValue({
+      id: "daemon-1",
+      delivered: true,
+      response: { command: "switch_session", success: true },
+    });
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw6", session: path }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({ type: "action_ok", action: "session_switch" });
+    expect(h.callSupervisor).toHaveBeenCalledWith({
+      op: "rpc",
+      id: expect.any(String),
+      command: { type: "switch_session", sessionPath: path },
+    });
+  });
+
+  test("daemon room: the child's rejection text is surfaced", async () => {
+    process.env["REMOTE_PI_DAEMON"] = "1";
+    _setPiForTest(makePi());
+    const path = sessionFile("daemon-reject");
+    h.callSupervisor.mockResolvedValue({
+      id: "daemon-1",
+      delivered: true,
+      response: { command: "switch_session", success: false, error: "session not found" },
+    });
+    const sender = makeSender();
+    route({ type: "session_switch", id: "sw7", session: path }, sender);
+    await vi.waitFor(() => expect(sender.sent).toHaveLength(1));
+    expect(sender.last()).toMatchObject({
+      type: "action_error",
+      action: "session_switch",
+      error: "session not found",
     });
   });
 });

@@ -19,6 +19,7 @@ import 'package:app/ui/chat/widgets/attach_sheet.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_list.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
+import 'package:app/ui/chat/widgets/session_picker_page.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -294,7 +295,7 @@ class ChatPage extends StatelessWidget {
             onPressed: () {
               final p = vm.activePeer;
               if (p != null) {
-                _showSessionInfo(context, p, vm.activeRoom, roomName);
+                _showSessionInfo(context, p, vm.activeRoom, roomName, vm);
               }
             },
           ),
@@ -305,12 +306,14 @@ class ChatPage extends StatelessWidget {
 
   /// Session details dialog — surfaced from the AppBar info action.
   /// Shows the human name, the Pi-side path (cwd), the owning device,
-  /// plus model/room/paired-date when known.
+  /// plus model/room/paired-date when known, and the session picker
+  /// (plan/59) entry.
   static Future<void> _showSessionInfo(
     BuildContext context,
     PeerRecord peer,
     RoomInfo? room,
     String name,
+    ChatViewModel vm,
   ) {
     // The dialog is a route: drop the composer's focus before pushing it, or
     // popping the dialog hands the focus back to the field and the soft
@@ -362,6 +365,23 @@ class ChatPage extends StatelessWidget {
             ],
           ),
           actions: [
+            // Plan/59 — the room's stored sessions: list + continue any of
+            // them. Pops the dialog first (a pushed page under an open
+            // dialog would double the barrier), then opens the picker.
+            TextButton(
+              onPressed: () {
+                Navigator.of(dCtx).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => SessionPickerPage(chat: vm, roomName: name),
+                  ),
+                );
+              },
+              child: Text(
+                'Sessions',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.muted),
+              ),
+            ),
             TextButton(
               onPressed: () => Navigator.of(dCtx).pop(),
               child: Text(

@@ -257,6 +257,7 @@ const {
   _deliverMeshMessageToAgentForTest,
   _setUploadDirForTest,
   _resetPendingToolImagesForTest,
+  _setLastKnownSessionFileForTest,
   CTRL_PREFIX,
 } = indexModule;
 const { acquireCwdLock } = await import("./session/cwd_lock.js");
@@ -6984,5 +6985,134 @@ describe("Plan/42: context-usage publishing", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Session replacement (plan/59) ───────────────────────────────────────────────
+//
+// The append-only mirror survives stop/start ON PURPOSE (a daemon restart must
+// not empty the room). But when the SDK REPLACES the session — `/new`,
+// `/resume`, `/fork`, the app's session picker — the mirror would otherwise
+// keep replaying the PREVIOUS conversation into this room (the "stray
+// thinking block" the user reported). The session_start handler must detect
+// the replacement via `previousSessionFile` and reset + re-seed + replay.
+
+describe("session replacement (plan/59)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    _knownPeers.length = 0;
+    _addedPeers.length = 0;
+    _removedPeers.length = 0;
+    _consumeCalls.length = 0;
+    _setRelayCalls.length = 0;
+    _savedRelayUrl = null;
+    _tokenStatus = "ok";
+    relayRef.current = null;
+    relayInstances.length = 0;
+    _defaultConnectImpl = async () => undefined;
+    _setDisposedForTest(false);
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+    _setMessageBufferForTest([]);
+    _setSessionStartedAtForTest(null);
+    _setLastKnownSessionFileForTest(null);
+  });
+
+  /** session_start ctx whose sessionManager reports [file] and serves the
+   *  active branch [branch] — the two surfaces the replacement path reads. */
+  function replacementCtx(file: string, branch: unknown[] = []): unknown {
+    return {
+      ...makeMockCtx(),
+      sessionManager: {
+        getSessionFile: () => file,
+        getBranch: () => branch,
+      },
+    };
+  }
+
+  test("a replaced session clears the stale mirror, re-seeds and replays the new one", async () => {
+    await _pairForTest("peer-replace-1");
+
+    // Seed a STALE conversation (the previous session's tail).
+    const staleTs = 1_700_000_000_000;
+    _setSessionStartedAtForTest(staleTs);
+    _setMessageBufferForTest([
+      { role: "user", content: "old question", timestamp: staleTs + 1 },
+      { role: "assistant", content: [{ type: "text", text: "old answer" }], timestamp: staleTs + 2 },
+    ]);
+
+    // The replacement: a NEW session file, whose branch is the new conversation.
+    const newBranch = [
+      { type: "message", message: { role: "user", content: "new question", timestamp: staleTs + 10 }, timestamp: new Date(staleTs + 10).toISOString() },
+      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "new answer" }], timestamp: staleTs + 11 }, timestamp: new Date(staleTs + 11).toISOString() },
+    ];
+
+    const onSessionStart = captureEventHandler("session_start");
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    void onSessionStart(
+      { type: "session_start", reason: "resume", previousSessionFile: "/old.jsonl" },
+      replacementCtx("/new.jsonl", newBranch),
+    );
+
+    // The mirror now holds the NEW conversation, not the stale tail.
+    const buf = _getMessageBufferForTest() as Array<{ role: string; content?: unknown }>
+    expect(buf.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(buf)).toContain("new question");
+    expect(JSON.stringify(buf)).not.toContain("old question");
+
+    // And every owner got a wholesale replay of the new conversation.
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string);
+    const replay = sent
+      .map(decodeSentCt)
+      .find((d) => d.inner.type === "session_history" && String(d.inner["in_reply_to"]).startsWith("replay_"));
+    expect(replay).toBeDefined();
+    expect(JSON.stringify(replay!.inner["events"])).toContain("new question");
+    expect(JSON.stringify(replay!.inner["events"])).not.toContain("old question");
+  });
+
+  test("a same-file session_start (reload) keeps the mirror — no false reset", async () => {
+    await _pairForTest("peer-replace-2");
+    const ts = 1_700_000_000_000;
+    _setSessionStartedAtForTest(ts);
+    _setMessageBufferForTest([
+      { role: "user", content: "kept question", timestamp: ts + 1 },
+    ]);
+
+    const onSessionStart = captureEventHandler("session_start");
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    void onSessionStart(
+      { type: "session_start", reason: "reload" },
+      replacementCtx("/same.jsonl"),
+    );
+
+    // No previousSessionFile → not a replacement → mirror untouched.
+    expect((_getMessageBufferForTest() as Array<{ role: string }>).map((m) => m.role)).toEqual(["user"]);
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string);
+    const replay = sent
+      .map(decodeSentCt)
+      .find((d) => d.inner.type === "session_history" && String(d.inner["in_reply_to"]).startsWith("replay_"));
+    expect(replay).toBeUndefined();
+  });
+
+  test("previousSessionFile absent (startup) does not reset a live mirror", async () => {
+    await _pairForTest("peer-replace-3");
+    const ts = 1_700_000_000_000;
+    _setSessionStartedAtForTest(ts);
+    _setMessageBufferForTest([
+      { role: "user", content: "startup kept", timestamp: ts + 1 },
+    ]);
+
+    const onSessionStart = captureEventHandler("session_start");
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    void onSessionStart(
+      { type: "session_start", reason: "startup" },
+      replacementCtx("/boot.jsonl"),
+    );
+
+    expect((_getMessageBufferForTest() as Array<{ role: string }>).map((m) => m.role)).toEqual(["user"]);
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string);
+    expect(sent
+      .map(decodeSentCt)
+      .find((d) => d.inner.type === "session_history" && String(d.inner["in_reply_to"]).startsWith("replay_"))).toBeUndefined();
   });
 });
