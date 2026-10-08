@@ -391,6 +391,57 @@ void main() {
     });
   });
 
+  // Pi → App file cards. A card that a TOOL's own result produced names that
+  // tool call, which is how the chat knows to draw the image inside the tool's
+  // row instead of giving it a row of its own.
+  group('Pi → App file cards', () {
+    test('a file_offer names the tool call that produced it', () {
+      final offer =
+          ServerMessage.fromJson({
+                'type': 'file_offer',
+                'id': 'att_tc-9',
+                'name': 'computer_screen-shot.png',
+                'path': '/home/p/.pi/remote/attachments/att_tc-9.png',
+                'mime': 'image/png',
+                'size': 12,
+                'data': 'QUJD',
+                'tool_call_id': 'tc-9',
+              })
+              as FileOffer;
+      expect(offer.toolCallId, 'tc-9');
+    });
+
+    test('a card with no tool call decodes as such (send_to_phone)', () {
+      final offer =
+          ServerMessage.fromJson({
+                'type': 'file_offer',
+                'id': 'att_tc-9',
+                'name': 'chart.png',
+                'path': '/home/p/chart.png',
+                'mime': 'image/png',
+                'size': 12,
+                'data': 'QUJD',
+              })
+              as FileOffer;
+      expect(offer.toolCallId, isNull);
+    });
+
+    test('an attachment history event names it too', () {
+      final event = SessionHistoryEvent.fromJson({
+        'ts': 5,
+        'type': 'attachment',
+        'id': 'att_tc-9',
+        'name': 'computer_screen-shot.png',
+        'path': '/home/p/.pi/remote/attachments/att_tc-9.png',
+        'mime': 'image/png',
+        'size': 12,
+        'tool_call_id': 'tc-9',
+      });
+      expect(event, isA<AttachmentEvt>());
+      expect((event as AttachmentEvt).toolCallId, 'tc-9');
+    });
+  });
+
   // Plan/30 — image attachments on user_message + WireModel.vision.
   group('image attachments (plan 30)', () {
     test('UserMessage without images omits the field (retro-compat)', () {

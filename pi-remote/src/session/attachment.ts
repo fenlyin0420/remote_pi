@@ -12,8 +12,9 @@
 // `resizeImage`, Photon/WASM — no new dependency); anything that still doesn't
 // fit is refused with a message that says what to do instead.
 
-import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { closeSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, extname, join } from "node:path";
+import { homedir } from "node:os";
 import { Type } from "typebox";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -46,6 +47,8 @@ export interface AttachmentMeta {
   note?: string;
   resized?: boolean;
   original_size?: number;
+  /** The tool call this image came out of, when it came out of one at all. */
+  tool_call_id?: string;
 }
 
 /** The `file_offer` ServerMessage: the offer plus its envelope fields. */
@@ -239,6 +242,195 @@ export async function _encodeAttachment(rawPath: string): Promise<AttachmentEnco
     data: head.toString("base64"),
     meta: { id: "", name: basename(path), path, mime: _textMime(path), size },
   };
+}
+
+// ── images a tool returned inline ────────────────────────────────────────────
+//
+// A tool result can carry image blocks — `computer_screen`, a `read` of a PNG,
+// anything the TUI draws inline. Those bytes have to reach the app the same way
+// (`file_offer`) without the agent remembering to call `send_to_phone`, so the
+// extension watches tool results and turns each block into a card.
+//
+// The block carries base64, not a path, so the bytes are MATERIALISED into our
+// own store. Pointing the card at the tool's own file would be tempting (the
+// details usually name one) but wrong: that path is what a later `file_get`
+// reads, and computer-use reuses `shot.png` for every screenshot — an old card
+// would silently redraw the newest picture.
+
+/** One image block of a tool result, as the wire brings it. */
+export interface InlineImageBlock {
+  /** Base64 of the image bytes. */
+  data: string;
+  /** What the block claims to be; the bytes have the last word. */
+  mimeType: string;
+}
+
+const EXT_BY_MIME: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/bmp": "bmp",
+};
+
+/** File extension for a mime we report, for the card's name. */
+export function _imageExtForMime(mime: string): string {
+  return EXT_BY_MIME[mime] ?? "img";
+}
+
+/**
+ * Every image block a tool result carries, in order.
+ *
+ * Live, `tool_execution_end` hands us the wrapper `{ content, details }`; the
+ * history path sees a bare content-array. Both shapes are accepted (same rule
+ * as `_stringifyToolResult`), and a block without bytes is skipped rather than
+ * turned into an empty card.
+ */
+export function _imageBlocksFromToolResult(value: unknown): InlineImageBlock[] {
+  const content = Array.isArray(value)
+    ? value
+    : value && typeof value === "object" && Array.isArray((value as { content?: unknown }).content)
+      ? (value as { content: unknown[] }).content
+      : [];
+  const blocks: InlineImageBlock[] = [];
+  for (const raw of content) {
+    if (!raw || typeof raw !== "object") continue;
+    const block = raw as { type?: unknown; data?: unknown; mimeType?: unknown };
+    if (block.type !== "image") continue;
+    if (typeof block.data !== "string" || !block.data) continue;
+    blocks.push({
+      data: block.data,
+      mimeType: typeof block.mimeType === "string" ? block.mimeType : "",
+    });
+  }
+  return blocks;
+}
+
+let _inlineImageDirOverride: string | undefined;
+
+/** Test seam: materialise tool images in a temp dir, not `~/.pi/remote`. */
+export function _setInlineImageDirForTest(dir?: string): void {
+  _inlineImageDirOverride = dir;
+}
+
+/** `<home>/.pi/remote/attachments` — sibling of `uploads/` and `config.json`. */
+function _inlineImageDir(): string {
+  const dir = _inlineImageDirOverride ?? join(homedir(), ".pi", "remote", "attachments");
+  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { /* exists */ }
+  return dir;
+}
+
+/** Cards kept in the store. Each one is what a `file_get` reads later, so they
+ *  cannot be dropped on the spot — but a session that screenshots all day must
+ *  not leave the daemon growing a file per screenshot forever. Past this point
+ *  the oldest cards lose their bytes (the app has long since cached the ones
+ *  somebody actually looked at, and an ancient card shows the app's
+ *  "gone" state instead of a broken image). */
+export const INLINE_IMAGE_KEEP = 300;
+
+/** Delete all but the `keep` newest files of the inline-image store. */
+export function _pruneInlineImageStore(dir: string, keep: number): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((name) => !name.startsWith("."));
+  } catch {
+    return;
+  }
+  if (names.length <= keep) return;
+  const stamped: Array<{ path: string; mtime: number }> = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      const st = statSync(path);
+      if (st.isFile()) stamped.push({ path, mtime: st.mtimeMs });
+    } catch { /* vanished under us — nothing to prune */ }
+  }
+  stamped.sort((a, b) => b.mtime - a.mtime);
+  for (const { path } of stamped.slice(Math.max(0, keep))) {
+    try { unlinkSync(path); } catch { /* best-effort */ }
+  }
+}
+
+/** A card id doubles as the file name, so it has to be one safe path segment. */
+function _safeCardId(raw: string): string {
+  const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60);
+  return cleaned || `att_${Date.now().toString(36)}`;
+}
+
+/** The card's display name, with the extension the BYTES call for: kept when
+ *  it already matches, replaced when the downscale changed the format
+ *  (`huge.png` → `huge.jpg`), appended when the name had none. */
+function _nameWithExt(rawName: string, ext: string): string {
+  const name = basename(rawName.trim()).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 80) || "image";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return `${name}.${ext}`;
+  const current = name.slice(dot + 1).toLowerCase();
+  if (current === ext) return name;
+  return Object.values(EXT_BY_MIME).includes(current) ? `${name.slice(0, dot)}.${ext}` : `${name}.${ext}`;
+}
+
+/**
+ * Encode one inline image block: write it under `~/.pi/remote/attachments` and
+ * return what the wire needs. Both the live offer and the later `file_get` read
+ * the file we wrote here, so the card keeps showing the picture it was born
+ * with. Downscaling reuses the `send_to_phone` path — same cap, same reason
+ * (see the module comment) — but the result is written to disk as well, since
+ * the downscaled bytes exist nowhere else.
+ */
+export async function _encodeInlineImage(
+  block: InlineImageBlock,
+  opts: { id: string; name?: string },
+): Promise<AttachmentEncodeResult> {
+  const bytes = Buffer.from(block.data, "base64");
+  if (bytes.length === 0) return _fail("unsupported", "The image block carried no bytes.");
+  // Content first, like every other path here: a block that says `image/png`
+  // but holds something else does not get a card.
+  const mime = _sniffImageMime(bytes);
+  if (!mime) return _fail("unsupported", `The image block is not a supported image (${block.mimeType || "unknown type"}).`);
+
+  const id = _safeCardId(opts.id);
+  const dir = _inlineImageDir();
+  const original = bytes.length;
+  const name = _nameWithExt(opts.name ?? id, _imageExtForMime(mime));
+  try {
+    if (original <= ATTACHMENT_MAX_BYTES) {
+      const path = join(dir, `${id}.${_imageExtForMime(mime)}`);
+      writeFileSync(path, bytes, { mode: 0o600 });
+      _pruneInlineImageStore(dir, INLINE_IMAGE_KEEP);
+      return { ok: true, data: bytes.toString("base64"), meta: { id, name, path, mime, size: original } };
+    }
+    const resized = await resizeImage(bytes, mime, {
+      maxWidth: ATTACHMENT_MAX_DIM,
+      maxHeight: ATTACHMENT_MAX_DIM,
+      maxBytes: ATTACHMENT_MAX_BYTES,
+    }).catch(() => null);
+    if (!resized) {
+      return _fail(
+        "too_large",
+        `An inline image of ${original} bytes could not be downscaled under the ` +
+        `${ATTACHMENT_MAX_BYTES} byte limit.`,
+      );
+    }
+    const out = Buffer.from(resized.data, "base64");
+    const path = join(dir, `${id}.${_imageExtForMime(resized.mimeType)}`);
+    writeFileSync(path, out, { mode: 0o600 });
+    _pruneInlineImageStore(dir, INLINE_IMAGE_KEEP);
+    return {
+      ok: true,
+      data: resized.data,
+      meta: {
+        id,
+        name: _nameWithExt(opts.name ?? id, _imageExtForMime(resized.mimeType)),
+        path,
+        mime: resized.mimeType,
+        size: out.length,
+        resized: true,
+        original_size: original,
+      },
+    };
+  } catch (err) {
+    return _fail("internal_error", `Cannot store the inline image: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // ── the tool ─────────────────────────────────────────────────────────────────

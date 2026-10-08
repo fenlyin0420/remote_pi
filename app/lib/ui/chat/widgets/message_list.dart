@@ -179,6 +179,27 @@ class MessageListState extends State<MessageList> {
     final messages = widget.messages;
     final streaming = widget.streaming;
 
+    // An image a TOOL produced (a screenshot, a diagram it read) belongs inside
+    // that tool's row — the same place the TUI draws it. So the attachment rows
+    // are folded into their tool row and the timeline keeps one box per call.
+    // An attachment whose tool row is not in this slice of history (trimmed,
+    // or a `file_get` answering for a card the app has not replayed) keeps its
+    // own card: never lose a picture because its row is missing.
+    final toolCalls = <String>{
+      for (final m in messages)
+        if (m is ToolEvent) m.toolCallId,
+    };
+    final nestedByToolCall = <String, List<AttachmentMsg>>{};
+    final rows = <ChatMessage>[];
+    for (final m in messages) {
+      final toolCallId = m is AttachmentMsg ? m.toolCallId : null;
+      if (toolCallId != null && toolCalls.contains(toolCallId)) {
+        (nestedByToolCall[toolCallId] ??= []).add(m as AttachmentMsg);
+        continue;
+      }
+      rows.add(m);
+    }
+
     // Extents are only final after layout, so following runs then. While the
     // user reads history [_afterLayout] is a no-op.
     _afterFrame(_afterLayout);
@@ -190,7 +211,7 @@ class MessageListState extends State<MessageList> {
         child: ListView.separated(
           controller: controller,
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
-          itemCount: messages.length + (streaming != null ? 1 : 0),
+          itemCount: rows.length + (streaming != null ? 1 : 0),
           separatorBuilder: (context, idx) => const SizedBox(height: 14),
           itemBuilder: (_, i) {
             // Stable keys are REQUIRED here: when the streaming bubble
@@ -198,13 +219,13 @@ class MessageListState extends State<MessageList> {
             // and without keys Flutter re-matches elements by position — briefly
             // painting the wrong message at a slot (the momentary C/B/A → B/C/A
             // reorder). Keying by message id makes it match by identity instead.
-            if (streaming != null && i == messages.length) {
+            if (streaming != null && i == rows.length) {
               return KeyedSubtree(
                 key: const ValueKey('streaming'),
                 child: StreamingBubble(streaming),
               );
             }
-            final msg = messages[i];
+            final msg = rows[i];
             return KeyedSubtree(
               key: ValueKey(msg.id),
               child: switch (msg) {
@@ -214,6 +235,10 @@ class MessageListState extends State<MessageList> {
                 ToolEvent() => ToolRequestCard(
                   tool: msg,
                   onDecide: widget.onDecide,
+                  attachments: nestedByToolCall[msg.toolCallId] ?? const [],
+                  loadAttachmentBytes: widget.loadAttachmentBytes,
+                  onLoadAttachment: widget.onLoadAttachment,
+                  onSaveAttachment: widget.onSaveAttachment,
                 ),
                 CompactionMsg() => CompactionBubble(msg),
                 AttachmentMsg() => AttachmentCard(

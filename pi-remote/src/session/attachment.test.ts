@@ -7,9 +7,9 @@
  * every refusal comes back typed so the tool can tell the model what happened.
  */
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ServerMessage } from "../protocol/types.js";
 
@@ -25,6 +25,10 @@ const {
   ATTACHMENT_TEXT_MAX_BYTES,
   _decodeTextStrict,
   _encodeAttachment,
+  _encodeInlineImage,
+  _imageBlocksFromToolResult,
+  _pruneInlineImageStore,
+  _setInlineImageDirForTest,
   _sniffImageMime,
   handleFileGetRequest,
   registerSendToPhoneTool,
@@ -33,6 +37,12 @@ const {
 // Minimal valid-ish headers — the sniffer only looks at magic bytes.
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+
+/** A real 2×2 PNG (valid CRC and all), so the sniffer and any decode agree. */
+const PNG_2X2 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP4z8DAwPAfjP//ZwAAIO4E/H1h0SQAAAAASUVORK5CYII=",
+  "base64",
+);
 
 let dir: string;
 
@@ -175,6 +185,108 @@ describe("_encodeAttachment", () => {
     symlinkSync(target, link);
     const res = await _encodeAttachment(link);
     expect(res.ok && res.meta.path).toBe(target);
+  });
+});
+
+describe("images a tool returned inline", () => {
+  let store: string;
+
+  beforeEach(() => {
+    store = join(dir, "attachments");
+    _setInlineImageDirForTest(store);
+  });
+
+  afterEach(() => {
+    _setInlineImageDirForTest(undefined);
+  });
+
+  test("finds the image blocks of both result shapes", () => {
+    const block = { type: "image", data: PNG_2X2.toString("base64"), mimeType: "image/png" };
+    // Live: the `{ content, details }` wrapper.
+    expect(_imageBlocksFromToolResult({
+      content: [{ type: "text", text: "Virtual desktop screenshot." }, block],
+      details: { display: ":99" },
+    })).toEqual([{ data: block.data, mimeType: "image/png" }]);
+    // Re-sync: the bare content-array.
+    expect(_imageBlocksFromToolResult([block])).toHaveLength(1);
+    // Anything else: no blocks, no cards.
+    expect(_imageBlocksFromToolResult({ content: [{ type: "text", text: "plain" }] })).toEqual([]);
+    expect(_imageBlocksFromToolResult([{ type: "image", mimeType: "image/png" }])).toEqual([]);
+    expect(_imageBlocksFromToolResult("ok")).toEqual([]);
+    expect(_imageBlocksFromToolResult(undefined)).toEqual([]);
+  });
+
+  test("materialises the bytes under the card id and keeps the claimed name", async () => {
+    const res = await _encodeInlineImage(
+      { data: PNG_2X2.toString("base64"), mimeType: "image/png" },
+      { id: "att_tc-42", name: "computer_screen-shot.png" },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.meta).toMatchObject({ id: "att_tc-42", name: "computer_screen-shot.png", mime: "image/png", size: PNG_2X2.length });
+    // The card's path is OUR copy, not wherever the tool had it: a later
+    // `file_get` reads this file, and tools reuse their file names.
+    expect(res.meta.path).toBe(join(store, "att_tc-42.png"));
+    expect(readFileSync(res.meta.path).equals(PNG_2X2)).toBe(true);
+    expect(res.data).toBe(PNG_2X2.toString("base64"));
+    expect(res.meta.resized).toBeUndefined();
+  });
+
+  test("names the card after the bytes: a missing extension is added", async () => {
+    const res = await _encodeInlineImage(
+      { data: PNG_2X2.toString("base64"), mimeType: "image/png" },
+      { id: "att_tc-43", name: "computer_screen" },
+    );
+    expect(res.ok && res.meta.name).toBe("computer_screen.png");
+  });
+
+  test("a block that lies about being an image gets no card", async () => {
+    const res = await _encodeInlineImage(
+      { data: Buffer.from("not an image at all").toString("base64"), mimeType: "image/png" },
+      { id: "att_tc-44", name: "fake.png" },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.ok === false && res.code).toBe("unsupported");
+  });
+
+  test("an oversized image is downscaled and the resized bytes are what get stored", async () => {
+    const payload = Buffer.alloc(2048, 7).toString("base64");
+    _mockResize({ data: payload, mimeType: "image/jpeg" });
+    const res = await _encodeInlineImage(
+      { data: Buffer.concat([PNG_MAGIC, Buffer.alloc(ATTACHMENT_MAX_BYTES)]).toString("base64"), mimeType: "image/png" },
+      { id: "att_tc-45", name: "huge.png" },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.meta).toMatchObject({ resized: true, mime: "image/jpeg", original_size: ATTACHMENT_MAX_BYTES + PNG_MAGIC.length });
+    expect(res.meta.size).toBe(2048);
+    // The extension follows the mime we actually stored.
+    expect(res.meta.path).toBe(join(store, "att_tc-45.jpg"));
+    expect(readFileSync(res.meta.path).equals(Buffer.alloc(2048, 7))).toBe(true);
+    expect(res.meta.name).toBe("huge.jpg");
+  });
+
+  test("a card id can never escape the store", async () => {
+    const res = await _encodeInlineImage(
+      { data: PNG_2X2.toString("base64"), mimeType: "image/png" },
+      { id: "att_../../etc/passwd", name: "x.png" },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(dirname(res.meta.path)).toBe(store);
+    expect(basename(res.meta.path)).toBe("att_etcpasswd.png");
+  });
+
+  test("the store keeps its newest cards instead of growing forever", () => {
+    mkdirSync(store, { recursive: true });
+    const stamps = [1, 2, 3, 4];
+    for (const stamp of stamps) {
+      const path = join(store, `att_t${stamp}.png`);
+      writeFileSync(path, PNG_2X2);
+      utimesSync(path, stamp, stamp);
+    }
+    _pruneInlineImageStore(store, 2);
+    expect(readdirSync(store).sort()).toEqual(["att_t3.png", "att_t4.png"]);
   });
 });
 

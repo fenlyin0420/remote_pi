@@ -14,7 +14,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:app/domain/session_state.dart';
+import 'package:app/ui/chat/widgets/attachment_card.dart';
 import 'package:app/ui/chat/widgets/message_list.dart';
+import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -222,5 +224,101 @@ void main() {
 
     expect(find.text('hello there'), findsOneWidget);
     expect(find.text('message 30'), findsOneWidget);
+  });
+
+  // An image a TOOL produced (a screenshot, a diagram it read) is not a message
+  // of its own: it belongs inside that tool's row, the place the TUI draws it.
+  // The fallback matters too — an attachment whose tool row is not in this
+  // slice of history must keep a card of its own rather than vanish.
+  group('a tool image rides inside its tool row', () {
+    const screenTool = ToolEvent(
+      id: 'tc_shot',
+      toolCallId: 'tc_shot',
+      tool: 'computer_screen',
+      args: {'region': {'x': 0, 'y': 0, 'w': 100, 'h': 100}},
+      status: ToolEventStatus.completed,
+      result: 'Virtual desktop screenshot (full screen 1920x1080).',
+    );
+
+    AttachmentMsg shot() => const AttachmentMsg(
+      id: 'att_tc_shot',
+      name: 'computer_screen-shot.png',
+      path: '/p/shot.png',
+      mime: 'image/png',
+      size: 4096,
+      toolCallId: 'tc_shot',
+    );
+
+    testWidgets('the tool row carries it and there is no second card', (
+      tester,
+    ) async {
+      await _pump(tester, [screenTool, shot()]);
+
+      final card = tester.widget<ToolRequestCard>(
+        find.byType(ToolRequestCard),
+      );
+      expect(card.attachments.map((a) => a.id), ['att_tc_shot']);
+      expect(
+        find.descendant(
+          of: find.byType(ToolRequestCard),
+          matching: find.byType(AttachmentCard),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    // The list only builds what is on screen, so these two keep the tool row
+    // last (and the case down to two rows) to have both in the tree.
+    testWidgets('a card with no tool call keeps its own row', (tester) async {
+      await _pump(tester, [
+        // A `send_to_phone` hand-off: no tool call, and no tool card either.
+        const AttachmentMsg(
+          id: 'att_x',
+          name: 'chart.png',
+          path: '/p/chart.png',
+          mime: 'image/png',
+          size: 4096,
+        ),
+        screenTool,
+      ]);
+
+      expect(
+        tester.widget<ToolRequestCard>(find.byType(ToolRequestCard)).attachments,
+        isEmpty,
+      );
+      expect(find.byType(AttachmentCard), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ToolRequestCard),
+          matching: find.byType(AttachmentCard),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('a card whose tool row is missing keeps its own row', (
+      tester,
+    ) async {
+      await _pump(tester, [
+        // A tool call that is not in this slice of history (trimmed away, or a
+        // `file_get` answering for a card this replay never carried). Losing
+        // the picture would be far worse than a card in the wrong place.
+        const AttachmentMsg(
+          id: 'att_tc_gone',
+          name: 'old-shot.png',
+          path: '/p/old.png',
+          mime: 'image/png',
+          size: 4096,
+          toolCallId: 'tc_gone',
+        ),
+        screenTool,
+      ]);
+
+      expect(
+        tester.widget<ToolRequestCard>(find.byType(ToolRequestCard)).attachments,
+        isEmpty,
+      );
+      expect(find.byType(AttachmentCard), findsOneWidget);
+    });
   });
 }

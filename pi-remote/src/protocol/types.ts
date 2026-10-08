@@ -291,6 +291,11 @@ export interface WireFileOffer {
   resized?: boolean;
   /** Size on disk before any downscale, when it differs from `size`. */
   original_size?: number;
+  /** The tool call whose result carried this image. Present only for images
+   *  that came out of a tool's own result (a screenshot, a diagram a tool
+   *  read): the app renders those INSIDE that tool's row instead of as a card
+   *  of their own. Absent for `send_to_phone`, which is its own card. */
+  tool_call_id?: string;
 }
 
 export type Usage = { input_tokens: number; output_tokens: number };
@@ -357,6 +362,9 @@ export type SessionHistoryEvent =
       note?: string;
       resized?: boolean;
       original_size?: number;
+      /** The tool call that produced the image, when a tool's result did —
+       *  the app nests such a card inside that tool's row. */
+      tool_call_id?: string;
     }
   // Plan/32: a context-compaction marker, replayed in history (survives
   // re-sync like images) so the app re-renders the "context compacted" notice.

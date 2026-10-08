@@ -256,9 +256,11 @@ const {
   _routeClientMessageFrom,
   _deliverMeshMessageToAgentForTest,
   _setUploadDirForTest,
+  _resetPendingToolImagesForTest,
   CTRL_PREFIX,
 } = indexModule;
 const { acquireCwdLock } = await import("./session/cwd_lock.js");
+const { _setInlineImageDirForTest } = await import("./session/attachment.js");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -4122,6 +4124,158 @@ describe("session sync", () => {
     _routeClientMessageFrom(sender as never, { type: "file_get", id: "g-2", path: join(tmpdir(), "rp-ghost.png") }, { abort: () => false });
     await vi.waitFor(() => expect(sender.send).toHaveBeenCalled());
     expect(sender.send.mock.calls[0]![0]).toMatchObject({ type: "error", in_reply_to: "g-2", code: "not_found" });
+  });
+
+  // ── Inline tool images (the TUI's inline image, mirrored) ────────────────
+  //
+  // A tool that returns image blocks — `computer_screen`, a `read` of a PNG —
+  // has to reach the phone on its own: one card per block, right behind the
+  // tool card, and rebuildable from the session on a re-sync.
+
+  // A real 2×2 PNG (valid CRC and all), so the sniffer and any decode agree.
+  const PNG_2X2_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGP4z8DAwPAfjP//ZwAAIO4E/H1h0SQAAAAASUVORK5CYII=";
+  const PNG_2X2_BYTES = Buffer.from(PNG_2X2_B64, "base64");
+
+  test("a tool's image block becomes a card: live right after the result, and on re-sync", async () => {
+    await _pairForTest("peer-img-1");
+    const dir = mkdtempSync(join(tmpdir(), "rp-inline-"));
+    _setInlineImageDirForTest(join(dir, "attachments"));
+    _resetPendingToolImagesForTest();
+    try {
+      const onToolEnd = captureEventHandler("tool_execution_end");
+      const onMsgEnd = captureEventHandler("message_end");
+      const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+      onToolEnd({
+        type: "tool_execution_end",
+        toolCallId: "tc_shot",
+        toolName: "computer_screen",
+        result: {
+          content: [
+            { type: "text", text: "Virtual desktop screenshot (full screen 1920x1080)." },
+            { type: "image", data: PNG_2X2_B64, mimeType: "image/png" },
+          ],
+          details: { display: ":99", path: "/home/p/.pi/computer-use/shot.png" },
+        },
+        isError: false,
+      });
+
+      await vi.waitFor(() => {
+        const offers = relayRef.current!.send.mock.calls.slice(sendsBefore)
+          .map((c) => c[0] as string).map(decodeSentCt)
+          .filter((d) => d.inner.type === "file_offer");
+        expect(offers).toHaveLength(1);
+      });
+
+      // Order on the wire: the tool card first, its image behind it.
+      const frames = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt);
+      expect(frames.map((f) => f.inner.type)).toEqual(["tool_result", "file_offer"]);
+
+      const offer = frames[1]!.inner as { id: string; name: string; path: string; mime: string; data: string };
+      // The tool is part of the name: `shot.png` alone says nothing.
+      expect(offer).toMatchObject({ id: "att_tc_shot", name: "computer_screen-shot.png", mime: "image/png", tool_call_id: "tc_shot" });
+      // The card's path is OUR copy — a `file_get` later reads this file, and
+      // computer-use reuses `shot.png` for every screenshot.
+      expect(offer.path).toBe(join(dir, "attachments", "att_tc_shot.png"));
+      expect(readFileSync(offer.path).equals(PNG_2X2_BYTES)).toBe(true);
+      expect(offer.data).toBe(PNG_2X2_B64);
+
+      // The result message lands → the card is remembered AFTER it, so the
+      // replay order matches what the app saw live.
+      await onMsgEnd({
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          toolCallId: "tc_shot",
+          content: [{ type: "text", text: "Virtual desktop screenshot (full screen 1920x1080)." }],
+          timestamp: 5,
+        },
+      } as unknown as Parameters<typeof onMsgEnd>[0]);
+
+      const events = _mapAgentMessagesToEvents(_getMessageBufferForTest());
+      expect(events.map((e) => e.type)).toEqual(["tool_result", "attachment"]);
+      expect(events[1]).toMatchObject({
+        type: "attachment",
+        id: "att_tc_shot",
+        name: "computer_screen-shot.png",
+        path: join(dir, "attachments", "att_tc_shot.png"),
+        mime: "image/png",
+        size: PNG_2X2_BYTES.length,
+        // The tool call it belongs to: the app nests the image in that row.
+        tool_call_id: "tc_shot",
+      });
+      // Metadata only: the app pulls the bytes with `file_get`.
+      expect(events[1]).not.toHaveProperty("data");
+    } finally {
+      _setInlineImageDirForTest(undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("only images of a finished, non-nested tool call become cards", async () => {
+    await _pairForTest("peer-img-2");
+    const dir = mkdtempSync(join(tmpdir(), "rp-inline-neg-"));
+    _setInlineImageDirForTest(dir);
+    _resetPendingToolImagesForTest();
+    try {
+      const onToolEnd = captureEventHandler("tool_execution_end");
+      const sendsBefore = relayRef.current!.send.mock.calls.length;
+      const image = { type: "image", data: PNG_2X2_B64, mimeType: "image/png" };
+
+      // A failed tool: the error text is the whole story.
+      onToolEnd({ type: "tool_execution_end", toolCallId: "tc_err", toolName: "computer_screen", result: { content: [{ type: "text", text: "screenshot failed" }] }, isError: true });
+      // A tool that simply has no image.
+      onToolEnd({ type: "tool_execution_end", toolCallId: "tc_txt", toolName: "read", result: { content: [{ type: "text", text: "plain" }] }, isError: false });
+      // Nested: codemode running `computer_screen` never reaches the transcript,
+      // so a card for it could not survive a re-sync.
+      onToolEnd({ type: "tool_execution_end", toolCallId: "tc_nested", parentToolCallId: "tc_parent", toolName: "computer_screen", result: { content: [image] }, isError: false });
+
+      await new Promise<void>((r) => setImmediate(r));
+      const offers = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt)
+        .filter((d) => d.inner.type === "file_offer");
+      expect(offers).toHaveLength(0);
+      expect(_getMessageBufferForTest().every((m) => m.role !== "custom")).toBe(true);
+    } finally {
+      _setInlineImageDirForTest(undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("several images in one result each get their own card", async () => {
+    await _pairForTest("peer-img-3");
+    const dir = mkdtempSync(join(tmpdir(), "rp-inline-multi-"));
+    _setInlineImageDirForTest(dir);
+    _resetPendingToolImagesForTest();
+    try {
+      const onToolEnd = captureEventHandler("tool_execution_end");
+      const sendsBefore = relayRef.current!.send.mock.calls.length;
+      onToolEnd({
+        type: "tool_execution_end", toolCallId: "tc_two", toolName: "browser_shot", isError: false,
+        result: { content: [
+          { type: "image", data: PNG_2X2_B64, mimeType: "image/png" },
+          { type: "image", data: PNG_2X2_B64, mimeType: "image/png" },
+        ] },
+      });
+
+      await vi.waitFor(() => {
+        const offers = relayRef.current!.send.mock.calls.slice(sendsBefore)
+          .map((c) => c[0] as string).map(decodeSentCt)
+          .filter((d) => d.inner.type === "file_offer");
+        expect(offers).toHaveLength(2);
+      });
+      const offers = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt)
+        .filter((d) => d.inner.type === "file_offer")
+        .map((d) => d.inner as unknown as { id: string; name: string });
+      expect(offers.map((o) => o.id)).toEqual(["att_tc_two", "att_tc_two-2"]);
+      expect(offers.map((o) => o.name)).toEqual(["browser_shot-1.png", "browser_shot-2.png"]);
+    } finally {
+      _setInlineImageDirForTest(undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("pair_ok carries session_started_at = _sessionStartedAt", async () => {

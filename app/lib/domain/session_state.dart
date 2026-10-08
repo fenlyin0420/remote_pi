@@ -187,6 +187,11 @@ class AttachmentMsg extends ChatMessage {
   /// card renders the reason instead of a preview.
   final String? error;
 
+  /// The tool call this image came out of, when a tool's own result carried it.
+  /// The chat renders such a card INSIDE that tool's row (there is no card of
+  /// its own); null for a `send_to_phone` hand-off.
+  final String? toolCallId;
+
   const AttachmentMsg({
     required super.id,
     required this.name,
@@ -198,6 +203,7 @@ class AttachmentMsg extends ChatMessage {
     this.originalSize,
     this.blobName,
     this.error,
+    this.toolCallId,
   });
 
   /// True when the mime is an image the card can render inline (SVG is text
@@ -223,6 +229,7 @@ class AttachmentMsg extends ChatMessage {
     // A later replay carries no bytes, so only overwrite when we HAVE some.
     blobName: blobName ?? this.blobName,
     error: clearError ? null : (error ?? this.error),
+    toolCallId: toolCallId,
   );
 
   @override
@@ -237,7 +244,8 @@ class AttachmentMsg extends ChatMessage {
       other.resized == resized &&
       other.originalSize == originalSize &&
       other.blobName == blobName &&
-      other.error == error;
+      other.error == error &&
+      other.toolCallId == toolCallId;
 
   @override
   int get hashCode => Object.hash(

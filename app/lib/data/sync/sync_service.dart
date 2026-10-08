@@ -943,6 +943,7 @@ class SyncService extends Service {
         :final note,
         :final resized,
         :final originalSize,
+        :final toolCallId,
       ):
         // The Pi handing us a file (`send_to_phone`, or the answer to a
         // `file_get`). Sequential ordering: the card belongs where the tool ran,
@@ -963,6 +964,7 @@ class SyncService extends Service {
           note: note,
           resized: resized,
           originalSize: originalSize,
+          toolCallId: toolCallId,
         );
 
       case ExtensionUiRequest():
@@ -1033,6 +1035,7 @@ class SyncService extends Service {
     required String? note,
     required bool resized,
     required int? originalSize,
+    String? toolCallId,
   }) async {
     String? blob;
     if (data != null && data.isNotEmpty) {
@@ -1062,6 +1065,10 @@ class SyncService extends Service {
           resized: resized,
           originalSize: originalSize,
           blobName: blob ?? existing?.attachment?.blobName,
+          // The bytes a `file_get` brings back carry no tool call, so an
+          // existing association has to survive the upsert — otherwise the
+          // card would jump out of the tool row the moment the user taps it.
+          toolCallId: toolCallId ?? existing?.attachment?.toolCallId,
         ),
       ),
     );
@@ -1107,6 +1114,7 @@ class SyncService extends Service {
               resized: a.resized,
               originalSize: a.originalSize,
               blobName: blob,
+              toolCallId: a.toolCallId,
             ),
           );
         }
@@ -1293,6 +1301,7 @@ class SyncService extends Service {
           :final note,
           :final resized,
           :final originalSize,
+          :final toolCallId,
         ):
           out.add(
             MessageRecord(
@@ -1308,6 +1317,7 @@ class SyncService extends Service {
                 note: note,
                 resized: resized,
                 originalSize: originalSize,
+                toolCallId: toolCallId,
               ),
             ),
           );

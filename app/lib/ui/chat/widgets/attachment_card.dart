@@ -30,9 +30,16 @@ class AttachmentCard extends StatefulWidget {
     required this.loadBytes,
     required this.onLoad,
     required this.onSave,
+    this.embedded = false,
   });
 
   final AttachmentMsg message;
+
+  /// Render the content alone, without this card's own frame and file header:
+  /// used when the picture belongs INSIDE another box — a tool row whose own
+  /// result produced the image (the tool header already names it, and a box in
+  /// a box reads as a second, unrelated file).
+  final bool embedded;
 
   /// Reads the locally cached bytes (null when there is nothing cached).
   final Future<Uint8List?> Function(String blobName) loadBytes;
@@ -142,6 +149,31 @@ class _AttachmentCardState extends State<AttachmentCard> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final msg = widget.message;
+    final content = <Widget>[
+      if (msg.error != null)
+        _errorLine(context, msg.error!)
+      else if (msg.isImage)
+        _image(context)
+      else if (_bytes != null)
+        _textPreview(context)
+      else
+        _placeholder(context),
+      if (msg.note != null && msg.note!.trim().isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          child: Text(
+            msg.note!.trim(),
+            style: context.typo.sansBody.copyWith(color: colors.muted),
+          ),
+        ),
+    ];
+    if (widget.embedded) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: content,
+      );
+    }
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -153,25 +185,7 @@ class _AttachmentCardState extends State<AttachmentCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
-        children: [
-          _header(context),
-          if (msg.error != null)
-            _errorLine(context, msg.error!)
-          else if (msg.isImage)
-            _image(context)
-          else if (_bytes != null)
-            _textPreview(context)
-          else
-            _placeholder(context),
-          if (msg.note != null && msg.note!.trim().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-              child: Text(
-                msg.note!.trim(),
-                style: context.typo.sansBody.copyWith(color: colors.muted),
-              ),
-            ),
-        ],
+        children: [_header(context), ...content],
       ),
     );
   }

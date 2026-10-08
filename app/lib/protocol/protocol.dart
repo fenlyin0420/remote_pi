@@ -1423,6 +1423,12 @@ class FileOffer extends ServerMessage {
   /// Size on the Pi's disk before any downscale, when it differs from [size].
   final int? originalSize;
 
+  /// The tool call this image came out of, when a tool's own result carried it
+  /// (a screenshot, a diagram a tool read). The chat renders such a card INSIDE
+  /// that tool's row — there is no separate card for it. Null for
+  /// `send_to_phone` and for anything the user sent.
+  final String? toolCallId;
+
   /// Set when this offer answers a [FileGet].
   final String? inReplyTo;
 
@@ -1436,6 +1442,7 @@ class FileOffer extends ServerMessage {
     this.note,
     this.resized = false,
     this.originalSize,
+    this.toolCallId,
     this.inReplyTo,
   });
 
@@ -1452,6 +1459,7 @@ class FileOffer extends ServerMessage {
     note: j['note'] as String?,
     resized: (j['resized'] as bool?) ?? false,
     originalSize: (j['original_size'] as num?)?.toInt(),
+    toolCallId: j['tool_call_id'] as String?,
     inReplyTo: j['in_reply_to'] as String?,
   );
 }
@@ -1549,6 +1557,7 @@ sealed class SessionHistoryEvent {
         note: j['note'] as String?,
         resized: (j['resized'] as bool?) ?? false,
         originalSize: (j['original_size'] as num?)?.toInt(),
+        toolCallId: j['tool_call_id'] as String?,
       ),
       final t => throw UnsupportedTypeException(t ?? ''),
     };
@@ -1664,6 +1673,10 @@ class AttachmentEvt extends SessionHistoryEvent {
   final bool resized;
   final int? originalSize;
 
+  /// The tool call that produced the image, when a tool's own result did; the
+  /// chat nests such a card inside that tool's row.
+  final String? toolCallId;
+
   const AttachmentEvt({
     required super.ts,
     required this.id,
@@ -1674,6 +1687,7 @@ class AttachmentEvt extends SessionHistoryEvent {
     this.note,
     this.resized = false,
     this.originalSize,
+    this.toolCallId,
   });
 }
 

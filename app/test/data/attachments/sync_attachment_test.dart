@@ -118,6 +118,21 @@ void main() {
     return out;
   }
 
+  /// Wait for the box to reach a state, instead of sleeping a fixed window the
+  /// write path can lose on a loaded machine (the suite runs its files in
+  /// parallel): a card that lands late is a slow machine, not a broken app.
+  Future<List<MessageRecord>> rowsAfter(
+    String epk,
+    bool Function(List<MessageRecord>) done,
+  ) async {
+    for (var i = 0; i < 200; i++) {
+      final rows = messages(epk);
+      if (done(rows)) return rows;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    return messages(epk);
+  }
+
   test('a file_offer writes one card and caches the bytes', () async {
     final s = await setup();
     s.ch.push(
@@ -234,6 +249,7 @@ void main() {
             mime: 'image/png',
             size: 4096,
             note: 'throughput',
+            toolCallId: 'tc-9',
           ),
         ],
         eos: true,
@@ -246,6 +262,50 @@ void main() {
     final domain = m.last.toChatMessage() as AttachmentMsg;
     expect(domain.hasContent, isFalse, reason: 'history carries metadata only');
     expect(domain.note, 'throughput');
+    // The tool call it belongs to survives the replay: that is what keeps the
+    // image inside its tool row after reopening the room.
+    expect(domain.toolCallId, 'tc-9');
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  test('the bytes of a tool image never detach it from its tool call', () async {
+    final s = await setup();
+    s.ch.push(
+      FileOffer(
+        id: 'att_tc-9',
+        name: 'computer_screen-shot.png',
+        path: '/home/p/shot.png',
+        mime: 'image/png',
+        size: _png.length,
+        data: base64Encode(_png),
+        toolCallId: 'tc-9',
+      ),
+    );
+    var rows = await rowsAfter(s.epk, (r) => r.isNotEmpty);
+    expect(rows.single.attachment!.toolCallId, 'tc-9');
+
+    // The answer to a `file_get` carries no tool call of its own (the Pi has no
+    // way to know which bubble asked), so the association has to survive the
+    // upsert — otherwise tapping the image would move it out of the tool row.
+    s.ch.push(
+      FileOffer(
+        id: 'att_tc-9',
+        name: 'computer_screen-shot.png',
+        path: '/home/p/shot.png',
+        mime: 'image/png',
+        size: _png.length,
+        data: base64Encode(_png),
+        inReplyTo: 'g-1',
+      ),
+    );
+    rows = await rowsAfter(
+      s.epk,
+      (r) => r.length == 1 && (r.single.toChatMessage() as AttachmentMsg).hasContent,
+    );
+    expect(rows, hasLength(1), reason: 'the answer upserts the same card');
+    expect(rows.single.attachment!.toolCallId, 'tc-9');
+    expect((rows.single.toChatMessage() as AttachmentMsg).hasContent, isTrue);
     s.conn.dispose();
     s.sync.dispose();
   });

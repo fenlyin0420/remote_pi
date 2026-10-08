@@ -92,6 +92,8 @@ import { registerAgentTools } from "./session/tools.js";
 import {
   ATTACHMENT_CUSTOM_TYPE,
   SEND_TO_PHONE_TOOL,
+  _encodeInlineImage,
+  _imageBlocksFromToolResult,
   handleFileGetRequest,
   registerSendToPhoneTool,
   type AttachmentMeta,
@@ -135,7 +137,7 @@ import {
 } from "./session/local_config.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
-import { join, isAbsolute, dirname, resolve } from "node:path";
+import { join, isAbsolute, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -906,6 +908,122 @@ function _rememberAttachmentForHistory(meta: AttachmentMeta): void {
       `[remote-pi] could not persist attachment ${meta.id}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+// ── Inline tool images (the TUI's inline image, mirrored) ────────────────────
+//
+// A tool that returns image blocks renders them inline in the TUI; the phone
+// gets the same thing, without anyone calling `send_to_phone`: each image block
+// of a tool result becomes an attachment card, live and on re-sync.
+//
+// Two orderings have to line up. Live: the `tool_result` frame is broadcast
+// synchronously, the card follows it. Replay: the mapper walks `_messageBuffer`
+// in order, so the card's custom message has to be pushed AFTER the toolResult
+// message — which only exists at `message_end`. Hence the split: encode at
+// `tool_execution_end` (broadcast the offer right after the result), remember
+// when the result message lands.
+
+/** Images forwarded from ONE tool result. The TUI has a scroll region for a
+ *  twenty-image dump; a chat timeline does not. */
+const INLINE_TOOL_IMAGE_MAX = 4;
+
+/** Bound on the tool calls whose images are waiting for their result message.
+ *  A nested call (`ctx.executeTool`) never produces one, so this map is not
+ *  self-emptying and must not grow with the session. */
+const INLINE_TOOL_IMAGE_PENDING_MAX = 32;
+
+let _pendingToolImages = new Map<string, Promise<Array<{ meta: AttachmentMeta; data: string }>>>();
+
+/** Test seam: forget queued images between cases. */
+export function _resetPendingToolImagesForTest(): void {
+  _pendingToolImages = new Map();
+}
+
+/**
+ * Turn the image blocks of one tool result into queued cards.
+ *
+ * Skipped: a failed tool (its error text is the whole story), `send_to_phone`
+ * (it IS a card already), and a NESTED call — codemode running `computer_screen`
+ * never reaches the transcript, so a card for it could not survive a re-sync and
+ * live would disagree with replay.
+ */
+function _queueInlineToolImages(event: {
+  toolCallId?: unknown;
+  toolName?: unknown;
+  parentToolCallId?: unknown;
+  isError?: unknown;
+  result?: unknown;
+}): void {
+  const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : "";
+  if (!toolCallId || event.isError === true) return;
+  if (event.toolName === SEND_TO_PHONE_TOOL) return;
+  if (typeof event.parentToolCallId === "string" && event.parentToolCallId) return;
+  const blocks = _imageBlocksFromToolResult(event.result).slice(0, INLINE_TOOL_IMAGE_MAX);
+  if (blocks.length === 0) return;
+
+  const stem = _inlineImageStem(event.toolName, event.result);
+  const pending = Promise.all(blocks.map((block, index) => _encodeInlineImage(block, {
+    id: index === 0 ? `att_${toolCallId}` : `att_${toolCallId}-${index + 1}`,
+    name: blocks.length > 1 ? `${stem}-${index + 1}` : stem,
+  }))).then((results) => results.flatMap((result) =>
+    // `tool_call_id` rides along so the app can put this image INSIDE the tool
+    // row that produced it — live and on a re-sync, both from here.
+    result.ok ? [{ meta: { ...result.meta, tool_call_id: toolCallId }, data: result.data }] : []))
+    .catch((err) => {
+      // Never let a bad image take a turn down; the tool result already stands.
+      console.error(
+        `[remote-pi] could not forward a tool image (${String(event.toolName)}): ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [];
+    });
+
+  _pendingToolImages.set(toolCallId, pending);
+  if (_pendingToolImages.size > INLINE_TOOL_IMAGE_PENDING_MAX) {
+    const oldest = _pendingToolImages.keys().next().value;
+    if (typeof oldest === "string") _pendingToolImages.delete(oldest);
+  }
+}
+
+/**
+ * Card name: the file the tool named when it named one (`read` of a diagram),
+ * prefixed with the tool — `computer_screen-shot.png` says more on a phone than
+ * `shot.png` alone.
+ */
+function _inlineImageStem(toolName: unknown, result: unknown): string {
+  const tool = typeof toolName === "string" && toolName ? toolName : "image";
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    const details = (result as { details?: unknown }).details;
+    const path = details && typeof details === "object" ? (details as { path?: unknown }).path : undefined;
+    if (typeof path === "string" && path.trim()) {
+      const name = basename(path.trim());
+      if (name && name !== "." && name !== "..") return `${tool}-${name}`;
+    }
+  }
+  return tool;
+}
+
+/** Push the queued offers for one tool call. The encode is already running (it
+ *  started at `tool_execution_end`), so the frames land right behind the
+ *  `tool_result` that was sent from there. */
+function _broadcastToolImages(toolCallId: string): void {
+  const pending = _pendingToolImages.get(toolCallId);
+  if (!pending) return;
+  void pending
+    .then((items) => {
+      for (const item of items) _broadcastToActive({ type: "file_offer", ...item.meta, data: item.data });
+    })
+    .catch(() => { /* an image we cannot show never takes the turn down */ });
+}
+
+/** Persist the cards for one tool result, after its message reached the buffer. */
+async function _rememberToolImages(toolCallId: string): Promise<void> {
+  const pending = toolCallId ? _pendingToolImages.get(toolCallId) : undefined;
+  if (!pending) return;
+  _pendingToolImages.delete(toolCallId);
+  try {
+    for (const item of await pending) _rememberAttachmentForHistory(item.meta);
+  } catch { /* same deal as the broadcast: no card, no crash */ }
 }
 
 // ── Uploaded text files (app → Pi) ───────────────────────────────────────────
@@ -2824,6 +2942,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // early-return — a room with no active app peer still updates its
     // room_meta context.
     _publishContextUsage(ctx);
+    // Queue any image the tool returned before the peer check: the replay has
+    // to rebuild the card even when nobody was watching live.
+    _queueInlineToolImages(event);
     if (!_anyPeerActive()) return;
     if (event.toolName === SEND_TO_PHONE_TOOL) return;
     // Stringify like the history mapper (same helper) so the live text == what
@@ -2841,6 +2962,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
           ...(diff === undefined ? {} : { diff }),
         };
     _broadcastToActive(msg);
+    _broadcastToolImages(event.toolCallId);
   });
 
   // Cumulative session buffer fed via `message_end`, which fires once per
@@ -2850,7 +2972,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // turn — including turns initiated from the Pi terminal (source:"interactive")
   // or RPC. Previous impl overwrote on `agent_end` and lost everything but the
   // last turn (see diagnostics 14, 15).
-  pi.on("message_end", (event, ctx) => {
+  pi.on("message_end", async (event, ctx) => {
     // Plan/42: refresh the context usage after every persisted message
     // (user / assistant / toolResult) so the app's row tracks a turn's
     // growth (debounced to at most once per 3 s).
@@ -2888,6 +3010,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         ? { type: "error", in_reply_to: _currentTurnId, code: "provider_error", message }
         : { type: "error", code: "provider_error", message };
       _broadcastToActive(errMsg);
+    }
+    // Inline images land HERE, not at `tool_execution_end`: the buffer has just
+    // taken the toolResult message, so pushing the card now makes the re-sync
+    // order (tool card, then image) match the live stream.
+    if (m.role === "toolResult") {
+      await _rememberToolImages(String((m as { toolCallId?: unknown }).toolCallId ?? ""));
     }
   });
 
@@ -6334,6 +6462,7 @@ function _attachmentMetaFromMessage(m: unknown): AttachmentMeta | null {
     ...(typeof meta.note === "string" && meta.note ? { note: meta.note } : {}),
     ...(meta.resized === true ? { resized: true } : {}),
     ...(typeof meta.original_size === "number" ? { original_size: meta.original_size } : {}),
+    ...(typeof meta.tool_call_id === "string" && meta.tool_call_id ? { tool_call_id: meta.tool_call_id } : {}),
   };
 }
 

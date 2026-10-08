@@ -1,7 +1,9 @@
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/chat/widgets/attachment_card.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -35,7 +37,27 @@ class ToolRequestCard extends StatefulWidget {
   final ToolEvent tool;
   final void Function(String toolCallId, ApproveDecision decision)? onDecide;
 
-  const ToolRequestCard({super.key, required this.tool, this.onDecide});
+  /// Images this very tool's result carried (a screenshot, a diagram the tool
+  /// read), rendered INSIDE the card — the timeline gives them no row of their
+  /// own. Empty for every other tool.
+  final List<AttachmentMsg> attachments;
+
+  /// Reads a cached attachment blob / pulls it from the Pi / saves it to the
+  /// phone. Only consulted when [attachments] is not empty.
+  final Future<Uint8List?> Function(String blobName)? loadAttachmentBytes;
+  final Future<void> Function(String attachmentId, String path)?
+      onLoadAttachment;
+  final Future<String> Function(AttachmentMsg msg)? onSaveAttachment;
+
+  const ToolRequestCard({
+    super.key,
+    required this.tool,
+    this.onDecide,
+    this.attachments = const [],
+    this.loadAttachmentBytes,
+    this.onLoadAttachment,
+    this.onSaveAttachment,
+  });
 
   @override
   State<ToolRequestCard> createState() => _ToolRequestCardState();
@@ -115,6 +137,26 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
           mainAxisSize: MainAxisSize.min,
           children: [
             _buildHeader(context, color),
+            // The tool's own image sits right under the header and OUTSIDE the
+            // fold: the picture is the point of a `computer_screen` call, and
+            // hiding it behind a tap would put it back where it was before it
+            // was inline at all. The fold keeps the command/args and the
+            // returned output, which is the part that can be huge.
+            if (widget.attachments.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              for (final attachment in widget.attachments) ...[
+                if (attachment != widget.attachments.first)
+                  const SizedBox(height: 8),
+                AttachmentCard(
+                  message: attachment,
+                  embedded: true,
+                  loadBytes:
+                      widget.loadAttachmentBytes ?? (_) async => null,
+                  onLoad: widget.onLoadAttachment ?? (_, _) async {},
+                  onSave: widget.onSaveAttachment ?? (_) async => '',
+                ),
+              ],
+            ],
             if (_expanded) ...[
               const SizedBox(height: 10),
               _buildCodeBlock(context, resultDiff),

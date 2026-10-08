@@ -190,6 +190,7 @@ class MessageRecord {
           originalSize: a?.originalSize,
           blobName: a?.blobName,
           error: a?.error,
+          toolCallId: a?.toolCallId,
         );
     }
   }
@@ -211,6 +212,11 @@ class AttachmentData {
   final String? blobName;
   final String? error;
 
+  /// The tool call this image came out of, when a tool's result carried it:
+  /// the chat nests the card inside that tool's row instead of giving it a row
+  /// of its own. Null for a `send_to_phone` hand-off.
+  final String? toolCallId;
+
   const AttachmentData({
     required this.name,
     required this.path,
@@ -221,6 +227,7 @@ class AttachmentData {
     this.originalSize,
     this.blobName,
     this.error,
+    this.toolCallId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -233,6 +240,7 @@ class AttachmentData {
     if (originalSize != null) 'original_size': originalSize,
     if (blobName != null) 'blob': blobName,
     if (error != null) 'error': error,
+    if (toolCallId != null) 'tool_call_id': toolCallId,
   };
 
   factory AttachmentData.fromJson(Map<String, dynamic> j) => AttachmentData(
@@ -245,6 +253,7 @@ class AttachmentData {
     originalSize: (j['original_size'] as num?)?.toInt(),
     blobName: j['blob'] as String?,
     error: j['error'] as String?,
+    toolCallId: j['tool_call_id'] as String?,
   );
 }
 

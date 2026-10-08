@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:app/domain/session_state.dart';
+import 'package:app/ui/chat/widgets/attachment_card.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
@@ -482,6 +485,88 @@ void main() {
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       await _expand(tester);
       expect(outcomeColor(tester, '⏳ Running…'), AppColors.dark.accent);
+    });
+  });
+
+  // An image a tool itself produced (a screenshot, a diagram it read) belongs
+  // INSIDE this card, and it is NOT part of the fold: the picture is the point
+  // of a `computer_screen` call, and hiding it behind a tap would put it back
+  // where it was before any of this was inline.
+  group('an image the tool produced', () {
+    final png = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    );
+
+    const screenTool = ToolEvent(
+      id: 'tc_shot',
+      toolCallId: 'tc_shot',
+      tool: 'computer_screen',
+      args: {'region': {'x': 0, 'y': 0, 'w': 100, 'h': 100}},
+      status: ToolEventStatus.completed,
+      result: 'Virtual desktop screenshot (full screen 1920x1080).',
+    );
+
+    AttachmentMsg shot() => AttachmentMsg(
+      id: 'att_tc_shot',
+      name: 'computer_screen-shot.png',
+      path: '/home/p/.pi/remote/attachments/att_tc_shot.png',
+      mime: 'image/png',
+      size: png.length,
+      blobName: 'att_tc_shot.png',
+      toolCallId: 'tc_shot',
+    );
+
+    Future<void> pumpWithImage(WidgetTester tester) async {
+      await tester.pumpWidget(
+        _wrapScrolling(
+          ToolRequestCard(
+            tool: screenTool,
+            attachments: [shot()],
+            loadAttachmentBytes: (_) async => png,
+            onLoadAttachment: (_, _) async {},
+            onSaveAttachment: (_) async => 'Pictures/Remote Pi/x',
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('shows without expanding the card', (tester) async {
+      await pumpWithImage(tester);
+      expect(find.byType(Image), findsOneWidget);
+      expect(find.byKey(const Key('attachment-open')), findsOneWidget);
+      // Still folded: the args/code block is not on screen.
+      expect(find.byKey(const Key('tool-code-block')), findsNothing);
+      // And the picture lives inside the tool's own box.
+      expect(
+        find.descendant(
+          of: find.byType(ToolRequestCard),
+          matching: find.byType(Image),
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('is drawn without the attachment card\'s own frame', (
+      tester,
+    ) async {
+      await pumpWithImage(tester);
+      // The file name/header of a nested card would be a second, unrelated
+      // label inside the tool's own box: embedded mode drops it.
+      expect(find.byKey(const Key('attachment-name')), findsNothing);
+      expect(find.byKey(const Key('attachment-save')), findsNothing);
+    });
+
+    testWidgets('stays put when the card is expanded', (tester) async {
+      await pumpWithImage(tester);
+      await _expand(tester);
+      expect(find.byKey(const Key('attachment-open')), findsOneWidget);
+      expect(find.byKey(const Key('tool-code-block')), findsOneWidget);
+    });
+
+    testWidgets('a tool with no image renders no media', (tester) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _doneTool)));
+      expect(find.byType(AttachmentCard), findsNothing);
     });
   });
 }
