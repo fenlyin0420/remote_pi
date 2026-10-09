@@ -226,6 +226,33 @@ class HomeViewModel extends ViewModel<HomeState> {
     return null;
   }
 
+  /// Which room must carry a room_create / room_delete frame.
+  ///
+  /// The relay routes a frame by the ROOM in its outer envelope, and each
+  /// room is served by exactly one Pi session — riding an unrelated room of
+  /// the peer (a plain "first live room") hands the request to whichever
+  /// session owns it: a different daemon, or an interactive terminal session
+  /// still running an older build. Preference order:
+  ///   1. [sourceRoomId] — the acted-on tile (fork / delete);
+  ///   2. a live room in [path] — the session that owns that directory;
+  ///   3. the room the user is currently in;
+  ///   4. [fallback] — the caller's last-resort live room.
+  String rideRoomFor({
+    required String epk,
+    required String path,
+    String? sourceRoomId,
+    required String fallback,
+  }) {
+    bool live(String? roomId) => roomId != null && isRoomLive(epk, roomId);
+    if (live(sourceRoomId)) return sourceRoomId!;
+    for (final r in roomsForPeer(epk)) {
+      if (r.cwd == path && live(r.roomId)) return r.roomId;
+    }
+    final active = _conn.activeRoomId;
+    if (live(active)) return active;
+    return fallback;
+  }
+
   /// Long-press menu — rename a single room locally (Pi never sees it).
   Future<void> renameRoom(String epk, String roomId, String? name) =>
       _conn.setRoomLocalName(epk, roomId, name);

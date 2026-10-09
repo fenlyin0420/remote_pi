@@ -649,7 +649,14 @@ class HomePage extends StatelessWidget {
       final rooms = vm.roomsForPeer(targetEpk!).where((r) => r.cwd == path).toList();
       name = nextForkName(sourceName: null, cwd: path, rooms: rooms);
     }
-    conn.switchRoom(liveRoom);
+    // Which room must carry the frame — see [_rideRoomFor].
+    final rideRoom = vm.rideRoomFor(
+      epk: targetEpk!,
+      path: path,
+      sourceRoomId: source?.room.roomId,
+      fallback: liveRoom,
+    );
+    conn.switchRoom(rideRoom);
     try {
       try {
         await actions.createRoom(path, name: name);
@@ -683,8 +690,7 @@ class HomePage extends StatelessWidget {
   }
 
   /// Switch back to the peer the user was connected to before a
-  /// room-management frame hopped to another tile's peer. A no-op when
-  /// the peer never changed (then only the room needs restoring).
+  /// room-management frame hopped to another tile's peer
   Future<void> _restorePeer(
     ConnectionManager conn,
     PeerRecord? previous,
@@ -820,7 +826,15 @@ class HomePage extends StatelessWidget {
       messenger.showSnackBar(const SnackBar(content: Text('Open a room first')));
       return;
     }
-    conn.switchRoom(liveRoom);
+    // Ride the tile's own room (see [_rideRoomFor]) so the frame reaches
+    // the session that announced it.
+    final rideRoom = vm.rideRoomFor(
+      epk: epk,
+      path: cwd,
+      sourceRoomId: it.room.roomId,
+      fallback: liveRoom,
+    );
+    conn.switchRoom(rideRoom);
     try {
       try {
         // The room's own name disambiguates it from a daemon (or other

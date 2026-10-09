@@ -419,4 +419,136 @@ void main() {
       vm.dispose();
     });
   });
+
+  group('HomeViewModel — frame routing (rideRoomFor)', () {
+    Future<(HomeViewModel, _ControllableChannel)> boot() async {
+      final ch = _ControllableChannel();
+      final storage = _FakeStorage([_peerA]);
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final vm = HomeViewModel(storage, Preferences(_FakeSecureStorage()), conn);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      return (vm, ch);
+    }
+
+    test('a fork rides the acted-on tile, not the first live room', () async {
+      final (vm, ch) = await boot();
+      // The stale session's room is announced FIRST, so the old
+      // "first live room" heuristic picked it; the fork must not.
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'stale',
+          name: 'Jarvis#2',
+          cwd: '/home/u/Jarvis',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'fenlyin',
+          name: 'fenlyin',
+          cwd: '/home/u',
+          startedAt: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(vm.firstLiveRoom('epk_A'), 'stale'); // the old, wrong answer
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          sourceRoomId: 'fenlyin',
+          fallback: vm.firstLiveRoom('epk_A')!,
+        ),
+        'fenlyin',
+      );
+      vm.dispose();
+    });
+
+    test('a typed path prefers the live room that owns that directory',
+        () async {
+      final (vm, ch) = await boot();
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'stale',
+          name: 'Jarvis#2',
+          cwd: '/home/u/Jarvis',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'fenlyin',
+          name: 'fenlyin',
+          cwd: '/home/u',
+          startedAt: 2,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          fallback: vm.firstLiveRoom('epk_A')!,
+        ),
+        'fenlyin',
+      );
+      // No room owns the path → fall back to the caller's live room.
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u/nowhere',
+          fallback: vm.firstLiveRoom('epk_A')!,
+        ),
+        'stale',
+      );
+      vm.dispose();
+    });
+
+    test('an offline source room is ignored (a live room is used)', () async {
+      final (vm, ch) = await boot();
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'gone',
+          name: 'gone',
+          cwd: '/home/u',
+          startedAt: 1,
+        ),
+      );
+      ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'gone', sinceTs: 2));
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_A',
+          roomId: 'alive',
+          name: 'alive',
+          cwd: '/home/u/other',
+          startedAt: 3,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(vm.isRoomLive('epk_A', 'gone'), isFalse);
+      expect(
+        vm.rideRoomFor(
+          epk: 'epk_A',
+          path: '/home/u',
+          sourceRoomId: 'gone',
+          fallback: 'alive',
+        ),
+        'alive',
+      );
+      vm.dispose();
+    });
+  });
 }
