@@ -452,10 +452,25 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// `action_ok`; the room's new history then arrives as the Pi's
   /// broadcast `session_history`, which the sync service substitutes
   /// wholesale — there is nothing to clear locally.
+  ///
+  /// Note: on an interactive room the switch tears down the relay and
+  /// rebuilds it, so the `action_ok` is usually LOST in the teardown and
+  /// this Future ends in a 15 s `timeout` — that is the normal, successful
+  /// outcome, not a failure. Callers must not block the UI on it; pair the
+  /// call with [resyncRoom] to fetch the new history.
   Future<void> switchSession(String session) async {
     final actions = _actions;
     if (actions == null) return;
     await actions.switchSession(session);
+  }
+
+  /// Session picker (plan/59) — backstop for [switchSession]: explicitly
+  /// re-request the room's history. The Pi's own `session_history` replay
+  /// can be lost in the switch's relay teardown, so the app asks again;
+  /// the reply substitutes the room cache wholesale and re-renders the
+  /// chat. No-op (pending) while the channel is down.
+  Future<void> resyncRoom() async {
+    _sync.requestSync();
   }
 
   // --- Commands (writer = SyncService; lifecycle = ConnectionManager) ---
