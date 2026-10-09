@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
@@ -23,7 +25,6 @@ class SessionPickerPage extends StatefulWidget {
 
 class _SessionPickerPageState extends State<SessionPickerPage> {
   Future<List<WireSession>>? _load;
-  bool _switching = false;
 
   @override
   void initState() {
@@ -36,7 +37,6 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
   }
 
   Future<void> _confirmAndSwitch(WireSession session) async {
-    final colors = context.colors;
     final label = session.name?.isNotEmpty == true
         ? session.name!
         : _truncated(session.firstMessage, 48);
@@ -78,23 +78,50 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
     );
     if (confirmed != true || !mounted) return;
 
-    setState(() => _switching = true);
-    try {
-      await widget.chat.switchSession(session.id);
-      if (mounted) Navigator.of(context).pop();
-    } on ActionFailure catch (e) {
-      if (!mounted) return;
-      setState(() => _switching = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Switch failed: ${e.message}',
-            style: const TextStyle(fontFamily: kMonoFamily, fontSize: 12),
-          ),
-          backgroundColor: colors.error,
-        ),
-      );
-    }
+    // Close the picker IMMEDIATELY. The switch tears down and rebuilds the
+    // Pi side (and the relay with it), so the `action_ok` reply is usually
+    // lost in the teardown — waiting for it here would hang the page for
+    // the full 15 s timeout. The room's new history then arrives as a
+    // broadcast, and the explicit re-syncs below are the backstop.
+    final chat = widget.chat;
+    final messenger = ScaffoldMessenger.of(context);
+    final colors = context.colors;
+    Navigator.of(context).pop();
+
+    // Fire the switch in the background. Errors that land BEFORE the Pi
+    // starts the switch (session_not_found, offline) still arrive on the
+    // live channel — toast those. The post-switch 'timeout' is the normal
+    // outcome of the teardown, so stay quiet on it.
+    unawaited(chat.switchSession(session.id).then(
+      (_) {},
+      onError: (Object e) {
+        if (e is ActionFailure &&
+            !e.message.contains('timeout') &&
+            !e.message.contains('offline')) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                'Switch failed: ${e.message}',
+                style: const TextStyle(fontFamily: kMonoFamily, fontSize: 12),
+              ),
+              backgroundColor: colors.error,
+            ),
+          );
+        }
+      },
+    ));
+
+    // Backstop syncs: the Pi's own `session_history` replay can be lost in
+    // the relay teardown. The first fires after the switch has settled
+    // (interactive) or the RPC round-trip (daemon); the second covers a
+    // slow rebind. While the channel is down they simply stay pending.
+    unawaited(_delayedResync(chat, const Duration(milliseconds: 1500)));
+    unawaited(_delayedResync(chat, const Duration(seconds: 6)));
+  }
+
+  Future<void> _delayedResync(ChatViewModel chat, Duration delay) async {
+    await Future<void>.delayed(delay);
+    await chat.resyncRoom();
   }
 
   @override
@@ -164,7 +191,6 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
                     : (s.firstMessage.isNotEmpty ? s.firstMessage : '(unnamed session)');
                 return ListTile(
                   onTap: s.isCurrent ? null : () => _confirmAndSwitch(s),
-                  enabled: !_switching || s.isCurrent,
                   leading: Icon(
                     s.isCurrent ? LucideIcons.circleCheck : LucideIcons.messageSquare,
                     size: 18,
@@ -177,7 +203,7 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
                     style: TextStyle(
                       fontFamily: kMonoFamily,
                       fontSize: 13,
-                      color: (_switching && !s.isCurrent) ? colors.muted2 : colors.text,
+                      color: colors.text,
                     ),
                   ),
                   subtitle: Text(
