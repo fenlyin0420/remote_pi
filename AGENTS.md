@@ -92,29 +92,37 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
-- **1.5.25-beta.3 is on the beta channel** (2026-10-09, on `dev`): long-press a
-  room tile → **Fork room** (same cwd, fresh temporary session, agent name
-  `#N` auto-incremented over the rooms of that cwd), and phone-side room
+- **1.5.25 is released** (2026-10-09, on `dev`, prod `1.5.25` +74, sha
+  `e0e510f3…`, Release `v1.5.25-ephemeral-rooms-arm64`): long-press a room
+  tile → **Fork room** (same cwd, fresh temporary session, agent name `#N`
+  auto-incremented over the rooms of that cwd), and phone-side room
   create/delete **never touch the daemon registry** anymore
   (`~/.pi/remote/daemons.json` is manual/terminal-only): create → supervisor
   `spawn` (ephemeral `pi --mode rpc` child — fresh session, never registered,
   no auto-restart on crash, dies with the supervisor); delete → `kill` the
-  ephemeral by (cwd,name) → else **stop** the daemon (registration kept) →
-  else no-op. Beta `1.5.25-beta.1`(+71) → `beta.2`(+72) → `beta.3`(+73, sha
-  `1274cf1d…`: the relay routes a frame by the ROOM in its envelope and each
-  room is served by exactly one Pi session, so create/delete now ride the
-  acted-on tile's own room (`HomeViewModel.rideRoomFor`; the old
-  `firstLiveRoom` handed the request to whichever session owned that room —
-  including a terminal Pi still running the previous build, whose old register
-  path answered 'Daemon already registered for cwd: …'), and the flows switch
-  peers when the tile belongs to another one) on the beta channel, three
-  checks self-verified each time. Pi-side: new control ops `spawn`/`kill` +
+  ephemeral by (cwd,name) → else **cycle** a registered daemon (`restart`, so
+  the supervisor brings it straight back — a daemon is always-on) → else
+  no-op. Betas `1.5.25-beta.1`(+71) → `beta.2`(+72) → `beta.3`(+73) were
+  tested first; the two real bugs found on the way:
+  **(a)** the relay routes a frame by the ROOM in its envelope and each room
+  is served by exactly one Pi session, so create/delete now ride the acted-on
+  tile's own room (`HomeViewModel.rideRoomFor`; the old `firstLiveRoom`
+  handed the request to whichever session owned that room — including a
+  terminal Pi still running the previous build, whose old register path
+  answered 'Daemon already registered for cwd: …');
+  **(b)** an ephemeral child got its `#N` name stripped by the config parser
+  (`migrateAgentName` — a `#N` is a runtime lock artefact, never a config
+  value), so it asked for the daemon's name and waited on the cwd lock
+  forever: phone rooms now carry `REMOTE_PI_EPHEMERAL=1` and the lock
+  auto-suffixes (`fenlyin` → `fenlyin#2`), and the supervisor passes the BASE
+  name.
+  Pi-side: new control ops `spawn`/`kill` (+ `kill` matches (cwd,name)) and
   optional `name` on `room_create`/`room_delete`; pi-remote **0.14.0** —
-  **requires a supervisor restart to take effect** (remind the user; never
-  kill it yourself mid-session; note a restart only refreshes the
-  supervisor-spawned daemons — an interactive TUI session keeps the extension
-  it loaded until that terminal is restarted). Pi tests 937 pass, app 870 pass
-  (`--concurrency=1`), analyze clean. Next prod code ≥ 74. See
+  **requires a supervisor restart to take effect** (never kill it yourself
+  mid-session; a restart only refreshes supervisor-spawned daemons — an
+  interactive TUI session keeps the extension it loaded until that terminal
+  is restarted). Pi tests 939 pass, app 870 pass (`--concurrency=1`), analyze
+  clean. Next prod code ≥ 75. See
   `.agents/memory/remote-pi-ephemeral-rooms.md`.
 - **1.5.24 is released** (2026-10-09, on `dev`, prod `1.5.24` +70, sha
   `5b9af1ad…`): the room info panel (ⓘ) has a **Sessions** entry — a picker
