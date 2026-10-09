@@ -119,11 +119,20 @@ abstract class IActionsRepository extends Repository {
   /// Throws [ActionFailure] with the exact error string
   /// `'directory_missing'` when the path is absent and [createIfMissing]
   /// is false — the caller offers a create-anyway confirm on that.
-  Future<void> createRoom(String path, {bool createIfMissing = false});
+  /// Create a room for the directory [path]: the Pi spawns an ephemeral
+  /// session there — fresh conversation, never written to the daemon
+  /// registry (daemons are manual-only). [name] pins the agent name (a
+  /// fork's `#N`-suffixed one); omitted → the folder's default name.
+  Future<void> createRoom(
+    String path, {
+    bool createIfMissing = false,
+    String? name,
+  });
 
-  /// Unregister the daemon behind the directory [path] (stops the agent
-  /// process + removes the room from the supervisor registry).
-  Future<void> deleteRoom(String path);
+  /// Remove the room of the directory [path] (+ the specific [name] when
+  /// given): the Pi kills an ephemeral room, stops (never unregisters) a
+  /// daemon, and no-ops otherwise — the daemon registry is never touched.
+  Future<void> deleteRoom(String path, {String? name});
 
   /// Fetches the model catalogue. When [forceRefresh] is `false`
   /// (default) returns the cached catalogue for the current
@@ -344,17 +353,22 @@ class ActionsRepository extends Repository implements IActionsRepository {
   }
 
   @override
-  Future<void> createRoom(String path, {bool createIfMissing = false}) async {
+  Future<void> createRoom(
+    String path, {
+    bool createIfMissing = false,
+    String? name,
+  }) async {
     await _dispatch<void>((id) => RoomCreate(
           id: id,
           path: path,
           createIfMissing: createIfMissing,
+          name: name,
         ));
   }
 
   @override
-  Future<void> deleteRoom(String path) async {
-    await _dispatch<void>((id) => RoomDelete(id: id, path: path));
+  Future<void> deleteRoom(String path, {String? name}) async {
+    await _dispatch<void>((id) => RoomDelete(id: id, path: path, name: name));
   }
 
   @override

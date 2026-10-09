@@ -46,6 +46,14 @@ export type ControlRequest =
   | { op: "rpc"; id: string; command: RpcCommandWire; timeout_ms?: number }
   | { op: "register"; cwd: string }
   | { op: "unregister"; id: string }
+  // ── ephemeral (phone-created) rooms — NEVER written to the daemon registry ──
+  // `spawn`: boot a throwaway `pi --mode rpc` child for `cwd` with agent name
+  // `name` (defaults to the folder name). It announces its own relay room on
+  // boot; it is NOT in `~/.pi/remote/daemons.json`, is absent from `list`/
+  // `status`, never auto-restarts after a crash, and dies with the supervisor.
+  // `kill`: stop + drop the ephemeral child holding the given relay room_id.
+  | { op: "spawn"; cwd: string; name?: string }
+  | { op: "kill"; room_id: string }
   // ── cron (plan/39) ──
   | { op: "cron_add"; daemon_id: string; schedule: string; prompt: string; tz?: string; skip_if_busy?: boolean; wake?: boolean; catchup?: boolean }
   | { op: "cron_list" }
@@ -76,6 +84,8 @@ export interface ControlReplyShapes {
   rpc: { id: string; delivered: boolean; response?: RpcResponseWire };
   register: { id: string; cwd: string };
   unregister: { removed: boolean; cwd?: string };
+  spawn: { room_id: string; started: boolean; name: string };
+  kill: { killed: boolean };
   // ── cron (plan/39) ──
   cron_add: { job: CronJobView };
   cron_list: { jobs: CronJobView[] };

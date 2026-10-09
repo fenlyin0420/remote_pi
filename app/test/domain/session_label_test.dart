@@ -34,6 +34,101 @@ void main() {
     });
   });
 
+  group('nextForkName', () {
+    final cwd = '/home/u/proj';
+
+    test('null for a plain new room in an empty directory (Pi default name)', () {
+      expect(nextForkName(sourceName: null, cwd: cwd, rooms: const []), isNull);
+    });
+
+    test('new room steps to #2 when the folder already has one room', () {
+      expect(
+        nextForkName(
+          sourceName: null,
+          cwd: cwd,
+          rooms: [_room(name: 'proj', cwd: cwd)],
+        ),
+        'proj#2',
+      );
+    });
+
+    test('new room counts every room in the cwd, regardless of base name', () {
+      expect(
+        nextForkName(
+          sourceName: null,
+          cwd: cwd,
+          rooms: [
+            _room(name: 'proj', cwd: cwd),
+            _room(name: 'proj#2', cwd: cwd),
+            _room(name: 'other', cwd: cwd),
+          ],
+        ),
+        'proj#3',
+      );
+    });
+
+    test('forking a plain-named room yields #2', () {
+      expect(
+        nextForkName(
+          sourceName: 'proj',
+          cwd: cwd,
+          rooms: [_room(name: 'proj', cwd: cwd)],
+        ),
+        'proj#2',
+      );
+    });
+
+    test('forking a #N-named room strips the suffix and steps to #N+1', () {
+      expect(
+        nextForkName(
+          sourceName: 'proj#2',
+          cwd: cwd,
+          rooms: [
+            _room(name: 'proj', cwd: cwd),
+            _room(name: 'proj#2', cwd: cwd),
+          ],
+        ),
+        'proj#3',
+      );
+    });
+
+    test('forking uses the max suffix, not the source suffix', () {
+      expect(
+        nextForkName(
+          sourceName: 'proj#2',
+          cwd: cwd,
+          rooms: [
+            _room(name: 'proj#3', cwd: cwd),
+            _room(name: 'proj#2', cwd: cwd),
+          ],
+        ),
+        'proj#4',
+      );
+    });
+
+    test('an unnamed source room forks on the folder name', () {
+      expect(
+        nextForkName(
+          sourceName: null,
+          cwd: cwd,
+          rooms: [_room(cwd: cwd)],
+        ),
+        'proj#2',
+      );
+    });
+
+    test('non-#N suffixes are not treated as a number', () {
+      expect(
+        nextForkName(
+          sourceName: 'proj-x',
+          cwd: cwd,
+          rooms: [_room(name: 'proj#notanumber', cwd: cwd)],
+        ),
+        'proj-x#2',
+      );
+    });
+  });
+
   group('roomLabel', () {
     test('prefers the room name (which already carries a local rename)', () {
       expect(roomLabel(_room(name: 'remote_pi')), 'remote_pi');

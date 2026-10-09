@@ -897,16 +897,30 @@ class SessionSwitch extends ClientMessage {
   };
 }
 
-/// Room management — register (and start) a supervisor daemon for the
-/// directory [path]. `createIfMissing` lets the Pi `mkdir` the path when
-/// it doesn't exist yet; the Pi replies `action_error` with the exact
-/// string `'directory_missing'` when the path is absent and this flag
-/// is off, which Home turns into a "create it anyway?" confirm dialog.
+/// Room management — create a room for the directory [path]. The Pi
+/// spawns an EPHEMERAL session for that directory (fresh conversation,
+/// never written to the daemon registry — daemons are manual-only).
+///
+/// [name] is the agent name for the new room: a fork sends the `#N`-
+/// suffixed name it computed from its room list; a plain "new room" omits
+/// it and the Pi uses the folder's default name (stepping to the next
+/// `#N` when a running room already holds it).
+///
+/// `createIfMissing` lets the Pi `mkdir` the path when it doesn't exist
+/// yet; the Pi replies `action_error` with the exact string
+/// `'directory_missing'` when the path is absent and this flag is off,
+/// which Home turns into a "create it anyway?" confirm dialog.
 class RoomCreate extends ClientMessage {
   final String id;
   final String path;
   final bool createIfMissing;
-  RoomCreate({required this.id, required this.path, this.createIfMissing = false});
+  final String? name;
+  RoomCreate({
+    required this.id,
+    required this.path,
+    this.createIfMissing = false,
+    this.name,
+  });
 
   @override
   Map<String, dynamic> toJson() => {
@@ -914,22 +928,28 @@ class RoomCreate extends ClientMessage {
     'id': id,
     'path': path,
     if (createIfMissing) 'create_if_missing': true,
+    if (name != null) 'name': name,
   };
 }
 
-/// Room management — unregister the daemon behind the directory [path].
-/// The Pi stops the agent process for that cwd and removes it from the
-/// supervisor registry; the room then disappears from the relay.
+/// Room management — remove the room of the directory [path] (and, when
+/// [name] is given, the specific room of that name). The Pi NEVER writes
+/// the daemon registry: an ephemeral (phone-created) room is killed, a
+/// registered daemon is only STOPPED (its registration stays — daemons
+/// are manual-only), anything else is a no-op. The app drops the tile
+/// locally either way.
 class RoomDelete extends ClientMessage {
   final String id;
   final String path;
-  RoomDelete({required this.id, required this.path});
+  final String? name;
+  RoomDelete({required this.id, required this.path, this.name});
 
   @override
   Map<String, dynamic> toJson() => {
     'type': 'room_delete',
     'id': id,
     'path': path,
+    if (name != null) 'name': name,
   };
 }
 

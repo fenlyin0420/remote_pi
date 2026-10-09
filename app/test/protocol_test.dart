@@ -389,6 +389,37 @@ void main() {
       expect(decoded['type'], 'cancel');
       expect(decoded['target_id'], 'target-x');
     });
+
+    test('RoomCreate omits name for a plain new room', () {
+      final msg = RoomCreate(id: 'rc1', path: '/home/u/proj');
+      final decoded =
+          jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
+      expect(decoded['type'], 'room_create');
+      expect(decoded['path'], '/home/u/proj');
+      expect(decoded.containsKey('name'), isFalse);
+      expect(decoded.containsKey('create_if_missing'), isFalse);
+    });
+
+    test('RoomCreate carries the fork name and create_if_missing', () {
+      final msg = RoomCreate(
+        id: 'rc2',
+        path: '/home/u/proj',
+        name: 'proj#2',
+        createIfMissing: true,
+      );
+      final decoded =
+          jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
+      expect(decoded['name'], 'proj#2');
+      expect(decoded['create_if_missing'], true);
+    });
+
+    test('RoomDelete carries the room name (disambiguates forks per cwd)', () {
+      final msg = RoomDelete(id: 'rd1', path: '/home/u/proj', name: 'proj#2');
+      final decoded =
+          jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
+      expect(decoded['type'], 'room_delete');
+      expect(decoded['name'], 'proj#2');
+    });
   });
 
   // Pi → App file cards. A card that a TOOL's own result produced names that
