@@ -92,32 +92,29 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
-- **1.5.24-beta.2 is pushed to the beta channel** (2026-10-09, on `dev`):
-  the room info panel (ⓘ) has a **Sessions** entry — a picker page listing
-  the stored sessions of the room's cwd (`SessionManager.list`), tapping one
-  (after a confirm) `switchSession`s to it. Wire: `session_list`/`session_switch`
-  + `sessions_list` reply + `WireSession` (daemon rooms via RPC
-  `switch_session`, interactive via `ctx.switchSession`; `switch_session`
-  whitelisted in the supervisor). Same feature also ships the
-  **session-replacement reset**: `session_start` with a `previousSessionFile`
-  different from the one that seeded the mirror clears the buffer, re-seeds
-  from the target session's `getBranch()`, and broadcasts a replay — so
-  `/new`/`/resume`/`/fork` in the terminal no longer leave the old
-  conversation's stray thinking blocks in the room (the reported bug).
-  **UX fix in beta.2** (merge `d00f8ca5`): the switch tears down the relay,
-  so the `action_ok` reply is lost in the teardown — beta.1's picker hung on
-  the 15 s timeout and never closed. Now the picker pops at confirm time,
-  the switch fires in the background (post-switch 'timeout' is the normal
-  outcome, toasted only for real errors), and the app re-requests the room
-  history at +1.5 s and +6 s (`resyncRoom`) as a backstop for the lost
-  replay broadcast. Pi tests: 13 new, 927 pass; app: 856 pass (the
-  `sync_attachment_test` flake passes at `--concurrency=1`), analyze clean.
-  beta.1 (+68, sha `fc70aa2d…`) → beta.2 (+69, sha `098f1263…`); next prod
-  code ≥ 70. **The Pi side needs `cd pi-remote && npm run build` + supervisor
-  restart by the user** (done for the daemons 2026-10-09; an interactive Pi
-  process only picks up the new extension code on its own restart) — until
-  then a room's Pi answers `session_list` with nothing and the picker times
-  out with "older builds have no session picker". See
+- **1.5.24 is released** (2026-10-09, on `dev`, prod `1.5.24` +70, sha
+  `5b9af1ad…`): the room info panel (ⓘ) has a **Sessions** entry — a picker
+  page listing the stored sessions of the room's cwd (`SessionManager.list`;
+  first message / count / date / current badge), tapping one (after a
+  confirm) continues that session: the picker pops immediately, the switch
+  fires in the background, and the app re-requests the room history at
+  +1.5 s / +6 s (`resyncRoom`) as a backstop — because the switch tears down
+  the relay and the Pi's `action_ok` + replay broadcast are usually lost in
+  the teardown (beta.1 hung on the 15 s timeout for exactly this; user
+  reported, fixed in beta.2 / merge `d00f8ca5`). Wire: `session_list`/
+  `session_switch` + `sessions_list` + `WireSession` (daemon rooms via RPC
+  `switch_session` — supervisor whitelist; interactive via
+  `ctx.switchSession`). Same release ships the **session-replacement
+  reset**: `session_start` with a `previousSessionFile` different from the
+  one that seeded the mirror clears the buffer, re-seeds from the target's
+  `getBranch()`, and broadcasts a replay — `/new`/`/resume`/`/fork` in the
+  terminal no longer leave stray thinking blocks (the originally reported
+  bug). pi-remote **0.13.0** (`remote-pi-0.13.0.tgz`, sha `f78cb39c…`) —
+  **requires a Pi/supervisor restart to take effect**. Prod channel +
+  Release `v1.5.24-session-picker-arm64` (APK + tgz, self-checked);
+  beta.1 (+68) / beta.2 (+69) were tested by the user first. Pi tests 927
+  pass, app 856 pass (`sync_attachment_test` flake passes at
+  `--concurrency=1`), analyze clean. Next prod code ≥ 71. See
   `.agents/memory/remote-pi-session-picker.md`.
 - **1.5.23 is released** (2026-10-08, on `dev`): an image a tool produces — a
   `computer_screen` screenshot, a diagram a tool read — now renders **inside that
