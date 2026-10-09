@@ -501,19 +501,22 @@ export class Supervisor {
    * holds no room, so the name may be reused.
    */
   private _resolveEphemeralName(cwd: string, requested: string): string {
-    const daemonId = daemonIdForCwd(cwd);
-    const slot = this.children.get(daemonId);
-    const entry = listDaemons().find((d) => d.id === daemonId);
-    if (!slot || slot.child.state !== "running" || !entry || entry.name !== requested) {
-      return requested;
+    // Collect the names of ALL running daemons in this cwd (including
+    // #N-named ones). If the requested name collides with any of them,
+    // bump past the whole set.
+    const running = new Set<string>();
+    for (const [id, slot] of this.children) {
+      if (slot.child.state !== "running") continue;
+      const entry = listDaemons().find((d) => d.id === id);
+      if (entry && entry.cwd === cwd) running.add(entry.name);
     }
-    let n = 1;
-    let name = requested;
-    while (entry.name === name) {
-      n += 1;
-      name = `${requested}#${n}`;
+    if (!running.has(requested)) return requested;
+    // Step to the next free #N of the requested base.
+    const base = requested.replace(/#\d+$/, "");
+    for (let n = 2; ; n += 1) {
+      const candidate = `${base}#${n}`;
+      if (!running.has(candidate)) return candidate;
     }
-    return name;
   }
 
   private _opSpawn(req: Extract<ControlRequest, { op: "spawn" }>): ControlReply<unknown> {
