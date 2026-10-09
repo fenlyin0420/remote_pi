@@ -92,7 +92,7 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
-- **1.5.25-beta.1 is on the beta channel** (2026-10-10, on `dev`): long-press a
+- **1.5.25-beta.2 is on the beta channel** (2026-10-09, on `dev`): long-press a
   room tile → **Fork room** (same cwd, fresh temporary session, agent name
   `#N` auto-incremented over the rooms of that cwd), and phone-side room
   create/delete **never touch the daemon registry** anymore
@@ -100,12 +100,18 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
   `spawn` (ephemeral `pi --mode rpc` child — fresh session, never registered,
   no auto-restart on crash, dies with the supervisor); delete → `kill` the
   ephemeral by (cwd,name) → else **stop** the daemon (registration kept) →
-  else no-op. Beta `1.5.25-beta.1`(+71, sha `fddeb63b…`) pushed to the beta
-  channel, three checks self-verified. Pi-side: new control ops `spawn`/
-  `kill` + optional `name` on `room_create`/`room_delete`; pi-remote
+  else no-op. Beta `1.5.25-beta.1`(+71) → `1.5.25-beta.2`(+72, sha `f7b8c13d…`:
+  room create/delete now switch to the acted-on tile's OWN peer before sending
+  — the frame used to ride whichever peer the app was connected to, so a stale
+  interactive Pi session answered with its old register path — and the Pi's
+  `#N` bump steps from the base name instead of appending) on the beta
+  channel, three checks self-verified each time. Pi-side: new control ops
+  `spawn`/`kill` + optional `name` on `room_create`/`room_delete`; pi-remote
   **0.14.0** — **requires a supervisor restart to take effect** (remind the
-  user; never kill it yourself mid-session). Pi tests 936 pass, app 867 pass
-  (`--concurrency=1`), analyze clean. Next prod code ≥ 72. See
+  user; never kill it yourself mid-session; note a restart only refreshes the
+  supervisor-spawned daemons — an interactive TUI session keeps the extension
+  it loaded until that terminal is restarted). Pi tests 937 pass, app 867 pass
+  (`--concurrency=1`), analyze clean. Next prod code ≥ 73. See
   `.agents/memory/remote-pi-ephemeral-rooms.md`.
 - **1.5.24 is released** (2026-10-09, on `dev`, prod `1.5.24` +70, sha
   `5b9af1ad…`): the room info panel (ⓘ) has a **Sessions** entry — a picker
