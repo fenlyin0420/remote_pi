@@ -92,6 +92,21 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.25-beta.1 is on the beta channel** (2026-10-10, on `dev`): long-press a
+  room tile → **Fork room** (same cwd, fresh temporary session, agent name
+  `#N` auto-incremented over the rooms of that cwd), and phone-side room
+  create/delete **never touch the daemon registry** anymore
+  (`~/.pi/remote/daemons.json` is manual/terminal-only): create → supervisor
+  `spawn` (ephemeral `pi --mode rpc` child — fresh session, never registered,
+  no auto-restart on crash, dies with the supervisor); delete → `kill` the
+  ephemeral by (cwd,name) → else **stop** the daemon (registration kept) →
+  else no-op. Beta `1.5.25-beta.1`(+71, sha `fddeb63b…`) pushed to the beta
+  channel, three checks self-verified. Pi-side: new control ops `spawn`/
+  `kill` + optional `name` on `room_create`/`room_delete`; pi-remote
+  **0.14.0** — **requires a supervisor restart to take effect** (remind the
+  user; never kill it yourself mid-session). Pi tests 936 pass, app 867 pass
+  (`--concurrency=1`), analyze clean. Next prod code ≥ 72. See
+  `.agents/memory/remote-pi-ephemeral-rooms.md`.
 - **1.5.24 is released** (2026-10-09, on `dev`, prod `1.5.24` +70, sha
   `5b9af1ad…`): the room info panel (ⓘ) has a **Sessions** entry — a picker
   page listing the stored sessions of the room's cwd (`SessionManager.list`;
