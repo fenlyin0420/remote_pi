@@ -115,6 +115,9 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         engineAttached = true
 
+        // System long-screenshot: installs the scrollable control view the
+        // ROM's scroll capture drives (see LongScreenshotSupport).
+        LongScreenshotSupport.install(this, flutterEngine)
         setUpUpdateChannel(flutterEngine)
         setUpIdentityTransferChannel(flutterEngine)
         setUpBackgroundChannel(flutterEngine)

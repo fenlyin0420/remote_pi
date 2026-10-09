@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:app/data/screenshots/long_screenshot_adapter.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/attachment_card.dart';
@@ -85,6 +86,15 @@ class MessageListState extends State<MessageList> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The ROM's long-screenshot drives the transcript through the native
+    // control view: track this list so the system knows where to scroll and
+    // when to stop (see LongScreenshotAdapter).
+    LongScreenshotAdapter.instance.attachForRoute(controller, context);
+  }
+
+  @override
   void didUpdateWidget(MessageList oldWidget) {
     super.didUpdateWidget(oldWidget);
     // A message the USER just sent is theirs to watch: follow it even if they
@@ -103,6 +113,7 @@ class MessageListState extends State<MessageList> {
 
   @override
   void dispose() {
+    LongScreenshotAdapter.instance.detach(controller);
     controller.removeListener(_onScroll);
     controller.dispose();
     super.dispose();
