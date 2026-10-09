@@ -6,6 +6,11 @@ git remote：`origin` = 自己的 fork（唯一 push 目标）；`upstream` = �
 
 **新建分支 `feat/room-management` 做所有改动，完成后 merge 回 `dev` 并 push 到 `origin`（自己的 fork）。**
 
+> **2026-10 修订（fork 临时房间）**：手机 App 的 room 创建/删除后来改为**临时房间（ephemeral）**语义，不再动 daemon 配置（`~/.pi/remote/daemons.json` 只能手动/终端改）：
+> `room_create`（可带 `name`，fork 用 `#N` 自增名）→ supervisor `op: "spawn"` 拉起一次性 `pi --mode rpc` 子进程（全新会话、不进注册表、崩溃不自动重启、随 supervisor 退出而亡）；
+> `room_delete`（可带 `name`）→ 先按 `(cwd, name)` `op: "kill"` 杀临时房间，否则只 **stop** 同名 daemon（注册表保留），再否则 no-op。
+> 长按 room tile = Fork（同 cwd、名字 `#N` 自增、临时会话）。以下原文中 register/unregister 的步骤已被取代，仅作设计历史参考。
+
 ---
 
 ## 功能 1：手机 App 新建 room（daemon + App）

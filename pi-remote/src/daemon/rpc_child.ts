@@ -43,6 +43,13 @@ export interface RpcChildOptions {
    * when omitted.
    */
   config?: LocalConfig;
+  /**
+   * Never pass `--continue` — every spawn starts a BRAND-NEW session file
+   * instead of resuming the cwd's most recent one. This is the ephemeral
+   * (phone-forked) room case: the fork must not inherit the conversation of
+   * the daemon/interactive session that already lives in this cwd.
+   */
+  freshSession?: boolean;
 }
 
 export interface RpcChildExitEvent {
@@ -319,7 +326,8 @@ export class RpcChild extends EventEmitter {
     // Prefer the supervisor-injected config; fall back to the on-disk file.
     const cfg = this.opts.config ?? loadLocalConfig(this.opts.cwd);
     const sessionName = cfg.agent_name ?? defaultAgentName(this.opts.cwd);
-    const useContinue = !this.forceFreshSessionOnNextSpawn;
+    const useContinue =
+        !this.forceFreshSessionOnNextSpawn && !this.opts.freshSession;
     this.forceFreshSessionOnNextSpawn = false;
     // On Windows `prefixArgs` carries pi's cli.js (we spawn node directly); on
     // POSIX it's empty and `command` is `pi` itself.

@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { addDaemon, listDaemons, migrateRegistryNames, removeDaemon } from "./registry.js";
+import { addDaemon, listDaemons, migrateRegistryNames, normalizeCwd, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
+import { roomIdFor } from "../rooms.js";
 import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions, type RpcUiEvent } from "./rpc_child.js";
@@ -154,6 +155,9 @@ interface ChildSlot {
   child: RpcChild;
   restartTimer: ReturnType<typeof setTimeout> | null;
   restartAttempt: number;
+  /** Phone-created (forked) room: not in the daemon registry, never
+   *  auto-restarted, absent from `list`/`status`. */
+  ephemeral?: boolean;
 }
 
 export class Supervisor {
@@ -161,6 +165,10 @@ export class Supervisor {
   private readonly children = new Map<string, ChildSlot>();
   /** Live croner schedules, keyed by cron job id (plan/39). */
   private readonly cronJobs = new Map<string, Cron>();
+  /** Ephemeral (phone-created) rooms, keyed by their relay room_id.
+   *  NEVER in the daemon registry (`daemons.json`) and never in `list` —
+   *  the phone's create/delete never touches the manual daemon config. */
+  private readonly ephemeral = new Map<string, ChildSlot>();
   private shuttingDown = false;
 
   constructor(private readonly opts: SupervisorOptions) {}
@@ -184,6 +192,10 @@ export class Supervisor {
     // Stop all cron schedules (plan/39) so no fire races with teardown.
     for (const c of this.cronJobs.values()) c.stop();
     this.cronJobs.clear();
+    // Ephemeral (phone) rooms die with the supervisor — no registry to
+    // re-spawn them from.
+    await Promise.all([...this.ephemeral.values()].map((s) => s.child.stop()));
+    this.ephemeral.clear();
     // Cancel pending restart timers first so they don't race with stop().
     for (const slot of this.children.values()) {
       if (slot.restartTimer !== null) {
@@ -275,6 +287,8 @@ export class Supervisor {
       case "rpc":          return this._opRpc(req.id, req.command, req.timeout_ms);
       case "register":     return this._opRegister(req.cwd);
       case "unregister":   return this._opUnregister(req.id);
+      case "spawn":        return this._opSpawn(req);
+      case "kill":         return this._opKill(req);
       case "cron_add":     return this._opCronAdd(req);
       case "cron_list":    return this._opCronList();
       case "cron_remove":  return this._opCronRemove(req.job_id);
@@ -355,6 +369,14 @@ export class Supervisor {
       }
       await slot.child.stop();
       stopped.push(id);
+    }
+    // Ephemeral (phone) rooms go down too — they ride the same stop path but
+    // never appear in the daemon bookkeeping.
+    for (const [roomId, slot] of this.ephemeral) {
+      if (slot.child.state === "running") {
+        await slot.child.stop();
+        this.ephemeral.delete(roomId);
+      }
     }
     return { ok: true, data: { stopped, already_stopped: already } };
   }
@@ -459,6 +481,111 @@ export class Supervisor {
       return { ok: true, data: { id, cwd } };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
+    }
+  }
+
+  // ── Ephemeral (phone-created) rooms ───────────────────────────────────────
+  //
+  // The phone's "new room" / "fork room" NEVER touches the daemon registry
+  // (`~/.pi/remote/daemons.json`) — that config is manual-only (terminal /
+  // config file). Instead the supervisor boots a throwaway `pi --mode rpc`
+  // child: a BRAND-NEW session (no `--continue`), announced on the relay as
+  // its own room `(cwd, name)`, dropped from bookkeeping the moment it
+  // exits — no auto-restart, no registry entry, absent from `list`.
+
+  /**
+   * Guard against relay room_id collisions: a RUNNING daemon in the same
+   * cwd whose name equals the requested one already holds that room on the
+   * relay — the relay would reject the ephemeral's hello and the room would
+   * never appear. Step to the next `#N` in that case. A STOPPED daemon
+   * holds no room, so the name may be reused.
+   */
+  private _resolveEphemeralName(cwd: string, requested: string): string {
+    const daemonId = daemonIdForCwd(cwd);
+    const slot = this.children.get(daemonId);
+    const entry = listDaemons().find((d) => d.id === daemonId);
+    if (!slot || slot.child.state !== "running" || !entry || entry.name !== requested) {
+      return requested;
+    }
+    let n = 1;
+    let name = requested;
+    while (entry.name === name) {
+      n += 1;
+      name = `${requested}#${n}`;
+    }
+    return name;
+  }
+
+  private _opSpawn(req: Extract<ControlRequest, { op: "spawn" }>): ControlReply<unknown> {
+    let cwd: string;
+    try {
+      cwd = normalizeCwd(req.cwd);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    const requested = req.name?.trim() || defaultAgentName(cwd);
+    const name = this._resolveEphemeralName(cwd, requested);
+    const roomId = roomIdFor(cwd, name);
+    const existing = this.ephemeral.get(roomId);
+    if (existing && existing.child.state === "running") {
+      // Idempotent: the same (cwd, name) room is already live.
+      return { ok: true, data: { room_id: roomId, started: false, name } };
+    }
+    this._spawnEphemeral(roomId, cwd, name);
+    return { ok: true, data: { room_id: roomId, started: true, name } };
+  }
+
+  /**
+   * Stop + drop the ephemeral child holding relay room `room_id`.
+   * Idempotent: an unknown room_id (already dead / a daemon room) is
+   * `killed: false`, not an error.
+   */
+  private async _opKill(req: Extract<ControlRequest, { op: "kill" }>): Promise<ControlReply<unknown>> {
+    const slot = this.ephemeral.get(req.room_id);
+    if (!slot) return { ok: true, data: { killed: false } };
+    if (slot.child.state === "running") await slot.child.stop();
+    this.ephemeral.delete(req.room_id);
+    return { ok: true, data: { killed: true } };
+  }
+
+  private _spawnEphemeral(roomId: string, cwd: string, name: string): void {
+    // Replace a stale slot (e.g. a starting child that is about to be
+    // superseded) — stop it best-effort first.
+    const existing = this.ephemeral.get(roomId);
+    if (existing && existing.child.state === "running") void existing.child.stop();
+
+    const config: LocalConfig = { agent_name: name, auto_start_relay: true };
+    const childOpts: RpcChildOptions = {
+      extensionPath: this.opts.extensionPath,
+      cwd,
+      config,
+      freshSession: true,  // never resume the daemon's conversation
+    };
+    if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
+    const child = new RpcChild(childOpts);
+    const slot: ChildSlot = {
+      id: roomId,
+      cwd,
+      child,
+      restartTimer: null,
+      restartAttempt: 0,
+      ephemeral: true,
+    };
+    this.ephemeral.set(roomId, slot);
+    child.on("exit", (evt: RpcChildExitEvent) => this._onEphemeralExit(roomId, evt));
+    child.spawn();
+  }
+
+  /** Ephemeral rooms never auto-restart: a crash is a drop, with a log line
+   *  so the owner can see why the tile went away. */
+  private _onEphemeralExit(roomId: string, evt: RpcChildExitEvent): void {
+    const slot = this.ephemeral.get(roomId);
+    if (!slot) return;
+    this.ephemeral.delete(roomId);
+    if (evt.isCrash) {
+      process.stderr.write(
+        `[remote-pi-supervisord] ephemeral room ${roomId} exited (code=${evt.code} signal=${evt.signal}) — dropped, no auto-restart for phone rooms\n`,
+      );
     }
   }
 

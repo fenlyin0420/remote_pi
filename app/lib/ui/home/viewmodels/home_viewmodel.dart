@@ -211,6 +211,11 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// per-peer anymore).
   bool isRoomLive(String epk, String roomId) => _conn.isRoomLive(epk, roomId);
 
+  /// Every room the peer currently announces, unfiltered (the presence
+  /// tabs must not hide rooms from a fork's `#N` computation). Source for
+  /// [nextForkName] — rooms in the same cwd decide the next suffix.
+  List<RoomInfo> roomsForPeer(String epk) => _conn.roomsFor(epk);
+
   /// Room management — the first LIVE room of [epk] (the room the
   /// create/delete frame is sent through), or `null` when the peer has
   /// none live.

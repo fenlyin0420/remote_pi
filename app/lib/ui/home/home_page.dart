@@ -402,6 +402,21 @@ class HomePage extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
+                leading: Icon(LucideIcons.gitFork, color: colors.accent),
+                title: Text(
+                  'Fork room',
+                  style: TextStyle(color: colors.text),
+                ),
+                subtitle: Text(
+                  'A fresh temporary session in the same directory',
+                  style: TextStyle(color: colors.muted, fontSize: 11),
+                ),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _forkRoom(context, vm, it);
+                },
+              ),
+              ListTile(
                 leading: Icon(LucideIcons.pencil, color: colors.accent),
                 title: Text(
                   'Rename session',
@@ -511,6 +526,14 @@ class HomePage extends StatelessWidget {
   /// create frame must ride an already-open room channel; the new room
   /// announces itself on the relay afterwards and the tile appears
   /// automatically via `roomsStream`).
+  ///
+  /// The room is EPHEMERAL — the Pi spawns a throwaway session for the
+  /// directory; the daemon registry is never written (daemons are
+  /// manual-only: terminal / config file). When the directory already
+  /// hosts rooms, the name is auto-`#N`-suffixed so the new room gets a
+  /// distinct room id; a `~`-typed path can't be matched against the
+  /// announced (realpath) cwds, so it falls back to the Pi's default
+  /// name, which steps to `#N` itself when needed.
   Future<void> _promptNewRoom(BuildContext context, HomeViewModel vm) async {
     final messenger = ScaffoldMessenger.of(context);
     final controller = TextEditingController();
@@ -570,15 +593,23 @@ class HomePage extends StatelessWidget {
     final trimmed = path?.trim() ?? '';
     if (trimmed.isEmpty) return;
     if (!context.mounted) return;
-    await _runRoomCreate(context, vm, trimmed, messenger);
+    await _runRoomCreate(
+      context,
+      vm,
+      trimmed,
+      messenger: messenger,
+      createdMessage: 'Room created',
+    );
   }
 
   Future<void> _runRoomCreate(
     BuildContext context,
     HomeViewModel vm,
-    String path,
-    ScaffoldMessengerState messenger,
-  ) async {
+    String path, {
+    required ScaffoldMessengerState messenger,
+    String? name,
+    String createdMessage = 'Room created',
+  }) async {
     final actions = vm.actions;
     final conn = vm.conn;
     final prefs = context.read<Preferences>();
@@ -597,12 +628,21 @@ class HomePage extends StatelessWidget {
       messenger.showSnackBar(const SnackBar(content: Text('Open a room first')));
       return;
     }
+    // Plain "new room" (no explicit name): auto-`#N` against the rooms
+    // that already live in this directory, so the new room never
+    // collides with an existing room id. `~` paths can't be matched
+    // against the Pi-announced cwds from here — leave the naming to the
+    // Pi (it steps to `#N` when a running daemon holds the default).
+    if (name == null && !path.startsWith('~/') && path != '~') {
+      final rooms = vm.roomsForPeer(targetEpk!).where((r) => r.cwd == path).toList();
+      name = nextForkName(sourceName: null, cwd: path, rooms: rooms);
+    }
     final previousRoom = conn.activeRoomId;
     conn.switchRoom(liveRoom);
     try {
       try {
-        await actions.createRoom(path);
-        messenger.showSnackBar(const SnackBar(content: Text('Room created')));
+        await actions.createRoom(path, name: name);
+        messenger.showSnackBar(SnackBar(content: Text(createdMessage)));
       } on ActionFailure catch (e) {
         // Exact error string the Pi sends when the directory is absent
         // and `create_if_missing` is off — offer a create-anyway retry.
@@ -610,8 +650,12 @@ class HomePage extends StatelessWidget {
           final confirm = await _confirmCreateDirectory(context);
           if (confirm) {
             try {
-              await actions.createRoom(path, createIfMissing: true);
-              messenger.showSnackBar(const SnackBar(content: Text('Room created')));
+              await actions.createRoom(
+                path,
+                createIfMissing: true,
+                name: name,
+              );
+              messenger.showSnackBar(SnackBar(content: Text(createdMessage)));
             } on ActionFailure catch (e2) {
               messenger.showSnackBar(SnackBar(content: Text(e2.message)));
             }
@@ -627,10 +671,46 @@ class HomePage extends StatelessWidget {
     }
   }
 
+  /// 'Fork room' (long-press) — the convenience form of "new room":
+  /// same directory, a FRESH temporary session, agent name `#N`-
+  /// auto-incremented over every room in that cwd, and never written to
+  /// the daemon registry (a fork is a throwaway session, not a daemon).
+  Future<void> _forkRoom(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
+    final cwd = it.room.cwd;
+    if (cwd == null || cwd.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Room has no directory')),
+      );
+      return;
+    }
+    // The source room's cwd is the Pi-announced realpath, so same-cwd
+    // rooms match exactly; the source counts as `#1` for its own base.
+    final name = nextForkName(
+      sourceName: it.room.name,
+      cwd: cwd,
+      rooms: vm.roomsForPeer(it.peer.remoteEpk)
+          .where((r) => r.cwd == cwd)
+          .toList(),
+    );
+    await _runRoomCreate(
+      context,
+      vm,
+      cwd,
+      messenger: ScaffoldMessenger.of(context),
+      name: name,
+      createdMessage: 'Forked as ${name ?? it.room.name}',
+    );
+  }
+
   /// 'Delete room (on the Pi)' — confirm, drive `room_delete` through a
   /// live room of the SAME peer (the frame targets the room's OWN cwd,
   /// not the channel's), then drop the room from the local cache so the
-  /// tile leaves Home.
+  /// tile leaves Home. The Pi never touches the daemon registry: an
+  /// ephemeral room is killed, a registered daemon is only stopped.
   Future<void> _confirmDeleteRoom(
     BuildContext context,
     HomeViewModel vm,
@@ -705,7 +785,11 @@ class HomePage extends StatelessWidget {
     conn.switchRoom(liveRoom);
     try {
       try {
-        await actions.deleteRoom(cwd);
+        // The room's own name disambiguates it from a daemon (or other
+        // forks) that shares the cwd — the Pi kills an ephemeral room
+        // by (cwd, name) and only ever STOPS a daemon (the registration
+        // stays: the daemon registry is manual-only).
+        await actions.deleteRoom(cwd, name: it.room.name);
         // Removed on the Pi — drop it locally too so the tile leaves Home
         // immediately instead of waiting for the relay's RoomEnded.
         await vm.deleteRoom(epk, it.room.roomId);

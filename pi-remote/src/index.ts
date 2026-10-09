@@ -5554,9 +5554,19 @@ function _normalizeRoomPath(input: string): string {
 
 /**
  * room_create: normalize the path, verify it exists (or create it when
- * `create_if_missing`), then register + start the supervisor daemon for
- * that cwd. The new daemon announces its room to the relay on boot, so
- * the app's room list picks it up automatically.
+ * `create_if_missing`), then spawn an EPHEMERAL supervisor session for that
+ * cwd. The child announces its room to the relay on boot, so the app's
+ * room list picks it up automatically.
+ *
+ * The daemon registry is NEVER touched by a phone action — daemons are
+ * registered manually (terminal / `daemons.json`). The ephemeral child is
+ * a fresh session (`--continue` is suppressed) and dies with the
+ * supervisor: no auto-restart, no registry entry.
+ *
+ * `msg.name` (a fork's `#N`-suffixed name) is passed through; without it
+ * the supervisor resolves the folder's default name. A running daemon in
+ * the same cwd that already holds the name makes the supervisor step to
+ * the next `#N` instead of producing a room the relay would reject.
  *
  * The app relies on the EXACT error string `directory_missing` to offer
  * a "create it anyway?" confirm dialog — don't add text to it.
@@ -5579,9 +5589,8 @@ async function _handleRoomCreate(
       }
       mkdirSync(normalized, { recursive: true });
     }
-    const id = daemonIdForCwd(normalized);
-    await callSupervisor({ op: "register", cwd: normalized });
-    await callSupervisor({ op: "start", id });
+    const name = msg.name?.trim() || undefined;
+    await callSupervisor({ op: "spawn", cwd: normalized, ...(name ? { name } : {}) });
     sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_create" });
   } catch (err) {
     const emsg = err instanceof Error ? err.message : String(err);
@@ -5595,13 +5604,22 @@ async function _handleRoomCreate(
 }
 
 /**
- * room_delete: unregister the daemon for the given cwd. The supervisor's
- * `_opUnregister` stops the child process first (killing the Pi daemon)
- * and removes the registry entry — so the room disappears from the
- * monitoring list and the agent process ends.
+ * room_delete: remove the room WITHOUT ever touching the daemon registry —
+ * the daemon config is manual-only (terminal / config file), so a phone
+ * delete can at most STOP a daemon process; it can never remove its
+ * registration (a `daemon start` or the next supervisor restart brings a
+ * stopped daemon back).
  *
- * Idempotent: `removed: false` (id was never registered) still counts as
- * `action_ok` — the end state (no room) matches the intent.
+ * Resolution order:
+ *   1. With a `name`, first try to kill the matching EPHEMERAL session
+ *      (a phone-created one): the room then disappears for good.
+ *   2. Otherwise, when this cwd hosts a registered daemon whose name
+ *      matches, stop its process (registration stays).
+ *   3. Anything else (interactive TUI room, an already-gone ephemeral) is
+ *      a no-op — the app drops the tile locally.
+ *
+ * Idempotent like before: a room with nothing to stop still counts as
+ * `action_ok` — the end state matches the intent.
  */
 async function _handleRoomDelete(
   sender: PlainPeerChannel,
@@ -5609,8 +5627,33 @@ async function _handleRoomDelete(
 ): Promise<void> {
   try {
     const normalized = _normalizeRoomPath(msg.path);
-    const id = daemonIdForCwd(normalized);
-    await callSupervisor({ op: "unregister", id });
+    const name = msg.name?.trim() || undefined;
+    if (name) {
+      const roomId = roomIdFor(normalized, name);
+      const kill = await callSupervisor({ op: "kill", room_id: roomId });
+      if (kill.killed) {
+        sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
+        return;
+      }
+      // Not an ephemeral room — does it match a registered daemon in this
+      // cwd? Stop it (the registry entry itself is untouched).
+      const reg = listDaemons().find((d) => d.cwd === normalized);
+      if (reg && reg.name === name) {
+        try {
+          await callSupervisor({ op: "stop", id: daemonIdForCwd(normalized) });
+        } catch { /* no supervisor / nothing running — still ok */ }
+        sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
+        return;
+      }
+      // TUI or otherwise unmanaged — nothing to stop.
+      sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
+      return;
+    }
+    // Legacy frame without a name: stop the daemon for this cwd if one is
+    // registered (no registry mutation either way).
+    try {
+      await callSupervisor({ op: "stop", id: daemonIdForCwd(normalized) });
+    } catch { /* no daemon for this cwd — no-op */ }
     sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
   } catch (err) {
     const emsg = err instanceof Error ? err.message : String(err);
