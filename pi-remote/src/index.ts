@@ -5590,6 +5590,9 @@ async function _handleRoomCreate(
       mkdirSync(normalized, { recursive: true });
     }
     const name = msg.name?.trim() || undefined;
+    process.stderr.write(
+      `[remote-pi] room_create path=${normalized} name=${name ?? "<default>"} raw=${msg.path}\n`,
+    );
     await callSupervisor({ op: "spawn", cwd: normalized, ...(name ? { name } : {}) });
     sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_create" });
   } catch (err) {

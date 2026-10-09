@@ -1,6 +1,7 @@
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/transport/connection_manager.dart' show StatusOnline;
+import 'package:app/data/transport/connection_manager.dart'
+    show ConnectionManager, StatusOnline;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/domain/value_objects/session_label.dart';
 import 'package:app/pairing/storage.dart';
@@ -609,6 +610,7 @@ class HomePage extends StatelessWidget {
     required ScaffoldMessengerState messenger,
     String? name,
     String createdMessage = 'Room created',
+    HomeItem? source,
   }) async {
     final actions = vm.actions;
     final conn = vm.conn;
@@ -617,14 +619,24 @@ class HomePage extends StatelessWidget {
       messenger.showSnackBar(const SnackBar(content: Text('Relay offline — try again later')));
       return;
     }
-    // Which peer to target: the one the user last selected (if it is
-    // the connected one); otherwise the active connection's peer.
+    // The frame rides the app's ACTIVE connection, so a create about a
+    // room of another peer (fork, or a browsed room) must first switch
+    // to that peer — otherwise it lands on whichever peer the app
+    // happens to be connected to and the new room shows up under the
+    // wrong device.
+    final previousPeer = conn.activePeer;
+    final previousRoom = conn.activeRoomId;
+    if (source != null && previousPeer?.remoteEpk != source.peer.remoteEpk) {
+      await conn.switchTo(source.peer);
+    }
     final activeEpk = conn.activePeer?.remoteEpk;
     final selectedEpk = prefs.selectedPeerEpk;
     final targetEpk =
-        selectedEpk != null && selectedEpk == activeEpk ? selectedEpk : activeEpk;
+        source?.peer.remoteEpk ??
+        (selectedEpk != null && selectedEpk == activeEpk ? selectedEpk : activeEpk);
     final liveRoom = targetEpk == null ? null : vm.firstLiveRoom(targetEpk);
     if (liveRoom == null) {
+      await _restorePeer(conn, previousPeer, previousRoom);
       messenger.showSnackBar(const SnackBar(content: Text('Open a room first')));
       return;
     }
@@ -637,7 +649,6 @@ class HomePage extends StatelessWidget {
       final rooms = vm.roomsForPeer(targetEpk!).where((r) => r.cwd == path).toList();
       name = nextForkName(sourceName: null, cwd: path, rooms: rooms);
     }
-    final previousRoom = conn.activeRoomId;
     conn.switchRoom(liveRoom);
     try {
       try {
@@ -665,10 +676,28 @@ class HomePage extends StatelessWidget {
         }
       }
     } finally {
-      // Restore the room the UI was addressing before the round-trip —
-      // the create frame only needed ONE live room to ride on.
-      conn.switchRoom(previousRoom);
+      // Restore the room (and peer) the UI was addressing before the
+      // round-trip — the create frame only needed ONE live room to ride on.
+      await _restorePeer(conn, previousPeer, previousRoom);
     }
+  }
+
+  /// Switch back to the peer the user was connected to before a
+  /// room-management frame hopped to another tile's peer. A no-op when
+  /// the peer never changed (then only the room needs restoring).
+  Future<void> _restorePeer(
+    ConnectionManager conn,
+    PeerRecord? previous,
+    String? previousRoom,
+  ) async {
+    if (previous == null) return;
+    if (conn.activePeer?.remoteEpk == previous.remoteEpk) {
+      if (previousRoom != null) conn.switchRoom(previousRoom);
+      return;
+    }
+    await conn.switchTo(
+      previousRoom == null ? previous : previous.copyWith(roomId: previousRoom),
+    );
   }
 
   /// 'Fork room' (long-press) — the convenience form of "new room":
@@ -703,6 +732,7 @@ class HomePage extends StatelessWidget {
       messenger: ScaffoldMessenger.of(context),
       name: name,
       createdMessage: 'Forked as ${name ?? it.room.name}',
+      source: it,
     );
   }
 
@@ -776,12 +806,20 @@ class HomePage extends StatelessWidget {
       return;
     }
     final epk = it.peer.remoteEpk;
+    // The delete frame rides the ACTIVE connection: hop to the tile's own
+    // peer first (see _runRoomCreate) so the Pi that owns the room is the
+    // one asked to remove it.
+    final previousPeer = conn.activePeer;
+    final previousRoom = conn.activeRoomId;
+    if (previousPeer?.remoteEpk != epk) {
+      await conn.switchTo(it.peer);
+    }
     final liveRoom = vm.firstLiveRoom(epk);
     if (liveRoom == null) {
+      await _restorePeer(conn, previousPeer, previousRoom);
       messenger.showSnackBar(const SnackBar(content: Text('Open a room first')));
       return;
     }
-    final previousRoom = conn.activeRoomId;
     conn.switchRoom(liveRoom);
     try {
       try {
@@ -798,7 +836,7 @@ class HomePage extends StatelessWidget {
         messenger.showSnackBar(SnackBar(content: Text(e.message)));
       }
     } finally {
-      conn.switchRoom(previousRoom);
+      await _restorePeer(conn, previousPeer, previousRoom);
     }
   }
 

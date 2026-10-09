@@ -528,6 +528,9 @@ export class Supervisor {
     }
     const requested = req.name?.trim() || defaultAgentName(cwd);
     const name = this._resolveEphemeralName(cwd, requested);
+    process.stderr.write(
+      `[remote-pi-supervisord] spawn cwd=${cwd} requested=${requested} -> ${name}\n`,
+    );
     const roomId = roomIdFor(cwd, name);
     const existing = this.ephemeral.get(roomId);
     if (existing && existing.child.state === "running") {

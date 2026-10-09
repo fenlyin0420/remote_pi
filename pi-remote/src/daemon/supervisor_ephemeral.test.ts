@@ -140,6 +140,16 @@ describe("Supervisor — ephemeral (phone) rooms", () => {
     expect(r2.ok && r2.data!.name).toBe("other");
   });
 
+  test("spawn steps past a daemon that holds a custom #N name", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-eph-cust-"));
+    const reg = addDaemon(tmp, "proj#2");
+    const start = await ask({ op: "start", id: reg.id });
+    expect(start.ok).toBe(true);
+    const r = await ask({ op: "spawn", cwd: tmp, name: "proj#2" }) as ControlReply<{ name: string }>;
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data!.name).toBe("proj#3");
+  });
+
   test("kill stops a live ephemeral room and is idempotent after", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-sv-eph-kill-"));
     const roomId = roomIdFor(tmp, "proj");
