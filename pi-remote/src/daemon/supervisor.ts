@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { addDaemon, listDaemons, migrateRegistryNames, normalizeCwd, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
 import { roomIdFor } from "../rooms.js";
-import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
+import { defaultAgentName, migrateAgentName, type LocalConfig } from "../session/local_config.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions, type RpcUiEvent } from "./rpc_child.js";
 import {
@@ -158,6 +158,10 @@ interface ChildSlot {
   /** Phone-created (forked) room: not in the daemon registry, never
    *  auto-restarted, absent from `list`/`status`. */
   ephemeral?: boolean;
+  /** The agent name this child came up as — used to find an ephemeral slot
+   *  by (cwd, name) when its announced suffix differs from the predicted
+   *  one (the cwd lock may pick a neighbouring `#N`). */
+  name?: string;
 }
 
 export class Supervisor {
@@ -547,10 +551,21 @@ export class Supervisor {
    * `killed: false`, not an error.
    */
   private async _opKill(req: Extract<ControlRequest, { op: "kill" }>): Promise<ControlReply<unknown>> {
-    const slot = this.ephemeral.get(req.room_id);
+    // Prefer the exact room_id; fall back to (cwd, name) because the child's
+    // cwd lock may have acquired a neighbouring `#N` (the announced room id
+    // then differs from the predicted one).
+    let slot = this.ephemeral.get(req.room_id);
+    if (!slot && req.cwd !== undefined && req.name !== undefined) {
+      for (const s of this.ephemeral.values()) {
+        if (s.cwd === req.cwd && s.name === req.name) {
+          slot = s;
+          break;
+        }
+      }
+    }
     if (!slot) return { ok: true, data: { killed: false } };
     if (slot.child.state === "running") await slot.child.stop();
-    this.ephemeral.delete(req.room_id);
+    this.ephemeral.delete(slot.id);
     return { ok: true, data: { killed: true } };
   }
 
@@ -560,12 +575,21 @@ export class Supervisor {
     const existing = this.ephemeral.get(roomId);
     if (existing && existing.child.state === "running") void existing.child.stop();
 
-    const config: LocalConfig = { agent_name: name, auto_start_relay: true };
+    // `agent_name` carries the BASE name only: the extension's config parser
+    // migrates a `#N` suffix away on read (it is a runtime cwd-lock artefact,
+    // never a user choice — see migrateAgentName), and with
+    // `REMOTE_PI_EPHEMERAL=1` the lock then re-derives the suffix itself
+    // (`fenlyin` → `fenlyin#2`), which is the name the app computed too.
+    const config: LocalConfig = {
+      agent_name: migrateAgentName(name) ?? defaultAgentName(cwd),
+      auto_start_relay: true,
+    };
     const childOpts: RpcChildOptions = {
       extensionPath: this.opts.extensionPath,
       cwd,
       config,
       freshSession: true,  // never resume the daemon's conversation
+      ephemeral: true,     // phone room: cwd lock may auto-suffix
     };
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
@@ -576,6 +600,7 @@ export class Supervisor {
       restartTimer: null,
       restartAttempt: 0,
       ephemeral: true,
+      name,
     };
     this.ephemeral.set(roomId, slot);
     child.on("exit", (evt: RpcChildExitEvent) => this._onEphemeralExit(roomId, evt));

@@ -167,6 +167,29 @@ describe("Supervisor — ephemeral (phone) rooms", () => {
     if (r.ok) expect(r.data!.killed).toBe(false);
   });
 
+  test("kill finds an ephemeral by (cwd, name) when the room_id differs", async () => {
+    // The child's cwd lock may land on a neighbouring `#N`, so the announced
+    // room id can differ from the predicted one — the phone's room_delete
+    // must still reach the room.
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-eph-byname-"));
+    await ask({ op: "spawn", cwd: tmp, name: "proj" });
+    const kill = await ask({
+      op: "kill",
+      room_id: "deadbeef0000",
+      cwd: tmp,
+      name: "proj",
+    }) as ControlReply<{ killed: boolean }>;
+    expect(kill.ok && kill.data!.killed).toBe(true);
+    // Idempotent: the slot is gone.
+    const again = await ask({
+      op: "kill",
+      room_id: "deadbeef0000",
+      cwd: tmp,
+      name: "proj",
+    }) as ControlReply<{ killed: boolean }>;
+    expect(again.ok && again.data!.killed).toBe(false);
+  });
+
   test("a crashed ephemeral room is dropped with NO auto-restart", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-sv-eph.crash-"));
     const r = await ask({ op: "spawn", cwd: tmp, name: "proj" }) as ControlReply<{ room_id: string }>;

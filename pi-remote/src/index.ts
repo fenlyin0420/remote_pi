@@ -3581,9 +3581,13 @@ async function _cmdRootInner(
   // (`name#2`, `name#3`, …), but supervised daemons must be singletons for their
   // registered cwd/name. If a daemon silently came up as `#2`, the supervisor
   // would report "running" while the mesh had duplicate peers for one repo.
+  // Phone rooms (REMOTE_PI_EPHEMERAL=1) are supervised but NOT singletons:
+  // they are one-shot sessions forked next to a daemon, so they take the
+  // interactive path and auto-suffix past every live agent in the folder.
   if (_cwdLock === null) {
     const isDaemon = process.env["REMOTE_PI_DAEMON"] === "1";
-    const maxAttempts = isDaemon ? 1 : 1000;
+    const isEphemeral = process.env["REMOTE_PI_EPHEMERAL"] === "1";
+    const maxAttempts = isDaemon && !isEphemeral ? 1 : 1000;
     for (let n = 1; n <= maxAttempts; n++) {
       const candidate = n === 1 ? requestedName : `${requestedName}#${n}`;
       const result = await acquireCwdLock(cwd, candidate);
@@ -3602,7 +3606,7 @@ async function _cmdRootInner(
     }
     if (_cwdLock === null) {
       if (!_isCurrentRootLifecycle(rootLifecycleGeneration)) return;
-      if (isDaemon) {
+      if (isDaemon && !isEphemeral) {
         // LOCAL PATCH (fenlyin): wait + retry instead of becoming a zombie.
         // Told once per wait episode — the headless ui forwards warnings to
         // stderr, and a warning every 15s would flood the supervisor journal.
@@ -5128,7 +5132,8 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     name: agentName,
     cwd: canonCwd,
     auditPath: audit,
-    takeoverExisting: process.env["REMOTE_PI_DAEMON"] === "1",
+    takeoverExisting:
+      process.env["REMOTE_PI_DAEMON"] === "1" && process.env["REMOTE_PI_EPHEMERAL"] !== "1",
   });
 
   peer.onMessage((env) => {
@@ -5633,17 +5638,24 @@ async function _handleRoomDelete(
     const name = msg.name?.trim() || undefined;
     if (name) {
       const roomId = roomIdFor(normalized, name);
-      const kill = await callSupervisor({ op: "kill", room_id: roomId });
+      const kill = await callSupervisor({
+        op: "kill",
+        room_id: roomId,
+        cwd: normalized,
+        name,
+      });
       if (kill.killed) {
         sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
         return;
       }
       // Not an ephemeral room — does it match a registered daemon in this
-      // cwd? Stop it (the registry entry itself is untouched).
+      // cwd? CYCLE it: a registered daemon is always-on (the registry is
+      // manual-only), so the delete only drops the app-side tile and the
+      // daemon comes straight back up under supervision.
       const reg = listDaemons().find((d) => d.cwd === normalized);
       if (reg && reg.name === name) {
         try {
-          await callSupervisor({ op: "stop", id: daemonIdForCwd(normalized) });
+          await callSupervisor({ op: "restart", id: daemonIdForCwd(normalized) });
         } catch { /* no supervisor / nothing running — still ok */ }
         sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
         return;
@@ -5652,10 +5664,10 @@ async function _handleRoomDelete(
       sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
       return;
     }
-    // Legacy frame without a name: stop the daemon for this cwd if one is
+    // Legacy frame without a name: cycle the daemon for this cwd if one is
     // registered (no registry mutation either way).
     try {
-      await callSupervisor({ op: "stop", id: daemonIdForCwd(normalized) });
+      await callSupervisor({ op: "restart", id: daemonIdForCwd(normalized) });
     } catch { /* no daemon for this cwd — no-op */ }
     sender.send({ type: "action_ok", in_reply_to: msg.id, action: "room_delete" });
   } catch (err) {

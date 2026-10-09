@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcChild, busyTransition, resolvePiBin, resolvePiSpawn, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
@@ -43,6 +43,30 @@ describe("RpcChild — deliberate stop is not a crash", () => {
 
   afterEach(() => {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  // The phone-room marker must reach the child: without it the extension
+  // applies daemon singleton lock semantics and a fork next to a running
+  // daemon waits forever instead of becoming `<name>#2`.
+  test.skipIf(process.platform === "win32")("ephemeral children carry REMOTE_PI_EPHEMERAL=1", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-rpcchild-env-"));
+    const out = join(dir, "env.txt");
+    const bin = join(dir, "envdump.sh");
+    writeFileSync(bin, `#!/bin/sh\nenv > ${out}\nexec sleep 30\n`);
+    chmodSync(bin, 0o755);
+
+    const child = new RpcChild({
+      piBin: bin,
+      extensionPath: "/no/such.js",
+      cwd: dir,
+      ephemeral: true,
+    });
+    child.spawn();
+    await new Promise((r) => setTimeout(r, 200));
+    const env = readFileSync(out, "utf8");
+    expect(env).toContain("REMOTE_PI_EPHEMERAL=1");
+    expect(env).toContain("REMOTE_PI_DAEMON=1");
+    await child.stop();
   });
 
   // POSIX-only: uses a `.sh` stub + SIGTERM/SIGKILL semantics. The RpcChild

@@ -50,6 +50,14 @@ export interface RpcChildOptions {
    * the daemon/interactive session that already lives in this cwd.
    */
   freshSession?: boolean;
+  /**
+   * Phone-created throwaway room (ephemeral). Marks the child with
+   * `REMOTE_PI_EPHEMERAL=1` so the extension treats the cwd lock like an
+   * interactive agent — it auto-suffixes (`name#2`, `name#3`, …) instead of
+   * waiting for a same-folder daemon to exit — and never takes over a
+   * same-named peer on the broker.
+   */
+  ephemeral?: boolean;
 }
 
 export interface RpcChildExitEvent {
@@ -338,6 +346,9 @@ export class RpcChild extends EventEmitter {
       // Mandatory daemon marker — `_cmdRoot` in index.ts can use this to
       // bail early if local config is missing (no wizard in RPC mode).
       REMOTE_PI_DAEMON: "1",
+      // Phone room: no daemon singleton lock semantics (see
+      // RpcChildOptions.ephemeral) — the lock may auto-suffix.
+      ...(this.opts.ephemeral ? { REMOTE_PI_EPHEMERAL: "1" } : {}),
       // Inject the daemon config inline so the child needs no config file.
       ...(this.opts.config ? { REMOTE_PI_DIRECT_CONFIG: JSON.stringify(this.opts.config) } : {}),
     };

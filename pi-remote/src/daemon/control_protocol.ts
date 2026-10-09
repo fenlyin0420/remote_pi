@@ -52,8 +52,11 @@ export type ControlRequest =
   // boot; it is NOT in `~/.pi/remote/daemons.json`, is absent from `list`/
   // `status`, never auto-restarts after a crash, and dies with the supervisor.
   // `kill`: stop + drop the ephemeral child holding the given relay room_id.
+  // `cwd`/`name` are a fallback lookup: the child's cwd lock may land on a
+  // neighbouring `#N`, so its announced room id can differ from the one the
+  // caller predicted.
   | { op: "spawn"; cwd: string; name?: string }
-  | { op: "kill"; room_id: string }
+  | { op: "kill"; room_id: string; cwd?: string; name?: string }
   // ── cron (plan/39) ──
   | { op: "cron_add"; daemon_id: string; schedule: string; prompt: string; tz?: string; skip_if_busy?: boolean; wake?: boolean; catchup?: boolean }
   | { op: "cron_list" }
