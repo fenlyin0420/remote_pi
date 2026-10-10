@@ -173,6 +173,10 @@ class MessageListState extends State<MessageList> {
       return;
     }
     if (!controller.hasClients) return;
+    // The ROM long-screenshot overlay tracks this list's range and
+    // position; content can grow while the pixels do not (streaming while
+    // the user reads history), which only a per-layout check catches.
+    LongScreenshotAdapter.instance.resync();
     _followBottom();
   }
 
