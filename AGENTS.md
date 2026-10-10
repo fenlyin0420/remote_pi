@@ -92,6 +92,24 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.26 is released** (2026-10-10, on `dev`, prod `1.5.26` +75, Release
+  `v1.5.26-long-screenshot-arm64`): system long-screenshot works on chat screens. The ROM
+  drives the capture with **synthetic non-finger pointer events** (NOT `scrollBy` —
+  verified from the `fit_system_screenshot` plugin source after beta.1 failed on device),
+  so a transparent `ScrollView` overlay (`LongScreenshotSupport.kt`, added/removed by the
+  Dart adapter while a chat is on top) consumes those gestures and mirrors `onScrollChanged`
+  over a MethodChannel onto the real transcript; Dart keeps the overlay's scrollable range
+  = `maxScrollExtent·dpr` (child height via `minimumHeight` — a ScrollView measures its
+  direct child UNSPECIFIED, LayoutParams.height is ignored) and its offset = the
+  transcript's position (deferred to `onLayout` pre-layout). The button greys when the chat
+  is pinned at the bottom (ROM only scrolls downward — scroll up a little first). Review:
+  four rounds, three BLOCKs (scrollBy assumption on device, attach offset clamped
+  pre-layout, child height never realized). Betas `1.5.26-beta.1`(+75, falsified on
+  device) → `beta.2`(+76, user-confirmed) were tested first; the beta channel keeps
+  `beta.2`. App-side only, no pi-remote change, no supervisor restart. Last night's
+  interrupted in-app capture approach is parked in `staging/` (gitignored, recoverable).
+  Next beta will be `1.5.27-beta.1`, next prod code ≥ 76. See
+  `.agents/memory/remote-pi-long-screenshot.md`.
 - **1.5.25 is released** (2026-10-09, on `dev`, prod `1.5.25` +74, sha
   `e0e510f3…`, Release `v1.5.25-ephemeral-rooms-arm64`): long-press a room
   tile → **Fork room** (same cwd, fresh temporary session, agent name `#N`
