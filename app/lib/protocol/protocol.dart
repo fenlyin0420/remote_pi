@@ -40,6 +40,12 @@ sealed class ControlInbound {
         // Plan/42 — context usage arrives top-level or nested under
         // `meta.context`, same forward-compat convention as the others.
         final rawContext = _parseContext(j) ?? _parseContext(metaJson);
+        // Plan/46 — first message arrives top-level (post-relay-flatten) or
+        // nested under `meta.first_message` (pre-flatten relay forwarding the
+        // Pi's room_meta verbatim); read both for forward-compat with either
+        // relay version.
+        final rawFirstMessage =
+            (j['first_message'] as String?) ?? (metaJson?['first_message'] as String?);
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -52,6 +58,7 @@ sealed class ControlInbound {
               : null,
           working: rawWorking,
           context: rawContext,
+          firstMessage: rawFirstMessage,
         );
       }(),
       'room_ended' => RoomEnded(
@@ -69,6 +76,7 @@ sealed class ControlInbound {
         final meta = j['meta'] as Map<String, dynamic>?;
         final hasModel = meta?.containsKey('model') ?? false;
         final hasThinking = meta?.containsKey('thinking') ?? false;
+        final hasFirstMessage = meta?.containsKey('first_message') ?? false;
         final rawThinking = meta?['thinking'] as String?;
         return RoomMetaUpdated(
           peer: j['peer'] as String,
@@ -83,6 +91,12 @@ sealed class ControlInbound {
           working: meta?['working'] as bool?,
           hasModel: hasModel,
           hasThinking: hasThinking,
+          // Plan/46 — first_message always rides on a session boundary (the
+          // Pi sends it even as "" for an empty session); the key-presence
+          // flag distinguishes "not part of this update" from
+          // "explicitly (re)set, possibly to an empty string".
+          firstMessage: meta?['first_message'] as String?,
+          hasFirstMessage: hasFirstMessage,
           context: _parseContext(meta),
         );
       }(),
@@ -203,6 +217,15 @@ class RoomInfo {
   /// one yet — older extensions never publish this field).
   final RoomContextUsage? context;
 
+  /// Plan/46 — the current session's first user message, the "living" room
+  /// title for rooms with no configured agent name. The Pi truncates it to
+  /// ~120 chars and always publishes it on a session boundary (even `""`
+  /// for a fresh empty session), so a replaced session never shows the
+  /// previous session's opening message. `null` = the Pi hasn't reported one
+  /// yet (pre-Plan/46 relay / hello) — the app falls back to its cached
+  /// value and ultimately to the cwd basename.
+  final String? firstMessage;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -212,6 +235,7 @@ class RoomInfo {
     this.thinking,
     this.working = false,
     this.context,
+    this.firstMessage,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -227,6 +251,7 @@ class RoomInfo {
           : null,
       working: (j['working'] as bool?) ?? false,
       context: _parseContext(j),
+      firstMessage: j['first_message'] as String?,
     );
   }
 
@@ -240,6 +265,7 @@ class RoomInfo {
     'working': working,
     if (context != null)
       'context': {'used': context!.used, 'limit': context!.limit},
+    if (firstMessage != null) 'first_message': firstMessage!,
   };
 
   RoomInfo copyWith({
@@ -250,6 +276,7 @@ class RoomInfo {
     Object? thinking = _kRoomInfoUnset,
     bool? working,
     Object? context = _kRoomInfoUnset,
+    Object? firstMessage = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
@@ -263,6 +290,9 @@ class RoomInfo {
       context: identical(context, _kRoomInfoUnset)
           ? this.context
           : context as RoomContextUsage?,
+      firstMessage: identical(firstMessage, _kRoomInfoUnset)
+          ? this.firstMessage
+          : firstMessage as String?,
   );
 
   @override
@@ -275,11 +305,12 @@ class RoomInfo {
       other.model == model &&
       other.thinking == thinking &&
       other.working == working &&
-      other.context == context;
+      other.context == context &&
+      other.firstMessage == firstMessage;
 
   @override
   int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working);
+      Object.hash(roomId, name, cwd, startedAt, model, thinking, working, context, firstMessage);
 }
 
 /// Plan/42 — best-effort context usage published by the Pi-extension
@@ -327,6 +358,12 @@ class RoomAnnounced extends ControlInbound {
 
   /// Plan/42 — context usage at announce time (null = not published).
   final RoomContextUsage? context;
+
+  /// Plan/46 — the session's first user message at announce time, the "living"
+  /// title for rooms with no configured agent name. `null` when the frame
+  /// omitted it (legacy relay) — the ConnectionManager keeps any previously
+  /// known value.
+  final String? firstMessage;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -337,6 +374,7 @@ class RoomAnnounced extends ControlInbound {
     this.thinking,
     this.working,
     this.context,
+    this.firstMessage,
   });
 }
 
@@ -396,6 +434,28 @@ class RoomMetaUpdated extends ControlInbound {
   /// Plan/42 — context-usage patch. `null` = this update didn't carry
   /// it (preserve the cached value).
   final RoomContextUsage? context;
+
+  /// Plan/46 — the current session's first user message, the "living" title
+  /// for rooms with no configured agent name. The Pi always publishes this on
+  /// a session boundary (even `""` for a fresh empty session), so the
+  /// [hasFirstMessage] key-presence flag distinguishes "explicitly (re)set
+  /// this opening message" from "first message was not part of this update
+  /// \u2212 keep the cached one".
+  ///
+  /// `null` when the update didn't carry it (or it was an explicit clear).
+  final String? firstMessage;
+
+  /// Plan/46 — `true` when the `meta` envelope carried a `first_message` key.
+  /// Lets the ConnectionManager distinguish "first message was not part of this
+  /// update" from "first message was explicitly (re)set to an empty string",
+  /// which matters now that updates can be model-only / thinking-only /
+  /// working-only and must not clobber the opening-message title.
+  ///
+  /// Defaults to `true` for ergonomic programmatic construction
+  /// (callers / tests can pass `firstMessage: x` without also remembering
+  /// the boolean). [RoomMetaUpdated.fromJson] passes the precise
+  /// presence-of-key boolean instead.
+  final bool hasFirstMessage;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
@@ -405,6 +465,8 @@ class RoomMetaUpdated extends ControlInbound {
     this.hasModel = true,
     this.hasThinking = true,
     this.context,
+    this.firstMessage,
+    this.hasFirstMessage = true,
   });
 }
 

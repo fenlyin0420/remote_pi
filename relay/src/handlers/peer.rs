@@ -115,6 +115,14 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         let context = room_meta_val
             .and_then(|m| m.get("context"))
             .and_then(|v| serde_json::from_value::<crate::rooms::RoomContext>(v.clone()).ok());
+        // Plan/46 — first user message arrives as a plain string (the "living"
+        // room title for rooms with no configured agent name). The Pi always
+        // sends it ("" on a fresh empty session), so its absence here means
+        // a pre-Plan/46 hello; the app preserves its cached value in that case.
+        let first_message = room_meta_val
+            .and_then(|m| m.get("first_message"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -127,6 +135,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             thinking,
             working,
             context,
+            first_message,
             started_at,
         }
     };
@@ -295,11 +304,20 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let context_patch = meta_obj
                                         .and_then(|m| m.get("context"))
                                         .map(|v| serde_json::from_value::<crate::rooms::RoomContext>(v.clone()).ok());
+                                    // Plan/46 — first_message: the Pi always sends
+                                    // a concrete string on a session boundary
+                                    // ("" = explicit clear for a fresh empty
+                                    // session). key absent → preserve, non-string
+                                    // (null, etc.) → clear, string → set.
+                                    let first_message_patch = meta_obj
+                                        .and_then(|m| m.get("first_message"))
+                                        .map(|v| v.as_str().map(String::from));
                                     let patch = RoomMetaPatch {
                                         model: model_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
                                         context: context_patch,
+                                        first_message: first_message_patch,
                                     };
                                     if !registry
                                         .update_room_meta(&peer_id, &target_room, patch)

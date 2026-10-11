@@ -135,6 +135,7 @@ import {
   localConfigExists,
   saveLocalConfig,
 } from "./session/local_config.js";
+import { firstUserMessageForSession } from "./session/first_message.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, isAbsolute, dirname, resolve, basename } from "node:path";
@@ -255,7 +256,7 @@ let _myRoomId: string | null = null;   // this Pi's room id (derived from cwd)
 // open instead of starting null. The SDK fires `thinking_level_select`
 // on every change (initial load + user toggle), mirrored to room_meta
 // the same way model is — apps subscribe to one channel for both.
-let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; context?: { used: number; limit: number } } | null = null;
+let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; context?: { used: number; limit: number }; first_message?: string } | null = null;
 let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
@@ -544,6 +545,34 @@ function _publishWorking(working: boolean): void {
   if (_relay && _myRoomId) {
     _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working } });
   }
+}
+
+// ── ROOM TITLE: first user message as the "living" name for unnamed rooms ──
+
+// The pure extraction lives in ./session/first_message.js (tested in isolation);
+// only the module-state publish needs to stay here.
+
+/**
+ * Publishes the current session's first user message as `room_meta.first_message`.
+ * Unlike `_publishContextUsage` (debounced, no-op when unknown) this is called
+ * only on session boundaries (hello + `session_start` replacement): the value
+ * changes at most once per session and is computed cheaply from the in-memory
+ * branch. Always emits the key — `""` explicitly clears a stale title when the
+ * session has no user message yet, so a session replacement cannot keep showing
+ * the previous session's opening message.
+ */
+function _publishFirstMessage(ctx: unknown): void {
+  try {
+    const first = firstUserMessageForSession(ctx) ?? "";
+    if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, first_message: first };
+    if (_relay && _myRoomId) {
+      _relay.sendControl({
+        type: "room_meta_update",
+        room_id: _myRoomId,
+        meta: { first_message: first },
+      });
+    }
+  } catch { /* defensive — never block a turn on title computation */ }
 }
 
 function _imageCacheRootDir(): string {
@@ -3179,6 +3208,13 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       _myRoomMeta = freshRoomMeta;
     }
     _publishContextUsage(ctx);
+    // Plan/46: `first_message` is per-session too. On a replacement the relay
+    // would otherwise keep serving the PREVIOUS session's opening message (the
+    // relay room survives the replacement). Publish on replacement only — the
+    // hello already carries it for the initial session, and `_publishFirstMessage`
+    // always emits the key (even `""`), so the relay merge-patch clears a stale
+    // title when the target session is empty.
+    if (sessionReplaced) _publishFirstMessage(ctx);
     // LOCAL PATCH (fenlyin): prefill the history mirror with the resumed
     // session's conversation so a room keeps its history across restarts.
     _seedMessageBufferFromSession(ctx);
@@ -3847,7 +3883,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; context?: { used: number; limit: number } } = { name: sessionName, cwd };
+  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; context?: { used: number; limit: number }; first_message?: string } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (_currentThinking) roomMeta.thinking = _currentThinking;
@@ -3867,6 +3903,17 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
       roomMeta.context = context;
       _myRoomMeta = { ..._myRoomMeta, context };
     }
+  }
+  // Plan/46: the first user message rides in the hello too, so the app's
+  // "living" room title is present before the first meta update. Always
+  // published — `""` explicitly clears a stale title when the session has no
+  // user message yet (fresh session), matching the session-replacement path.
+  // Both the local hello payload (`roomMeta`) and the reconnect-replay copy
+  // (`_myRoomMeta`, re-assigned by the context spread above) must carry it.
+  {
+    const first = firstUserMessageForSession(ctx) ?? "";
+    roomMeta.first_message = first;
+    if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, first_message: first };
   }
 
   ctx.ui.notify(`[remote-pi] Connecting to relay ${relayUrl} (source: ${source}, room: ${roomId})…`, "info");

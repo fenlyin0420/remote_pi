@@ -287,7 +287,7 @@ impl PeerRegistry {
         room_id: &str,
         patch: RoomMetaPatch,
     ) -> bool {
-        let (current_model, current_thinking, current_working, current_context) = {
+        let (current_model, current_thinking, current_working, current_context, current_first_message) = {
             let mut lock = self.senders.lock().unwrap();
             let key = (peer_id.to_string(), room_id.to_string());
             match lock.get_mut(&key) {
@@ -306,6 +306,13 @@ impl PeerRegistry {
                         if let Some(ref c) = patch.context {
                             meta.context = c.clone();
                         }
+                        // Plan/46 — first_message is per-session and always
+                        // set by the Pi on a session boundary ("" = explicit
+                        // clear), so this patch line is the only way a stale
+                        // opening message can be replaced across sessions.
+                        if let Some(ref f) = patch.first_message {
+                            meta.first_message = f.clone();
+                        }
                     }
                     // All conns at this key carry the same post-patch state
                     // now; read the first as the canonical snapshot.
@@ -315,6 +322,7 @@ impl PeerRegistry {
                         head.1.thinking.clone(),
                         head.1.working,
                         head.1.context.clone(),
+                        head.1.first_message.clone(),
                     )
                 }
                 _ => return false,
@@ -346,6 +354,17 @@ impl PeerRegistry {
                 meta_obj.insert(
                     "context".to_string(),
                     serde_json::to_value(c).expect("RoomContext serialization is infallible"),
+                );
+            }
+            // Plan/46 — first_message rides along when known (non-None). A
+            // non-null `""` is a valid value the Pi sends on an empty session;
+            // it must be broadcast so the app clears the stale title. `None`
+            // (never reported, e.g. a pre-Plan/46 hello) is omitted to match
+            // the skip-None convention of the other nullable fields.
+            if let Some(f) = &current_first_message {
+                meta_obj.insert(
+                    "first_message".to_string(),
+                    serde_json::Value::String(f.clone()),
                 );
             }
             let msg = serde_json::json!({
@@ -413,6 +432,7 @@ mod tests {
             thinking: None,
             working: false,
             context: None,
+            first_message: None,
             started_at: 0,
         }
     }

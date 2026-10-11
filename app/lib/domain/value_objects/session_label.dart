@@ -19,17 +19,35 @@ String deviceLabel(PeerRecord peer) {
   return peer.remoteEpk.substring(0, 8);
 }
 
-/// The Pi-side room: its announced name (which already carries any local rename)
-/// and, failing that, the last segment of the working directory. Null when the
-/// room is unknown or unnamed — callers apply their own fallback, because only
-/// they know whether "the device" or a placeholder is the right one.
+/// The Pi-side room title, resolved in one place so the Home tile, the chat
+/// AppBar, and background notifications agree. The order is:
+///
+///   1. a real configured agent name (non-empty and *different* from the cwd
+///      basename — a bare folder name is the Pi's default, not a user's
+///      choice),
+///   2. otherwise the session's first user message (the "living" title),
+///   3. otherwise the last segment of the working directory.
+///
+/// Null only when the room is unknown. Callers apply their own final fallback
+/// (device nickname / placeholder) because only they know whether a device
+/// label is the right thing to show.
 String? roomLabel(RoomInfo? room) {
   if (room == null) return null;
   final name = room.name;
-  if (name != null && name.isNotEmpty) return name;
   final cwd = room.cwd;
-  if (cwd == null || cwd.isEmpty) return null;
-  return folderName(cwd);
+  final folder = cwd == null ? null : folderName(cwd);
+  // A name that is only the folder's basename is the Pi's `defaultAgentName`
+  // (not a user choice), so it falls through to the first message. When there
+  // is no cwd there is no folder to compare against, and any non-empty name
+  // is then treated as real.
+  if (name != null && name.isNotEmpty && name != folder) {
+    return name;
+  }
+  final first = room.firstMessage;
+  if (first != null && first.isNotEmpty) {
+    return first;
+  }
+  return folder;
 }
 
 /// The folder name a room in [cwd] would carry by default (the last

@@ -37,6 +37,13 @@ pub struct RoomMeta {
     /// Context-window usage (plan/42). None = not reported yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<RoomContext>,
+    /// Plan/46 — the current session's first user message, the "living"
+    /// room title for rooms with no configured agent name. Opaque string; the
+    /// Pi always sends it on a session boundary, and a non-null `""` is an
+    /// explicit clear (session replaced by a fresh empty one). None = not
+    /// reported yet (pre-Plan/46 relays / partial hello).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_message: Option<String>,
     pub started_at: i64,
 }
 
@@ -60,6 +67,14 @@ pub struct RoomMetaPatch {
     /// semantics as `model`/`thinking`: outer `None` = absent (leave
     /// current), `Some(None)` = clear, `Some(c)` = set.
     pub context: Option<Option<RoomContext>>,
+    /// Plan/46 — session's first user message. Same nested-Option merge-patch
+    /// semantics as [context]: outer `None` = absent (leave current),
+    /// `Some(None)` = clear, `Some(s)` = set. The Pi only ever sets it on
+    /// session boundaries with a concrete string ("" = explicit clear), and
+    /// the relay's `room_meta_update` parser treats an absent key as absent,
+    /// so a stale first message can only be replaced, never accidentally kept
+    /// across sessions, once the Pi sends it.
+    pub first_message: Option<Option<String>>,
 }
 
 impl RoomMetaPatch {
@@ -71,6 +86,7 @@ impl RoomMetaPatch {
             && self.thinking.is_none()
             && self.working.is_none()
             && self.context.is_none()
+            && self.first_message.is_none()
     }
 }
 

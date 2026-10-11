@@ -16,8 +16,18 @@ PeerRecord _peer({String? nickname, String sessionName = 'mac-mini'}) =>
       nickname: nickname,
     );
 
-RoomInfo _room({String? name, String? cwd}) =>
-    RoomInfo(roomId: 'room-a', name: name, cwd: cwd, startedAt: 0);
+RoomInfo _room({
+  String? name,
+  String? cwd,
+  String? firstMessage,
+}) =>
+    RoomInfo(
+      roomId: 'room-a',
+      name: name,
+      cwd: cwd,
+      startedAt: 0,
+      firstMessage: firstMessage,
+    );
 
 void main() {
   group('deviceLabel', () {
@@ -134,12 +144,52 @@ void main() {
       expect(roomLabel(_room(name: 'remote_pi')), 'remote_pi');
     });
 
+    test('prefers the room name even when a first message is present', () {
+      expect(
+        roomLabel(
+          _room(
+            name: 'my project',
+            cwd: '/home/fenlyin/remote_pi',
+            firstMessage: 'hello there',
+          ),
+        ),
+        'my project',
+      );
+    });
+
+    test('a name that is only the folder basename falls through to the first message', () {
+      expect(
+        roomLabel(
+          _room(name: 'remote_pi', cwd: '/home/fenlyin/remote_pi', firstMessage: 'hello there'),
+        ),
+        'hello there',
+      );
+    });
+
+    test('a first message wins over the folder basename when no real name', () {
+      expect(
+        roomLabel(_room(cwd: '/home/fenlyin/remote_pi', firstMessage: 'hello there')),
+        'hello there',
+      );
+    });
+
     test('falls back to the last segment of the working directory', () {
       expect(
         roomLabel(_room(cwd: '/home/fenlyin/Documents/GitHub/remote_pi')),
         'remote_pi',
       );
       expect(roomLabel(_room(cwd: '/home/fenlyin/remote/')), 'remote');
+    });
+
+    test('an empty first message is treated as absent', () {
+      expect(
+        roomLabel(_room(name: 'remote_pi', cwd: '/home/fenlyin/remote_pi', firstMessage: '')),
+        'remote_pi',
+      );
+      expect(
+        roomLabel(_room(cwd: '/home/fenlyin/remote_pi', firstMessage: '')),
+        'remote_pi',
+      );
     });
 
     test('null when there is nothing to name the room with', () {

@@ -1367,6 +1367,152 @@ void _registerRoomsTests() {
     );
 
     test(
+      'RoomAnnounced sets first_message; a later announce without it preserves it (Plan/46)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_fm',
+          roomId: 'r1',
+          name: 'work',
+          cwd: '/work',
+          startedAt: 1,
+          firstMessage: 'what should we build?',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(
+            cm.roomsFor('epk_fm').single.firstMessage,
+            'what should we build?');
+
+        // A relay re-broadcast that omits first_message must not clobber the
+        // cached opening message (null wire value -> preserve previous).
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_fm',
+          roomId: 'r1',
+          name: 'work',
+          cwd: '/work',
+          startedAt: 2,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(
+            cm.roomsFor('epk_fm').single.firstMessage,
+            'what should we build?');
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'RoomMetaUpdated patches first_message; a meta without the key preserves it (Plan/46)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_fm2',
+          roomId: 'r1',
+          startedAt: 1,
+          firstMessage: 'opening message',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(
+            cm.roomsFor('epk_fm2').single.firstMessage,
+            'opening message');
+
+        // A model-only meta update must NOT clobber first_message.
+        ch.pushControl(const RoomMetaUpdated(
+          peer: 'epk_fm2',
+          roomId: 'r1',
+          model: 'gpt-4o',
+          hasFirstMessage: false,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_fm2').single.model, 'gpt-4o');
+        expect(
+            cm.roomsFor('epk_fm2').single.firstMessage,
+            'opening message');
+
+        // A session boundary publishes a NEW opening message.
+        ch.pushControl(const RoomMetaUpdated(
+          peer: 'epk_fm2',
+          roomId: 'r1',
+          firstMessage: 'hello again',
+          hasFirstMessage: true,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(
+            cm.roomsFor('epk_fm2').single.firstMessage,
+            'hello again');
+
+        // Explicit null clears it (key present -> overwrite with null).
+        ch.pushControl(const RoomMetaUpdated(
+          peer: 'epk_fm2',
+          roomId: 'r1',
+          firstMessage: null,
+          hasFirstMessage: true,
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        expect(cm.roomsFor('epk_fm2').single.firstMessage, isNull);
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'RoomsSnapshot merges first_message into cached rooms (Plan/46)',
+      () async {
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // Seed r1 with a cached opening message via announce.
+        ch.pushControl(const RoomAnnounced(
+          peer: 'epk_snap',
+          roomId: 'r1',
+          startedAt: 1,
+          firstMessage: 'cached opening',
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+
+        // A snapshot that omits first_message for r1 must preserve the cached
+        // one; a room carrying a non-null first_message must adopt it.
+        ch.pushControl(const RoomsSnapshot(
+            peer: 'epk_snap',
+            rooms: [
+              RoomInfo(roomId: 'r1', startedAt: 5),
+              RoomInfo(roomId: 'r2', startedAt: 6, firstMessage: 'snapshot opening'),
+            ]));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+
+        final rooms = cm.roomsFor('epk_snap');
+        expect(rooms, hasLength(2));
+        final byId = {for (final r in rooms) r.roomId: r};
+        expect(byId['r1']!.firstMessage, 'cached opening');
+        expect(byId['r2']!.firstMessage, 'snapshot opening');
+
+        cm.dispose();
+      },
+    );
+
+    test(
       'RoomMetaUpdated for unknown room is a no-op (no crash, no insert)',
       () async {
         final ch = _ControllableChannel();

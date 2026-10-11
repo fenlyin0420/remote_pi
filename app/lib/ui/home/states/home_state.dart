@@ -1,3 +1,4 @@
+import 'package:app/domain/value_objects/session_label.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter/foundation.dart' show listEquals, mapEquals;
@@ -33,15 +34,12 @@ class HomeItem {
 
   const HomeItem({required this.peer, required this.room});
 
-  /// Display name preference: explicit room.name → cwd basename →
-  /// `<peer-nickname>` → fallback session_name.
+  /// Display name: the shared [roomLabel] (agent name → first message → cwd
+  /// basename), falling back to the device label only when the room has no
+  /// usable title (e.g. a pre-announce synthetic 'main' row).
   String get displayName {
-    if (room.name != null && room.name!.isNotEmpty) return room.name!;
-    final cwd = room.cwd;
-    if (cwd != null && cwd.isNotEmpty) {
-      final last = cwd.split('/').where((s) => s.isNotEmpty).toList();
-      if (last.isNotEmpty) return last.last;
-    }
+    final label = roomLabel(room);
+    if (label != null) return label;
     if (peer.nickname != null && peer.nickname!.isNotEmpty) {
       return peer.nickname!;
     }
@@ -101,9 +99,9 @@ class HomeList extends HomeState {
   ///
   /// Ordering: peers are sorted by display name (nickname → sessionName
   /// → epk prefix), case-insensitive. Within each peer, rooms are
-  /// sorted by their display name (room.name → cwd basename → roomId),
-  /// also case-insensitive. Keeps the list stable and predictable as
-  /// the relay reorders its push payloads.
+  /// sorted by their display name (agent name → first message → cwd
+  /// basename → roomId), also case-insensitive. Keeps the list stable and
+  /// predictable as the relay reorders its push payloads.
   List<HomeItem> items({String Function(String)? normalizeEpk}) {
     final sortedPeers = [...peers]
       ..sort(
@@ -137,12 +135,8 @@ class HomeList extends HomeState {
   }
 
   static String _roomLabel(RoomInfo r) {
-    if (r.name != null && r.name!.isNotEmpty) return r.name!;
-    final cwd = r.cwd;
-    if (cwd != null && cwd.isNotEmpty) {
-      final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
-      if (segs.isNotEmpty) return segs.last;
-    }
+    final label = roomLabel(r);
+    if (label != null) return label;
     return r.roomId;
   }
 

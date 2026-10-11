@@ -624,7 +624,8 @@ class ConnectionManager extends Service {
         :final thinking,
         :final working,
         :final context,
-      ):
+        :final firstMessage,
+     ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
         // Preserve any localName the user already set for this room
@@ -643,12 +644,18 @@ class ConnectionManager extends Service {
         var preservedWorking = false;
         // Plan/42 — context usage follows the same convention.
         RoomContextUsage? preservedContext;
+        // Plan/46 — preserve the previously-known opening message when the
+        // announce frame omits it (a pre-Plan/46 relay carries no
+        // first_message); a non-null wire value (even `""` for an empty
+        // session) replaces the cached title.
+        String? preservedFirstMessage;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
           preservedContext = list[existingIdx].context;
+          preservedFirstMessage = list[existingIdx].firstMessage;
         }
         final next = RoomInfo(
           roomId: roomId,
@@ -660,6 +667,9 @@ class ConnectionManager extends Service {
           working: working ?? preservedWorking,
           // Plan/42 — same preserve convention as thinking/working.
           context: context ?? preservedContext,
+          // Plan/46 — wire value wins when present; otherwise keep the
+          // previously-known opening message.
+          firstMessage: firstMessage ?? preservedFirstMessage,
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;
@@ -701,7 +711,9 @@ class ConnectionManager extends Service {
         :final hasModel,
         :final hasThinking,
         :final context,
-      ):
+        :final firstMessage,
+        :final hasFirstMessage,
+     ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
         if (list == null) break;
@@ -724,10 +736,17 @@ class ConnectionManager extends Service {
         // Plan/42 — `context` follows the nullable-as-absent convention:
         // null preserves the cached estimate, non-null replaces it.
         final nextContext = context ?? current.context;
+        // Plan/46 — the Pi publishes first_message on every session boundary
+        // (even `""` for an empty session); a meta envelope without the key
+        // (e.g. a model-only update) must not clobber the opening-message
+        // title, so the key-presence flag gates it like `hasModel`.
+        final nextFirstMessage =
+            hasFirstMessage ? firstMessage : current.firstMessage;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
             current.working == nextWorking &&
-            current.context == nextContext) {
+            current.context == nextContext &&
+            current.firstMessage == nextFirstMessage) {
           break; // dedup: nothing actually changed
         }
         list[idx] = current.copyWith(
@@ -735,6 +754,7 @@ class ConnectionManager extends Service {
           thinking: nextThinking,
           working: nextWorking,
           context: nextContext,
+          firstMessage: nextFirstMessage,
         );
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -752,6 +772,12 @@ class ConnectionManager extends Service {
           // Plan/28 Wave D — same convention as model: keep the
           // previously-known thinking when the snapshot omits it.
           final preservedThinking = r.thinking ?? byId[r.roomId]?.thinking;
+          // Plan/46 — the Pi's registry meta always carries first_message
+          // post-Plan/46; a pre-Plan/46 relay's snapshot omits it, in which
+          // case we keep the previously-known opening message. A non-null wire
+          // value (even `""`) is authoritative.
+          final preservedFirstMessage =
+              r.firstMessage ?? byId[r.roomId]?.firstMessage;
           byId[r.roomId] = RoomInfo(
             roomId: r.roomId,
             name: preservedName,
@@ -766,6 +792,7 @@ class ConnectionManager extends Service {
             // Plan/42 — context rides along with the Pi's registry meta;
             // a legacy Pi (no field) keeps the cached estimate.
             context: r.context ?? byId[r.roomId]?.context,
+            firstMessage: preservedFirstMessage,
           );
         }
         final newList = byId.values.toList();
