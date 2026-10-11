@@ -92,6 +92,20 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.27 is released** (2026-10-11, on `dev`, prod `1.5.27` +77, Release
+  `v1.5.27-jump-to-bottom-arm64`): scrolling up into history floats a circular
+  "jump to latest" arrow over the bottom-center of the transcript; one tap flies
+  the viewport back to the newest message (320 ms ease-out) and re-arms the
+  auto-follow. App-side only (no pi-remote change, no supervisor restart);
+  implemented in `MessageList`: arrow visibility is pure geometry
+  (more than a finger-width from the bottom) driven by a `ValueNotifier`, so it
+  never rebuilds the transcript; the flight freezes the scroll listener AND the
+  per-layout follow — a reviewer WARN (a reply streaming mid-flight used to
+  `jumpTo` and collapse the animation into a snap) is fixed and pinned by a test
+  (6 arrow cases). Beta `1.5.27-beta.1`(+77) was tested by the user first. App
+  884 pass (`--concurrency=1`), analyze clean. Next beta will be
+  `1.5.28-beta.1`, next prod code ≥ 78. See
+  `.agents/memory/remote-pi-scroll-bottom-button.md`.
 - **1.5.26 is released** (2026-10-10, on `dev`, prod `1.5.26` +75, Release
   `v1.5.26-long-screenshot-arm64`): system long-screenshot works on chat screens. The ROM
   drives the capture with **synthetic non-finger pointer events** (NOT `scrollBy` —
