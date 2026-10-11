@@ -321,4 +321,115 @@ void main() {
       expect(find.byType(AttachmentCard), findsOneWidget);
     });
   });
+
+  // The floating arrow: appears the moment the viewport is a finger-width away
+  // from the newest content, and one tap flies the viewport back to the bottom.
+  group('the jump-to-latest arrow', () {
+    testWidgets('stays hidden while the viewport sits at the bottom', (
+      tester,
+    ) async {
+      await _pump(tester, _rows(30));
+      expect(find.byKey(const ValueKey('jump-to-latest')), findsNothing);
+    });
+
+    testWidgets('appears when the user scrolls into history', (tester) async {
+      await _pump(tester, _rows(30));
+      await tester.drag(find.byType(ListView), const Offset(0, 120));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('jump-to-latest')), findsOneWidget);
+    });
+
+    testWidgets('a tap flies the viewport back to the newest message', (
+      tester,
+    ) async {
+      await _pump(tester, _rows(30));
+      await tester.drag(find.byType(ListView), const Offset(0, 120));
+      await tester.pumpAndSettle();
+      expect(find.text('message 30'), findsNothing, reason: 'reading history');
+
+      await tester.tap(find.byKey(const ValueKey('jump-to-latest')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('message 30'),
+        findsOneWidget,
+        reason: 'the arrow must land the viewport on the newest message',
+      );
+      expect(
+        find.byKey(const ValueKey('jump-to-latest')),
+        findsNothing,
+        reason: 'at the bottom again, the arrow goes away',
+      );
+    });
+
+    testWidgets('the arrow appears before the drag ends', (tester) async {
+      await _pump(tester, _rows(30));
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byType(ListView)),
+      );
+      await gesture.moveBy(const Offset(0, 120));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('jump-to-latest')),
+        findsOneWidget,
+        reason: 'the arrow tracks a live drag, it does not wait for the release',
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a rebuild mid-flight does not collapse the flight into a snap', (
+      tester,
+    ) async {
+      await _pump(tester, _rows(30));
+      await tester.drag(find.byType(ListView), const Offset(0, 120));
+      await tester.pumpAndSettle();
+      expect(find.text('message 30'), findsNothing, reason: 'reading history');
+
+      await tester.tap(find.byKey(const ValueKey('jump-to-latest')));
+      // One frame later, a reply lands — the exact case in which the per-layout
+      // follow used to jumpTo and kill the animation in flight.
+      await tester.pump();
+      await _pumpWithStreaming(tester, _rows(30), 'streaming reply');
+
+      final state = tester.state<MessageListState>(find.byType(MessageList));
+      final position = state.controller.position;
+      expect(
+        position.pixels,
+        lessThan(position.maxScrollExtent),
+        reason: 'mid-flight, the viewport must still be travelling',
+      );
+      expect(
+        find.byKey(const ValueKey('jump-to-latest')),
+        findsNothing,
+        reason: 'the arrow stays hidden for the whole flight',
+      );
+
+      // Not pumpAndSettle: the streaming cursor blinks forever.
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.text('message 30'), findsOneWidget);
+    });
+
+    testWidgets('a tap re-arms the follow for the reply that is streaming', (
+      tester,
+    ) async {
+      await _pump(tester, _rows(30));
+      await tester.drag(find.byType(ListView), const Offset(0, 120));
+      await tester.pumpAndSettle();
+      expect(find.text('message 30'), findsNothing, reason: 'reading history');
+
+      await tester.tap(find.byKey(const ValueKey('jump-to-latest')));
+      await tester.pumpAndSettle();
+
+      // The reply lands while the follow is re-armed: the newest stays
+      // on screen — the tap's second promise.
+      await _pump(tester, [
+        ..._rows(30),
+        const AssistantMsg(id: 'a31', text: 'message 31'),
+      ]);
+      expect(find.text('message 31'), findsOneWidget);
+    });
+  });
 }
