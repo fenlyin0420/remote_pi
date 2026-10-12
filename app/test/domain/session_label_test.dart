@@ -198,4 +198,60 @@ void main() {
       expect(roomLabel(_room(cwd: '/')), isNull);
     });
   });
+
+  group('sessionTitle (picker rows: the content identifies a session)', () {
+    test('the first message wins over a real agent name', () {
+      expect(
+        sessionTitle(
+          name: 'Jarvis',
+          firstMessage: 'hello there',
+          cwd: '/home/u/proj',
+        ),
+        'hello there',
+      );
+    });
+
+    test('the first message wins over the folder-default name', () {
+      expect(
+        sessionTitle(
+          name: 'proj',
+          firstMessage: 'hello there',
+          cwd: '/home/u/proj',
+        ),
+        'hello there',
+      );
+    });
+
+    test('a message-less session falls back to a real name', () {
+      expect(
+        sessionTitle(name: 'Jarvis', firstMessage: '', cwd: '/home/u/proj'),
+        'Jarvis',
+      );
+    });
+
+    test('a message-less session with only the folder-default name is unnamed', () {
+      expect(
+        sessionTitle(name: 'proj', firstMessage: '', cwd: '/home/u/proj'),
+        '(unnamed session)',
+      );
+    });
+
+    test('the SDK empty sentinel counts as absent', () {
+      expect(
+        sessionTitle(name: 'Jarvis', firstMessage: '(no messages)', cwd: '/home/u/proj'),
+        'Jarvis',
+      );
+      expect(
+        sessionTitle(firstMessage: '(no messages)', cwd: '/home/u/proj'),
+        '(unnamed session)',
+      );
+    });
+
+    test('with no cwd any non-empty name is real', () {
+      expect(
+        sessionTitle(name: 'proj', firstMessage: '', cwd: null),
+        'proj',
+      );
+    });
+  });
 }

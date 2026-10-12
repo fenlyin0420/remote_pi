@@ -57,6 +57,29 @@ String? folderName(String cwd) {
   return segments.isEmpty ? null : segments.last;
 }
 
+/// The session picker's per-row title. A session is identified by its
+/// content, not by the room's identity — so the first user message wins
+/// ALWAYS (even when the room carries a real agent name like "Jarvis"; the
+/// name is the room's label, and every row of one room would show it). The
+/// name is only a fallback for sessions that never had a message, and a
+/// name that is the cwd's folder basename (the Pi's default identity, baked
+/// into daemon session files by `--name`) is not a user choice — it is
+/// skipped. The SDK's empty sentinel `"(no messages)"` counts as absent.
+String sessionTitle({
+  String? name,
+  required String firstMessage,
+  String? cwd,
+}) {
+  if (firstMessage.isNotEmpty && firstMessage != '(no messages)') {
+    return firstMessage;
+  }
+  final folder = folderName(cwd ?? '');
+  if (name?.isNotEmpty == true && (folder == null || name != folder)) {
+    return name!;
+  }
+  return '(unnamed session)';
+}
+
 /// The trailing `#N` index of [name] for base [base]: `1` when [name] is
 /// exactly [base], the number when it is `base#N`, `0` otherwise. This is
 /// the broker's collision-suffix convention (2nd same-name agent → `#2`).

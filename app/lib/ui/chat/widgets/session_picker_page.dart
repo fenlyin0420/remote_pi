@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/domain/value_objects/session_label.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -36,10 +37,17 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
     setState(() => _load = widget.chat.listSessions());
   }
 
+  /// The row/dialog title: the session's first message always wins (the
+  /// agent name is the room's label, shared by every row); the name is
+  /// only a fallback for message-less sessions.
+  String _title(WireSession s) => sessionTitle(
+    name: s.name,
+    firstMessage: s.firstMessage,
+    cwd: widget.chat.activeRoom?.cwd,
+  );
+
   Future<void> _confirmAndSwitch(WireSession session) async {
-    final label = session.name?.isNotEmpty == true
-        ? session.name!
-        : _truncated(session.firstMessage, 48);
+    final label = _truncated(_title(session), 48);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dCtx) {
@@ -186,9 +194,7 @@ class _SessionPickerPageState extends State<SessionPickerPage> {
               ),
               itemBuilder: (context, i) {
                 final s = sessions[i];
-                final title = s.name?.isNotEmpty == true
-                    ? s.name!
-                    : (s.firstMessage.isNotEmpty ? s.firstMessage : '(unnamed session)');
+                final title = _title(s);
                 return ListTile(
                   onTap: s.isCurrent ? null : () => _confirmAndSwitch(s),
                   leading: Icon(

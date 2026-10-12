@@ -254,7 +254,11 @@ function parseGetStateResponse(line: string): { id?: string; isStreaming?: boole
  * daemon's identity (its `agent_name`) so every restart shows up under the
  * same stable name in the picker/app instead of an auto-generated one. The
  * daemon's name is set at registration (`remote-pi create <cwd> --name "…"`).
- * Omitted when no name resolves, so the arg list stays minimal.
+ * Only a REAL configured name is pinned — a bare folder basename is the Pi's
+ * default identity, and `--name` bakes it into the session file as a
+ * `session_info` entry, which then masks the session's first-message title
+ * in the app (picker and room labels show `name` over `firstMessage`).
+ * Omitted when no real name resolves, so the arg list stays minimal.
  *
  * `--approve` is mandatory for a daemon (pi ≥0.79 project trust): RPC mode is
  * non-interactive, so without an override Pi resolves an untrusted project
@@ -329,11 +333,16 @@ export class RpcChild extends EventEmitter {
     this._state = "starting";
 
     const piTarget = resolvePiSpawn(this.opts.piBin ?? "pi");
-    // Name the (single) daemon session after the daemon's configured identity,
-    // so it shows up stably instead of an auto-generated name on each restart.
-    // Prefer the supervisor-injected config; fall back to the on-disk file.
+    // Name the (single) daemon session after the daemon's configured
+    // identity — but ONLY when a real agent name was configured (see the
+    // `--name` note above: a bare folder basename must not be baked into
+    // the session file). Prefer the supervisor-injected config; fall back
+    // to the on-disk file.
     const cfg = this.opts.config ?? loadLocalConfig(this.opts.cwd);
-    const sessionName = cfg.agent_name ?? defaultAgentName(this.opts.cwd);
+    const sessionName =
+        cfg.agent_name && cfg.agent_name !== defaultAgentName(this.opts.cwd)
+            ? cfg.agent_name
+            : undefined;
     const useContinue =
         !this.forceFreshSessionOnNextSpawn && !this.opts.freshSession;
     this.forceFreshSessionOnNextSpawn = false;

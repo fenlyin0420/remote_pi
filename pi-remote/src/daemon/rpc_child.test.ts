@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { DIRECT_CONFIG_ENV } from "../session/local_config.js";
 import { RpcChild, busyTransition, resolvePiBin, resolvePiSpawn, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
 
 /**
@@ -35,6 +36,75 @@ describe("rpcSpawnArgs", () => {
   test("always passes --approve (pi >=0.79 project trust; RPC is non-interactive)", () => {
     expect(rpcSpawnArgs("/path/to/dist/index.js")).toContain("--approve");
     expect(rpcSpawnArgs("/path/to/dist/index.js", "PC", false)).toContain("--approve");
+  });
+});
+
+/**
+ * `--name` bakes the daemon's identity into the session file as a
+ * `session_info` entry. A bare folder basename is the Pi's default identity,
+ * not a user choice — pinning it masks the session's first-message title in
+ * the app (picker and room labels show `name` over `firstMessage`). Only a
+ * real configured agent name is pinned, so unnamed daemons keep the
+ * first-message title.
+ */
+describe("RpcChild --name pinning (only a real agent name, never the folder default)", () => {
+  let dir: string;
+
+  afterEach(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  /** Spawn against an args-dumping fake `pi` and return the exact argv.
+   *
+   *  A test host that is itself a daemon child carries
+   *  `REMOTE_PI_DIRECT_CONFIG` in ITS OWN env — and `loadLocalConfig` reads
+   *  the RpcChild process's env, not the child's. So the test process's
+   *  env value is blanked (empty = unset) for the duration and restored
+   *  afterwards; the on-disk config file is absent in the tmp cwd. */
+  async function dumpedArgs(mode: "none" | "folder" | "real"): Promise<string[]> {
+    const prevEnv = process.env[DIRECT_CONFIG_ENV];
+    process.env[DIRECT_CONFIG_ENV] = "";
+    try {
+      dir = mkdtempSync(join(tmpdir(), "pi-rpcchild-name-"));
+      const argsFile = join(dir, "args.txt");
+      const bin = join(dir, "dumpargs.sh");
+      writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$@" > ${argsFile}\nexec sleep 30\n`);
+      chmodSync(bin, 0o755);
+      const agentName =
+          mode === "real" ? "PC"
+          : mode === "folder" ? basename(dir)
+          : undefined;
+      const child = new RpcChild({
+        piBin: bin,
+        extensionPath: "/no/such.js",
+        cwd: dir,
+        ...(agentName ? { config: { agent_name: agentName } } : {}),
+      });
+      child.spawn();
+      await new Promise((r) => setTimeout(r, 200));
+      const args = readFileSync(argsFile, "utf8")
+          .trimEnd().split("\n").filter((a) => a.length > 0);
+      await child.stop();
+      return args;
+    } finally {
+      if (prevEnv === undefined) delete process.env[DIRECT_CONFIG_ENV];
+      else process.env[DIRECT_CONFIG_ENV] = prevEnv;
+    }
+  }
+
+  test.skipIf(process.platform === "win32")("no agent name → no --name (first message wins)", async () => {
+    expect(await dumpedArgs("none")).not.toContain("--name");
+  });
+
+  test.skipIf(process.platform === "win32")("agent name == folder basename → no --name (default identity, not a user choice)", async () => {
+    expect(await dumpedArgs("folder")).not.toContain("--name");
+  });
+
+  test.skipIf(process.platform === "win32")("a real agent name is still pinned via --name", async () => {
+    const args = await dumpedArgs("real");
+    const i = args.indexOf("--name");
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toBe("PC");
   });
 });
 
