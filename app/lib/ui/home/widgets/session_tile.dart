@@ -1,4 +1,3 @@
-import 'package:app/domain/value_objects/session_label.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -87,12 +86,16 @@ class SessionTile extends StatelessWidget {
     );
   }
 
-  /// Avatar initial: the shared [roomLabel] (agent name → first message →
-  /// cwd basename), falling back to the device label only when the room has
-  /// no usable title.
   String _avatarName() {
-    final label = roomLabel(room);
-    if (label != null) return label;
+    final r = room;
+    if (r != null) {
+      if (r.name != null && r.name!.isNotEmpty) return r.name!;
+      final cwd = r.cwd;
+      if (cwd != null && cwd.isNotEmpty) {
+        final segs = cwd.split('/').where((s) => s.isNotEmpty).toList();
+        if (segs.isNotEmpty) return segs.last;
+      }
+    }
     if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
     return peer.sessionName;
   }
@@ -139,14 +142,26 @@ class _TitleBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    // Title = the shared [roomLabel] (agent name → first message → cwd
-    // basename); the device label is only the last resort. The cwd path
-    // line was dropped on purpose — the tile now shows just title +
-    // subtitle (model / paired date).
-    final label = roomLabel(room);
-    final String title =
-        label ??
-            (peer.nickname?.isNotEmpty == true ? peer.nickname! : peer.sessionName);
+    final r = room;
+    // Title preference: explicit room.name → cwd basename → peer
+    // nickname → session name. The cwd path line was dropped on purpose
+    // — the tile now shows just title + subtitle (model / paired date).
+    final String title;
+    if (r != null) {
+      if (r.name != null && r.name!.isNotEmpty) {
+        title = r.name!;
+      } else if (r.cwd != null && r.cwd!.isNotEmpty) {
+        final segs = r.cwd!.split('/').where((s) => s.isNotEmpty).toList();
+        title = segs.isNotEmpty ? segs.last : r.cwd!;
+      } else if (peer.nickname?.isNotEmpty == true) {
+        title = peer.nickname!;
+      } else {
+        title = peer.sessionName;
+      }
+    } else {
+      title =
+          peer.nickname?.isNotEmpty == true ? peer.nickname! : peer.sessionName;
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
