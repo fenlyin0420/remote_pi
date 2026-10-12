@@ -492,6 +492,53 @@ function _resolveContextLimit(ctx: unknown): number | undefined {
   } catch { return undefined; }
 }
 
+// LOCAL (fenlyin): per-message model captions. Resolve a raw (provider,
+// model id) pair to the friendly registry name shown under each message
+// (e.g. `Qwen3.8-27B` instead of `Qwen3.8-27B-APEX-I-Mini.gguf`). The host
+// registry (room's models.json, issue #112 path) is consulted first, then a
+// cached throwaway registry from the config files — same fallback chain as
+// `_resolveContextLimit`. Falls back to the raw id when unresolvable.
+let _modelNameRegistry: unknown = null;
+// The catalog only changes when the user edits models.json — and `refresh()`
+// re-reads and rebuilds the WHOLE built-in catalog (35 providers). The mapper
+// resolves every message of a history replay (up to 10,000 rows, 2–3 lookups
+// each), so resolving uncached would freeze the supervisor process on every
+// app open. Names are cosmetic, so a process-wide memo is the right trade.
+const _modelNameCache = new Map<string, string>();
+function _resolveModelName(provider: string, modelId: string): string {
+  if (!provider || !modelId) return modelId;
+  const key = `${provider}\u0000${modelId}`;
+  const cached = _modelNameCache.get(key);
+  if (cached !== undefined) return cached;
+  let name = modelId;
+  let resolved = false;
+  try {
+    const host = ensureModelRegistry(
+      _registryCtx(null) as unknown as ActionCtx | null,
+    );
+    const fromHost = host.find(provider, modelId);
+    if (fromHost?.name) {
+      name = fromHost.name;
+      resolved = true;
+    } else {
+      const reg = (_modelNameRegistry ??= _testThrowawayRegistryFactory
+        ? _testThrowawayRegistryFactory(_RealAuthStorage.create())
+        : _RealModelRegistry.create(_RealAuthStorage.create())) as {
+        find?: (p: string, m: string) => { name?: string } | undefined;
+      };
+      const fromReg = reg.find?.(provider, modelId)?.name;
+      if (fromReg) {
+        name = fromReg;
+        resolved = true;
+      }
+    }
+  } catch { name = modelId; }
+  // Only memoize a real hit — a transient miss (stale catalog) must not be
+  // pinned for the process life; misses retry on the next call.
+  if (resolved) _modelNameCache.set(key, name);
+  return name;
+}
+
 /**
  * Plan/42: estimate the session's context usage and publish it as
  * room_meta (`context: { used, limit }`). The ratio drives the app's
@@ -1376,6 +1423,15 @@ type BufferMsg = {
   /** Plan/32: pre-compaction token count, set on the synthetic
    *  `role:"compaction"` marker pushed in `session_compact`. */
   tokensBefore?: number;
+  /** LOCAL (fenlyin): model that produced/received this message. Assistant
+   *  messages carry it from the session file / SDK (raw model id, resolved to
+   *  a friendly name at map time when `provider` is present); user messages
+   *  get the active model — raw id from `model_change` entries when seeded,
+   *  already-resolved display name for live messages (no `provider`). */
+  model?: string;
+  /** LOCAL (fenlyin): provider of `model` (raw ids only — marks the value as
+   *  un-resolved so the mapper can resolve it against the model registry). */
+  provider?: string;
   /** LOCAL (fenlyin): wall-clock duration of each reasoning block of this
    *  assistant message, in content order. Measured live from the SDK's
    *  `thinking_start`/`thinking_end` (see the message_update hook) and
@@ -1594,6 +1650,14 @@ export function _setThrowawayRegistryFactoryForTest(
 /** Test-only: the contextWindow resolver (live model → host registry →
  *  throwaway registry). */
 export function _resolveContextLimitForTest(ctx: unknown): number | undefined { return _resolveContextLimit(ctx); }
+
+/** Test-only: allow re-running the one-shot history seed. */
+export function _resetHistorySeedForTest(): void {
+  _historySeeded = false;
+  _messageBuffer = [];
+  _modelNameCache.clear();
+  _modelNameRegistry = null;
+}
 
 export function _setMessageBufferForTest(msgs: unknown[]): void {
   _messageBuffer = msgs as BufferMsg[];
@@ -1827,6 +1891,12 @@ export function _seedMessageBufferFromSession(ctx: unknown): void {
     const entries = sm?.getBranch?.() ?? sm?.getEntries?.();
     if (!Array.isArray(entries)) return;
     const seeded: unknown[] = [];
+    // LOCAL (fenlyin): the model in force as the file is walked. Session
+    // files interleave `model_change` entries with the messages, so a user
+    // message gets the model that was active WHEN IT WAS SENT — assistant
+    // messages already carry their own model in the file.
+    let activeModel: string | undefined;
+    let activeProvider: string | undefined;
     for (const entry of entries as Array<Record<string, unknown>>) {
       if (!entry || typeof entry !== "object") continue;
       const message = entry["message"] as { role?: string; timestamp?: number } | undefined;
@@ -1838,11 +1908,28 @@ export function _seedMessageBufferFromSession(ctx: unknown): void {
         const ts = typeof message.timestamp === "number"
           ? message.timestamp
           : Date.parse((entry["timestamp"] as string) ?? "") || 0;
-        seeded.push(
+        const base =
           ts === message.timestamp
             ? message
-            : { ...(message as object), timestamp: ts },
-        );
+            : { ...(message as object), timestamp: ts };
+        if (message.role === "user" && activeModel) {
+          // User messages never carry a model in the session file — attach
+          // the one the `model_change` trail says was active at this point.
+          seeded.push({
+            ...(base as object),
+            model: activeModel,
+            provider: activeProvider,
+          });
+        } else {
+          seeded.push(base);
+        }
+      } else if (entry["type"] === "model_change") {
+        const p = entry["provider"] as string | undefined;
+        const id = entry["modelId"] as string | undefined;
+        if (p && id) {
+          activeProvider = p;
+          activeModel = id;
+        }
       } else if (entry["type"] === "compaction") {
         seeded.push({
           role: "compaction",
@@ -3039,6 +3126,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
           ...(m as object),
           thinkingDurations: _pendingThinkingDurations,
         } as unknown as BufferMsg);
+      } else if (m.role === "user" && _currentModelName()) {
+        // LOCAL (fenlyin): user messages carry no model in the SDK — tag the
+        // copy with the model that RECEIVED it (already a resolved display
+        // name, so the mapper must not re-resolve it: no `provider`).
+        _messageBuffer.push({ ...(m as object), model: _currentModelName() } as unknown as BufferMsg);
       } else {
         _messageBuffer.push(m as unknown as BufferMsg);
       }
@@ -3151,7 +3243,15 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // (2) Persist in history: the CompactionEntry never reaches _messageBuffer
     // via message_end (only user/assistant/toolResult), so push a synthetic
     // marker the mapper turns into a `compaction` event — survives session_sync.
-    _messageBuffer.push({ role: "compaction", content: summary, timestamp: ts, tokensBefore });
+    // LOCAL (fenlyin): the compaction itself carries no model in the session
+    // file; the model running when it fired is the caption the app wants.
+    _messageBuffer.push({
+      role: "compaction",
+      content: summary,
+      timestamp: ts,
+      tokensBefore,
+      model: _currentModelName() ?? undefined,
+    });
     // (1) Live result to every connected owner.
     _broadcastToActive({ type: "compaction", summary, tokens_before: tokensBefore, ts });
     // (3) Working ends.
@@ -6789,9 +6889,21 @@ function _attachmentMetaFromMessage(m: unknown): AttachmentMeta | null {
  */
 export function _mapAgentMessagesToEvents(
   messages: BufferMsg[],
+  resolveModel: (provider: string, modelId: string) => string = _resolveModelName,
 ): SessionHistoryEvent[] {
   const events: SessionHistoryEvent[] = [];
   let lastUserId: string | null = null;
+  // LOCAL (fenlyin): per-row model captions. `provider` present → the value
+  // is a RAW model id (session-file seed / SDK assistant message) and gets
+  // resolved against the registry; absent → already a display name (live user
+  // messages, live compaction marker) and used as-is.
+  const modelOf = (m: BufferMsg): string | undefined => {
+    if (typeof m.model !== "string" || !m.model) return undefined;
+    return typeof m.provider === "string" && m.provider
+      ? resolveModel(m.provider, m.model)
+      : m.model;
+  };
+  let lastAssistantModel: string | undefined;
   // toolCallId → tool name, so a toolResult can be recognised by the call that
   // produced it. `send_to_phone` is the one tool the app renders as something
   // other than a tool card (an attachment card), and its `details` do NOT
@@ -6805,7 +6917,13 @@ export function _mapAgentMessagesToEvents(
     if (m.role === "custom") {
       const meta = _attachmentMetaFromMessage(m);
       if (meta) {
-        events.push({ ts, type: "attachment", ...meta });
+        // The file was produced by the most recent assistant message's turn.
+        events.push({
+          ts,
+          type: "attachment",
+          ...meta,
+          ...(lastAssistantModel ? { model: lastAssistantModel } : {}),
+        });
       }
     } else if (m.role === "compaction") {
       // Plan/32: re-render the compaction notice on history re-sync.
@@ -6814,6 +6932,9 @@ export function _mapAgentMessagesToEvents(
         type: "compaction",
         summary: typeof m.content === "string" ? m.content : "",
         tokens_before: typeof m.tokensBefore === "number" ? m.tokensBefore : 0,
+        // Seeded markers carry no model (the file has none on the entry);
+        // the compaction ran on whatever model was active at that point.
+        ...((modelOf(m) ?? lastAssistantModel) ? { model: modelOf(m) ?? lastAssistantModel } : {}),
       });
     } else if (m.role === "user") {
       const id = `sync_${ts}`;
@@ -6831,6 +6952,9 @@ export function _mapAgentMessagesToEvents(
         type: "user_input",
         id,
         text: split.text,
+        // Own model (seeded model_change trail / live current model), else
+        // the model that was active on the previous turn.
+        ...(modelOf(m) ?? lastAssistantModel ? { model: modelOf(m) ?? lastAssistantModel } : {}),
       };
       if (images.length > 0) ev.images = images;
       if (split.files.length > 0) ev.files = split.files;
@@ -6844,6 +6968,8 @@ export function _mapAgentMessagesToEvents(
       // this message streamed. Empty for a session-file seed.
       const durations = Array.isArray(m.thinkingDurations) ? m.thinkingDurations : [];
       let thinkingIndex = 0;
+      const assistantModel = modelOf(m) ?? lastAssistantModel;
+      if (modelOf(m)) lastAssistantModel = modelOf(m);
       for (const raw of content) {
         if (!raw || typeof raw !== "object") continue;
         const block = raw as {
@@ -6864,6 +6990,7 @@ export function _mapAgentMessagesToEvents(
             in_reply_to: lastUserId ?? `sync_${ts}`,
             text,
             ...(usage ? { usage } : {}),
+            ...(assistantModel ? { model: assistantModel } : {}),
           };
           events.push(ev);
         } else if (block.type === "thinking") {
@@ -6884,6 +7011,7 @@ export function _mapAgentMessagesToEvents(
             ...(typeof duration === "number" && Number.isFinite(duration) && duration > 0
               ? { duration_ms: duration }
               : {}),
+            ...(assistantModel ? { model: assistantModel } : {}),
           });
         } else if (block.type === "toolCall") {
           const id = String(block.id ?? "");
@@ -6896,6 +7024,7 @@ export function _mapAgentMessagesToEvents(
             tool_call_id: id,
             tool: name,
             args: (block.arguments as Record<string, unknown>) ?? {},
+            ...(assistantModel ? { model: assistantModel } : {}),
           });
         }
       }

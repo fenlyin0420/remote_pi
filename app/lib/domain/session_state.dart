@@ -7,7 +7,20 @@
 
 sealed class ChatMessage {
   final String id;
-  const ChatMessage({required this.id});
+
+  /// LOCAL (fenlyin): the message's own timestamp — per-message, straight
+  /// from the Pi's session file (live rows carry the local send/receive
+  /// moment until a re-sync replaces them with the authoritative one).
+  /// Drives the per-row "time · model" caption. Null for rows built before
+  /// this field existed (older cached sessions) — the caption stays off.
+  final DateTime? ts;
+
+  /// LOCAL (fenlyin): the model that produced/received this message, shown
+  /// next to the timestamp. Null when the Pi didn't report one (older
+  /// builds) or it couldn't be resolved.
+  final String? model;
+
+  const ChatMessage({required this.id, this.ts, this.model});
 }
 
 /// Plan/24-fix-app-source-of-truth: every UserMsg is tagged with the
@@ -122,6 +135,8 @@ class UserMsg extends ChatMessage {
     this.steering = false,
     this.image,
     this.file,
+    super.ts,
+    super.model,
   });
 
   UserMsg copyWith({UserMsgStatus? status, bool? steering}) => UserMsg(
@@ -131,6 +146,8 @@ class UserMsg extends ChatMessage {
     steering: steering ?? this.steering,
     image: image,
     file: file,
+    ts: ts,
+    model: model,
   );
 
   @override
@@ -149,7 +166,12 @@ class UserMsg extends ChatMessage {
 
 class AssistantMsg extends ChatMessage {
   final String text;
-  const AssistantMsg({required super.id, required this.text});
+  const AssistantMsg({
+    required super.id,
+    required this.text,
+    super.ts,
+    super.model,
+  });
 
   @override
   bool operator ==(Object other) =>
@@ -204,6 +226,8 @@ class AttachmentMsg extends ChatMessage {
     this.blobName,
     this.error,
     this.toolCallId,
+    super.ts,
+    super.model,
   });
 
   /// True when the mime is an image the card can render inline (SVG is text
@@ -230,6 +254,8 @@ class AttachmentMsg extends ChatMessage {
     blobName: blobName ?? this.blobName,
     error: clearError ? null : (error ?? this.error),
     toolCallId: toolCallId,
+    ts: ts,
+    model: model,
   );
 
   @override
@@ -274,7 +300,13 @@ class ThinkingMsg extends ChatMessage {
   /// timed it — the block then shows no timer.
   final Duration? duration;
 
-  const ThinkingMsg({required super.id, required this.text, this.duration});
+  const ThinkingMsg({
+    required super.id,
+    required this.text,
+    this.duration,
+    super.ts,
+    super.model,
+  });
 
   @override
   bool operator ==(Object other) =>
@@ -311,6 +343,8 @@ class ToolEvent extends ChatMessage {
     this.result,
     this.error,
     this.diff,
+    super.ts,
+    super.model,
   });
 
   ToolEvent copyWith({
@@ -327,6 +361,8 @@ class ToolEvent extends ChatMessage {
     result: result ?? this.result,
     error: error ?? this.error,
     diff: diff ?? this.diff,
+    ts: ts,
+    model: model,
   );
 
   @override
@@ -355,6 +391,8 @@ class CompactionMsg extends ChatMessage {
     required super.id,
     required this.summary,
     this.tokensBefore,
+    super.ts,
+    super.model,
   });
 
   @override

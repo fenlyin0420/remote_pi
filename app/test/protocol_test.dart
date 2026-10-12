@@ -471,6 +471,36 @@ void main() {
       expect(event, isA<AttachmentEvt>());
       expect((event as AttachmentEvt).toolCallId, 'tc-9');
     });
+
+    // LOCAL (fenlyin): the per-message model — the caption shows it next to
+    // the timestamp; additive, so older payloads parse without it.
+    test('history events carry their model (per-row caption)', () {
+      final user = SessionHistoryEvent.fromJson({
+        'ts': 4,
+        'type': 'user_input',
+        'id': 'u1',
+        'text': 'q',
+        'model': 'Qwen3.8-27B',
+      }) as UserInputEvt;
+      expect(user.model, 'Qwen3.8-27B');
+
+      final answer = SessionHistoryEvent.fromJson({
+        'ts': 5,
+        'type': 'agent_message',
+        'in_reply_to': 'u1',
+        'text': 'a',
+        'model': 'Qwen3.8-27B',
+      }) as AgentMessageEvt;
+      expect(answer.model, 'Qwen3.8-27B');
+
+      // No model (older Pi build / unknown) → null, not an error.
+      final recap = SessionHistoryEvent.fromJson({
+        'ts': 6,
+        'type': 'compaction',
+        'summary': 'recap',
+      }) as CompactionEvt;
+      expect(recap.model, isNull);
+    });
   });
 
   // Plan/30 — image attachments on user_message + WireModel.vision.

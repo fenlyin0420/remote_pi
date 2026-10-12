@@ -24,7 +24,9 @@ class MessageRecord {
 
   /// Tool request+result collapsed into one row (tool messages only).
   final ToolEventData? tool;
-  final DateTime ts;
+  /// Null when the source had no timestamp (the mapper's `ts: 0` sentinel —
+  /// a row without a caption rather than a "1970-01-01" one).
+  final DateTime? ts;
 
   /// Optimistic: sent locally, not yet echoed by the Pi.
   final bool pending;
@@ -39,6 +41,12 @@ class MessageRecord {
   /// timed (measured live by the app, or replayed from the Pi's history event).
   final int? thinkingMs;
 
+  /// LOCAL (fenlyin): the model that produced/received this message — the
+  /// per-row caption shows it next to [ts]. Persisted so a reopen keeps the
+  /// same captions a re-sync showed. Null for older sessions and for rows
+  /// the Pi could not attribute to a model.
+  final String? model;
+
   /// A file the Pi sent to the phone (attachment rows only). Metadata plus the
   /// name of the locally cached bytes — never the bytes themselves, see
   /// [AttachmentMsg.blobName].
@@ -52,11 +60,12 @@ class MessageRecord {
     this.image,
     this.file,
     this.tool,
-    required this.ts,
+    this.ts,
     this.pending = false,
     this.steering = false,
     this.tokensBefore,
     this.thinkingMs,
+    this.model,
     this.attachment,
   });
 
@@ -82,6 +91,7 @@ class MessageRecord {
     steering: steering ?? this.steering,
     tokensBefore: tokensBefore,
     thinkingMs: thinkingMs,
+    model: model,
     attachment: attachment ?? this.attachment,
   );
 
@@ -95,11 +105,12 @@ class MessageRecord {
       'file': {'name': file!.name, if (file!.path != null) 'path': file!.path},
     if (tool != null) 'tool': tool!.toJson(),
     if (attachment != null) 'attachment': attachment!.toJson(),
-    'ts': ts.millisecondsSinceEpoch,
+    if (ts != null) 'ts': ts!.millisecondsSinceEpoch,
     'pending': pending,
     if (steering) 'steering': true,
     if (tokensBefore != null) 'tokens_before': tokensBefore,
     if (thinkingMs != null) 'thinking_ms': thinkingMs,
+    if (model != null) 'model': model,
   };
 
   factory MessageRecord.fromJson(Map<String, dynamic> j) {
@@ -133,11 +144,16 @@ class MessageRecord {
       attachment: attachmentRaw is Map
           ? AttachmentData.fromJson(attachmentRaw.cast<String, dynamic>())
           : null,
-      ts: DateTime.fromMillisecondsSinceEpoch((j['ts'] as num).toInt()),
+      // Rows written by the intermediate build may carry the `ts: 0`
+      // "unknown" sentinel — read it back as no caption, not 1970.
+      ts: ((j['ts'] as num?)?.toInt() ?? 0) == 0
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch((j['ts'] as num).toInt()),
       pending: (j['pending'] as bool?) ?? false,
       steering: (j['steering'] as bool?) ?? false,
       tokensBefore: (j['tokens_before'] as num?)?.toInt(),
       thinkingMs: (j['thinking_ms'] as num?)?.toInt(),
+      model: j['model'] as String?,
     );
   }
 
@@ -152,9 +168,11 @@ class MessageRecord {
           steering: steering,
           image: image,
           file: file,
+          ts: ts,
+          model: model,
         );
       case MsgRole.assistant:
-        return AssistantMsg(id: id, text: text);
+        return AssistantMsg(id: id, text: text, ts: ts, model: model);
       case MsgRole.thinking:
         return ThinkingMsg(
           id: id,
@@ -162,6 +180,8 @@ class MessageRecord {
           duration: thinkingMs == null
               ? null
               : Duration(milliseconds: thinkingMs!),
+          ts: ts,
+          model: model,
         );
       case MsgRole.tool:
         final t = tool;
@@ -174,9 +194,17 @@ class MessageRecord {
           result: t?.result,
           error: t?.error,
           diff: t?.diff,
+          ts: ts,
+          model: model,
         );
       case MsgRole.compaction:
-        return CompactionMsg(id: id, summary: text, tokensBefore: tokensBefore);
+        return CompactionMsg(
+          id: id,
+          summary: text,
+          tokensBefore: tokensBefore,
+          ts: ts,
+          model: model,
+        );
       case MsgRole.attachment:
         final a = attachment;
         return AttachmentMsg(
@@ -191,6 +219,8 @@ class MessageRecord {
           blobName: a?.blobName,
           error: a?.error,
           toolCallId: a?.toolCallId,
+          ts: ts,
+          model: model,
         );
     }
   }

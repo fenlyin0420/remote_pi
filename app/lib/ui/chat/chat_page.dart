@@ -426,6 +426,13 @@ class ChatPage extends StatelessWidget {
     final epk = vm.activePeer?.remoteEpk;
     final hideToolCalls =
         epk == null ? false : prefs.hideToolCallsFor(epk, vm.activeRoomId);
+    // LOCAL (fenlyin): per-room reasoning toggle (same mechanism as the
+    // tool-calls one — no record → thinking is shown) and the per-message
+    // "time · model" caption toggle (no record → captions are shown).
+    final hideThinking =
+        epk == null ? false : prefs.hideThinkingFor(epk, vm.activeRoomId);
+    final showMeta =
+        epk == null ? true : prefs.showMessageMetaFor(epk, vm.activeRoomId);
     return switch (state) {
       // Edge case: opened /chat without a peer (e.g. peer revoked while
       // user was here). The chat is not the place to pair — render
@@ -446,9 +453,13 @@ class ChatPage extends StatelessWidget {
         onAction: () => context.go('/pair'),
       ),
       ChatReady(:final messages, :final streaming) => () {
-        final visible = hideToolCalls
-            ? messages.where((m) => m is! ToolEvent).toList()
-            : messages;
+        final visible = messages
+            .where(
+              (m) =>
+                  (!hideToolCalls || m is! ToolEvent) &&
+                  (!hideThinking || m is! ThinkingMsg),
+            )
+            .toList();
         // Empty body → the default placeholder (Pi brand icon + "Nothing
         // here"), shown whenever there's nothing to render — including while
         // reconnecting (the reconnect handshake never swaps the body).
@@ -465,6 +476,8 @@ class ChatPage extends StatelessWidget {
           loadAttachmentBytes: vm.attachmentBytes,
           onLoadAttachment: vm.loadAttachment,
           onSaveAttachment: vm.saveAttachment,
+          showMeta: showMeta,
+          hideThinking: hideThinking,
         );
       }(),
     };

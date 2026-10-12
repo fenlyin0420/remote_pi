@@ -126,14 +126,53 @@ class UserBubble extends StatelessWidget {
 /// A system message distinct from user/assistant: shows that the Pi compacted
 /// the context, with the recap summary and the reclaimed token count. Mirrors
 /// the TUI's CompactionSummaryMessageComponent.
-class CompactionBubble extends StatelessWidget {
+///
+/// LOCAL (fenlyin): the summary is a COLLAPSIBLE block — collapsed by default,
+/// the same pattern as [ThinkingBlock]: the recap is context about the
+/// conversation, not conversation content, so the header stands alone until
+/// the user taps it.
+class CompactionBubble extends StatefulWidget {
   final CompactionMsg message;
   const CompactionBubble(this.message, {super.key});
 
   @override
+  State<CompactionBubble> createState() => _CompactionBubbleState();
+}
+
+class _CompactionBubbleState extends State<CompactionBubble> {
+  bool _expanded = false;
+  bool _restored = false;
+
+  /// Content-addressed expansion state, kept in the route's [PageStorage] —
+  /// the same trick as [ThinkingBlock]: the widget's State does not survive
+  /// scrolling out of view or a re-sync rewriting the row under a new id, but
+  /// the summary text does.
+  Object get _storageId =>
+      'compaction-expanded:${widget.message.summary.hashCode}:${widget.message.summary.length}';
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_restored) return;
+    _restored = true;
+    final stored = PageStorage.maybeOf(context)
+        ?.readState(context, identifier: _storageId);
+    // Only the user ever writes this, so anything unreadable means collapsed.
+    if (stored is bool) _expanded = stored;
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    PageStorage.maybeOf(context)
+        ?.writeState(context, _expanded, identifier: _storageId);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final message = widget.message;
     final tokens = message.tokensBefore;
     final summary = message.summary;
+    final hasSummary = summary.isNotEmpty;
     final colors = context.colors;
     return Center(
       child: ConstrainedBox(
@@ -149,35 +188,48 @@ class CompactionBubble extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Icon(LucideIcons.check, size: 13, color: colors.success),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'Context compacted',
-                      style: TextStyle(
-                        fontFamily: kMonoFamily,
-                        fontSize: 12,
-                        color: colors.text,
-                        fontWeight: FontWeight.w600,
+              GestureDetector(
+                key: const Key('compaction-header'),
+                behavior: HitTestBehavior.opaque,
+                onTap: hasSummary ? _toggle : null,
+                child: Row(
+                  children: [
+                    Icon(LucideIcons.check, size: 13, color: colors.success),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Context compacted',
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 12,
+                          color: colors.text,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
-                  ),
-                  if (tokens != null)
-                    Text(
-                      '~$tokens tokens',
-                      style: TextStyle(
-                        fontFamily: kMonoFamily,
-                        fontSize: 11,
+                    if (tokens != null)
+                      Text(
+                        '~$tokens tokens',
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 11,
+                          color: colors.muted,
+                        ),
+                      ),
+                    if (hasSummary)
+                      Icon(
+                        _expanded
+                            ? LucideIcons.chevronDown
+                            : LucideIcons.chevronRight,
+                        size: 14,
                         color: colors.muted,
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
-              if (summary.isNotEmpty) ...[
+              if (_expanded && hasSummary) ...[
                 const SizedBox(height: 6),
-                Text(
+                SelectableText(
                   summary,
                   style: TextStyle(
                     fontFamily: kMonoFamily,

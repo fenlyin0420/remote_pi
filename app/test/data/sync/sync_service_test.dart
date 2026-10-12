@@ -796,6 +796,56 @@ void main() {
     s.sync.dispose();
   });
 
+  // LOCAL (fenlyin): the per-message model rides the history events onto the
+  // rows (the per-row caption shows it next to the timestamp).
+  test('session_history events carry their model onto the rows', () async {
+    final s = await setup();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'u1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 10, id: 'u1', text: 'why', model: 'Qwen3.8-27B'),
+          AgentMessageEvt(
+            ts: 11,
+            inReplyTo: 'u1',
+            text: 'the answer',
+            model: 'Qwen3.8-27B',
+          ),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+    final rows = messages(s.epk);
+    expect(rows.map((m) => m.role), [MsgRole.user, MsgRole.assistant]);
+    expect(rows.every((m) => m.model == 'Qwen3.8-27B'), isTrue);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
+  // LOCAL (fenlyin): `ts` 0 is the mapper's "unknown timestamp" sentinel —
+  // the row must not render a "1970-01-01" caption.
+  test('history events with ts 0 get no timestamp on the row', () async {
+    final s = await setup();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'u1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 0, id: 'u1', text: 'no time'),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+    final rows = messages(s.epk);
+    expect(rows, hasLength(1));
+    expect(rows.single.ts, isNull);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test(
     'session_history replays reasoning rows, and an identical re-apply '
     'writes nothing',

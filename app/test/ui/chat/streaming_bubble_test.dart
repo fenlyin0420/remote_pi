@@ -4,6 +4,7 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
+import 'package:app/ui/chat/widgets/thinking_block.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -57,5 +58,32 @@ void main() {
     // Below the rendered markdown, and left-aligned — never floating aside.
     expect(cursor.top, greaterThanOrEqualTo(md.bottom - 0.5));
     expect(cursor.left, closeTo(md.left, 1));
+  });
+
+  // LOCAL (fenlyin): the per-room reasoning toggle — the live reasoning block
+  // is replaced by a bare "Thinking" hint, so the bubble still reads as
+  // "working" without showing the reasoning text.
+  testWidgets('hideThinking swaps the reasoning block for a bare hint', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StreamingBubble(
+            const StreamingMessage(
+              inReplyTo: 'x',
+              buffer: 'reasoning so far',
+              thinking: true,
+            ),
+            hideThinking: true,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Thinking'), findsOneWidget);
+    expect(find.byType(ThinkingBlock), findsNothing);
+    expect(find.text('reasoning so far'), findsNothing);
+    expect(find.byKey(const Key('streaming-cursor')), findsOneWidget);
   });
 }

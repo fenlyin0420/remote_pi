@@ -77,6 +77,48 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   }
 
   // ---------------------------------------------------------------------------
+  // Per-room reasoning + message-meta toggles (LOCAL, fenlyin)
+  // ---------------------------------------------------------------------------
+
+  /// Whether the ACTIVE room's (peer, room) pair hides reasoning rows.
+  /// No record → `false` (thinking is shown). `false` when the VM has no
+  /// [Preferences] or the active room is unknown.
+  bool get hideThinking {
+    final meta = _repo.activeRoomMeta;
+    final epk = meta.peerEpk;
+    if (_prefs == null || epk == null) return false;
+    return _prefs.hideThinkingFor(epk, meta.roomId);
+  }
+
+  /// Persist the reasoning toggle for the ACTIVE room. No-op without a
+  /// [Preferences] or a resolvable (peer, room) pair.
+  Future<void> setHideThinking(bool value) async {
+    final meta = _repo.activeRoomMeta;
+    final epk = meta.peerEpk;
+    if (_prefs == null || epk == null) return;
+    await _prefs.setHideThinkingFor(epk, meta.roomId, value);
+  }
+
+  /// Whether the per-message caption (time · model) is shown for the
+  /// ACTIVE room. No record → `true` (captions shown by default). `true`
+  /// when the VM has no [Preferences] or the active room is unknown.
+  bool get showMessageMeta {
+    final meta = _repo.activeRoomMeta;
+    final epk = meta.peerEpk;
+    if (_prefs == null || epk == null) return true;
+    return _prefs.showMessageMetaFor(epk, meta.roomId);
+  }
+
+  /// Persist the caption toggle for the ACTIVE room. No-op without a
+  /// [Preferences] or a resolvable (peer, room) pair.
+  Future<void> setShowMessageMeta(bool value) async {
+    final meta = _repo.activeRoomMeta;
+    final epk = meta.peerEpk;
+    if (_prefs == null || epk == null) return;
+    await _prefs.setShowMessageMetaFor(epk, meta.roomId, value);
+  }
+
+  // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
 

@@ -1554,13 +1554,20 @@ class SessionHistory extends ServerMessage {
 
 sealed class SessionHistoryEvent {
   final int ts;
-  const SessionHistoryEvent({required this.ts});
+
+  /// LOCAL (fenlyin): the model that produced/received this message — the
+  /// per-row caption shows it next to the timestamp. Absent on older Pi
+  /// builds (the field is additive) or when the model is unknown.
+  final String? model;
+  const SessionHistoryEvent({required this.ts, this.model});
 
   factory SessionHistoryEvent.fromJson(Map<String, dynamic> j) {
     final ts = (j['ts'] as num).toInt();
+    final model = j['model'] as String?;
     return switch (j['type'] as String?) {
       'user_input' => UserInputEvt(
         ts: ts,
+        model: model,
         id: j['id'] as String,
         text: j['text'] as String,
         image: _firstImage(j['images']),
@@ -1568,6 +1575,7 @@ sealed class SessionHistoryEvent {
       ),
       'tool_request' => ToolRequestEvt(
         ts: ts,
+        model: model,
         toolCallId: j['tool_call_id'] as String,
         tool: j['tool'] as String,
         args: j['args'],
@@ -1581,6 +1589,7 @@ sealed class SessionHistoryEvent {
       ),
       'agent_message' => AgentMessageEvt(
         ts: ts,
+        model: model,
         inReplyTo: j['in_reply_to'] as String,
         text: j['text'] as String,
       ),
@@ -1589,6 +1598,7 @@ sealed class SessionHistoryEvent {
       // streaming time; absent when the Pi could not time it).
       'agent_thinking' => AgentThinkingEvt(
         ts: ts,
+        model: model,
         inReplyTo: j['in_reply_to'] as String,
         text: j['text'] as String,
         durationMs: (j['duration_ms'] as num?)?.toInt(),
@@ -1597,6 +1607,7 @@ sealed class SessionHistoryEvent {
       // survives a re-sync.
       'compaction' => CompactionEvt(
         ts: ts,
+        model: model,
         summary: (j['summary'] as String?) ?? '',
         tokensBefore: (j['tokens_before'] as num?)?.toInt(),
       ),
@@ -1604,6 +1615,7 @@ sealed class SessionHistoryEvent {
       // budget, so the bytes are pulled on demand with `file_get`.
       'attachment' => AttachmentEvt(
         ts: ts,
+        model: model,
         id: j['id'] as String,
         name: (j['name'] as String?) ?? '',
         path: (j['path'] as String?) ?? '',
@@ -1637,6 +1649,7 @@ class UserInputEvt extends SessionHistoryEvent {
     required this.text,
     this.image,
     this.file,
+    super.model,
   });
 }
 
@@ -1649,6 +1662,7 @@ class ToolRequestEvt extends SessionHistoryEvent {
     required this.toolCallId,
     required this.tool,
     required this.args,
+    super.model,
   });
 }
 
@@ -1678,6 +1692,7 @@ class AgentMessageEvt extends SessionHistoryEvent {
     required super.ts,
     required this.inReplyTo,
     required this.text,
+    super.model,
   });
 }
 
@@ -1698,6 +1713,7 @@ class AgentThinkingEvt extends SessionHistoryEvent {
     required this.inReplyTo,
     required this.text,
     this.durationMs,
+    super.model,
   });
 }
 
@@ -1709,6 +1725,7 @@ class CompactionEvt extends SessionHistoryEvent {
     required super.ts,
     required this.summary,
     this.tokensBefore,
+    super.model,
   });
 }
 
@@ -1743,6 +1760,7 @@ class AttachmentEvt extends SessionHistoryEvent {
     this.resized = false,
     this.originalSize,
     this.toolCallId,
+    super.model,
   });
 }
 

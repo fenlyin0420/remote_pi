@@ -19,6 +19,12 @@ class Preferences extends ChangeNotifier {
   // The global `_hideToolCalls` field is kept for compatibility (old
   // persisted value); the chat UI reads [hideToolCallsFor] instead.
   final Map<String, bool> _hideToolCallsRooms = <String, bool>{};
+  // LOCAL (fenlyin): per-room reasoning ("thinking") rows toggle — same
+  // mechanism as the tool-calls one above. Default OFF (thinking shown).
+  final Map<String, bool> _hideThinkingRooms = <String, bool>{};
+  // LOCAL (fenlyin): per-room per-message caption (timestamp + model) toggle.
+  // Default ON (captions shown).
+  final Map<String, bool> _showMessageMetaRooms = <String, bool>{};
   String? _selectedPeerEpk;
   String? _relayUrl;
   bool _onboardingCompleted = false;
@@ -31,6 +37,8 @@ class Preferences extends ChangeNotifier {
 
   static const _kHideToolCallsKey = 'prefs.hide_tool_calls';
   static const _kHideToolCallsRoomsKey = 'prefs.hide_tool_calls_rooms';
+  static const _kHideThinkingRoomsKey = 'prefs.hide_thinking_rooms';
+  static const _kShowMessageMetaRoomsKey = 'prefs.show_message_meta_rooms';
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
   static const _kRelayUrlKey = 'prefs.relay_url';
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
@@ -58,6 +66,44 @@ class Preferences extends ChangeNotifier {
 
   String _encodeRooms() =>
       jsonEncode(Map<String, dynamic>.from(_hideToolCallsRooms));
+
+  /// Room-level reasoning toggle: `true` when the (peer, room) pair hides
+  /// `ThinkingMsg` rows (and the live thinking segment of the streaming
+  /// bubble). No record → `false` (thinking is shown — the toggle hides,
+  /// mirroring the tool-calls one).
+  bool hideThinkingFor(String epk, String roomId) =>
+      _hideThinkingRooms['$epk:$roomId'] ?? false;
+
+  Future<void> setHideThinkingFor(String epk, String roomId, bool value) async {
+    final key = '$epk:$roomId';
+    if ((_hideThinkingRooms[key] ?? false) == value) return;
+    _hideThinkingRooms[key] = value;
+    await _store
+        .write(key: _kHideThinkingRoomsKey, value: jsonEncode(_hideThinkingRooms));
+    notifyListeners();
+  }
+
+  /// Room-level per-message caption toggle: `true` (default) shows the
+  /// "time · model" caption under each row. `false` after the user hid
+  /// them for this room.
+  bool showMessageMetaFor(String epk, String roomId) =>
+      _showMessageMetaRooms['$epk:$roomId'] ?? true;
+
+  Future<void> setShowMessageMetaFor(
+    String epk,
+    String roomId,
+    bool value,
+  ) async {
+    final key = '$epk:$roomId';
+    if ((_showMessageMetaRooms[key] ?? true) == value) return;
+    _showMessageMetaRooms[key] = value;
+    await _store
+        .write(
+          key: _kShowMessageMetaRoomsKey,
+          value: jsonEncode(_showMessageMetaRooms),
+        );
+    notifyListeners();
+  }
 
   /// Epoch of the peer the user last picked from Home — the one
   /// `/chat` will connect to when it mounts. Null = no peer selected yet
@@ -181,6 +227,28 @@ class Preferences extends ChangeNotifier {
       _hideToolCallsRooms
         ..clear()
         ..addAll(rooms);
+      changed = true;
+    }
+
+    final hideThinkingRaw = await _store.read(key: _kHideThinkingRoomsKey);
+    final hideThinking = _decodeRooms(hideThinkingRaw);
+    final sameHideThinking = hideThinking.length == _hideThinkingRooms.length &&
+        hideThinking.entries.every((e) => _hideThinkingRooms[e.key] == e.value);
+    if (!sameHideThinking) {
+      _hideThinkingRooms
+        ..clear()
+        ..addAll(hideThinking);
+      changed = true;
+    }
+
+    final metaRaw = await _store.read(key: _kShowMessageMetaRoomsKey);
+    final meta = _decodeRooms(metaRaw);
+    final sameMeta = meta.length == _showMessageMetaRooms.length &&
+        meta.entries.every((e) => _showMessageMetaRooms[e.key] == e.value);
+    if (!sameMeta) {
+      _showMessageMetaRooms
+        ..clear()
+        ..addAll(meta);
       changed = true;
     }
 

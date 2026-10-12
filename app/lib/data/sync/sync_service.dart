@@ -294,6 +294,22 @@ class SyncService extends Service {
   String? get activeEpk => _activeEpk;
   String get activeRoomId => _activeRoomId;
 
+  /// LOCAL (fenlyin): the model the ACTIVE room is running (room_meta.model)
+  /// — stamped onto LIVE rows so their caption matches the Pi's per-message
+  /// model from the next re-sync (the live wire frames carry no model).
+  /// `null` when no room has reported one (older Pi builds).
+  String? get _activeRoomModel {
+    final epk = _activeEpk;
+    if (epk == null) return null;
+    // `roomsFor` normalizes the epk encoding (url-safe vs standard base64);
+    // the raw map key would silently miss for url-safe peers.
+    final rooms = _conn.roomsFor(epk);
+    for (final r in rooms) {
+      if (r.roomId == _activeRoomId) return r.model;
+    }
+    return null;
+  }
+
   /// The slot whose turn state the UI-facing getters/streams reflect.
   _RoomTurn? get _activeTurn {
     final epk = _activeEpk;
@@ -374,6 +390,7 @@ class SyncService extends Service {
           ts: now,
           pending: true,
           steering: isSteer,
+          model: _activeRoomModel,
         ),
       );
       if (!isSteer) {
@@ -556,6 +573,7 @@ class SyncService extends Service {
                 seq: seq,
                 role: MsgRole.tool,
                 ts: DateTime.now(),
+                model: _activeRoomModel,
               ))
           .copyWith(
             tool: base.copyWith(
@@ -748,6 +766,7 @@ class SyncService extends Service {
                 role: MsgRole.assistant,
                 text: text,
                 ts: DateTime.now(),
+                model: _activeRoomModel,
               ),
         );
 
@@ -800,6 +819,7 @@ class SyncService extends Service {
                   image: _messageImage(image),
                   file: _messageFile(file),
                   ts: DateTime.now(),
+                  model: _activeRoomModel,
                 ),
         );
         if (t == null) return;
@@ -843,6 +863,7 @@ class SyncService extends Service {
                 seq: seq,
                 role: MsgRole.tool,
                 ts: DateTime.now(),
+                model: _activeRoomModel,
                 tool: ToolEventData(
                   toolCallId: toolCallId,
                   tool: tool,
@@ -866,6 +887,7 @@ class SyncService extends Service {
                     seq: seq,
                     role: MsgRole.tool,
                     ts: DateTime.now(),
+                    model: _activeRoomModel,
                   ))
               .copyWith(
                 tool: base.copyWith(
@@ -927,6 +949,7 @@ class SyncService extends Service {
             // written for a human — so that stands alone.
             text: _labelledError(code, message),
             ts: DateTime.now(),
+            model: _activeRoomModel,
           ),
         );
 
@@ -1019,6 +1042,7 @@ class SyncService extends Service {
             text: summary,
             tokensBefore: tokensBefore,
             ts: when,
+            model: _activeRoomModel,
           ),
     );
   }
@@ -1059,6 +1083,7 @@ class SyncService extends Service {
         seq: seq,
         role: MsgRole.attachment,
         ts: existing?.ts ?? DateTime.now(),
+        model: existing?.model ?? _activeRoomModel,
         attachment: AttachmentData(
           name: name,
           path: path,
@@ -1178,6 +1203,11 @@ class SyncService extends Service {
     }
   }
 
+  /// The caption's timestamp. `ts` 0 is the mapper's "unknown" sentinel
+  /// (timestamp-less session files) — the row must not render "1970-01-01".
+  DateTime? _tsOf(SessionHistoryEvent e) =>
+      e.ts > 0 ? DateTime.fromMillisecondsSinceEpoch(e.ts) : null;
+
   List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
     final out = <MessageRecord>[];
     var seq = 0;
@@ -1195,7 +1225,8 @@ class SyncService extends Service {
               text: text,
               image: _messageImage(image),
               file: _messageFile(file),
-              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              ts: _tsOf(e),
+              model: e.model,
             ),
           );
         case AgentMessageEvt(:final inReplyTo, :final text):
@@ -1205,7 +1236,8 @@ class SyncService extends Service {
               seq: seq++,
               role: MsgRole.assistant,
               text: text,
-              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              ts: _tsOf(e),
+              model: e.model,
             ),
           );
         case AgentThinkingEvt(:final text, :final durationMs):
@@ -1219,7 +1251,8 @@ class SyncService extends Service {
                 seq: seq++,
                 role: MsgRole.thinking,
                 text: text,
-                ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+                ts: _tsOf(e),
+                model: e.model,
                 thinkingMs: durationMs,
               ),
             );
@@ -1235,7 +1268,8 @@ class SyncService extends Service {
               id: toolCallId,
               seq: seq++,
               role: MsgRole.tool,
-              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              ts: _tsOf(e),
+              model: e.model,
               tool: ToolEventData(
                 toolCallId: toolCallId,
                 tool: tool,
@@ -1268,7 +1302,8 @@ class SyncService extends Service {
                 id: toolCallId,
                 seq: seq++,
                 role: MsgRole.tool,
-                ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+                ts: _tsOf(e),
+                model: e.model,
                 tool: ToolEventData(
                   toolCallId: toolCallId,
                   // A known name when the request told us (a failed
@@ -1290,7 +1325,8 @@ class SyncService extends Service {
               role: MsgRole.compaction,
               text: summary,
               tokensBefore: tokensBefore,
-              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              ts: _tsOf(e),
+              model: e.model,
             ),
           );
         // A file the Pi sent, replayed as metadata only (no bytes — the app
@@ -1311,7 +1347,8 @@ class SyncService extends Service {
               id: id,
               seq: seq++,
               role: MsgRole.attachment,
-              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              ts: _tsOf(e),
+              model: e.model,
               attachment: AttachmentData(
                 name: name,
                 path: path,
@@ -1354,7 +1391,9 @@ class SyncService extends Service {
         // reaped by its `ts` instead of spinning forever (already-stale → fires
         // immediately). Timers were cleared by the session switch before this
         // load.
-        if (r.role == MsgRole.user && r.pending) _armSendTimeout(r.id, r.ts);
+        if (r.role == MsgRole.user && r.pending && r.ts != null) {
+          _armSendTimeout(r.id, r.ts!);
+        }
       }
       _indexLoaded = true;
     });
@@ -1697,6 +1736,7 @@ class SyncService extends Service {
           role: MsgRole.assistant,
           text: text,
           ts: DateTime.now(),
+          model: _activeRoomModel,
         ),
       );
     }
@@ -1746,6 +1786,7 @@ class SyncService extends Service {
           role: MsgRole.thinking,
           text: text,
           ts: DateTime.now(),
+          model: _activeRoomModel,
           thinkingMs: elapsed?.inMilliseconds,
         ),
       );

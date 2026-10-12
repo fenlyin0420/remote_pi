@@ -227,6 +227,8 @@ const {
   _mapAgentMessagesToEvents,
   THINKING_EVENT_MAX_CHARS,
   _setMessageBufferForTest,
+  _seedMessageBufferFromSession,
+  _resetHistorySeedForTest,
   _setSessionStartedAtForTest,
   _hasPendingReconnect,
   _getMessageBufferForTest,
@@ -3995,6 +3997,116 @@ describe("session sync", () => {
       summary: "summarised 10 turns",
       tokens_before: 12345,
     });
+  });
+
+  // ── Per-message model captions (LOCAL, fenlyin) ───────────────────────────
+
+  const fakeResolver = (provider: string, modelId: string) =>
+    provider === "llama-cpp" && modelId === "Qwen.gguf" ? "Qwen3.8-27B" : `${provider}/${modelId}`;
+
+  test("mapping: assistant model+provider → resolved model on text/thinking/tool rows", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "go", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "reasoning" },
+          { type: "text", text: "answer" },
+          { type: "toolCall", id: "tc_1", name: "bash", arguments: {} },
+        ],
+        timestamp: 2,
+        model: "Qwen.gguf",
+        provider: "llama-cpp",
+      },
+    ], fakeResolver);
+    for (const type of ["agent_thinking", "agent_message", "tool_request"] as const) {
+      const ev = events.find((e) => e.type === type);
+      expect(ev, type).toMatchObject({ model: "Qwen3.8-27B" });
+    }
+  });
+
+  test("mapping: unresolvable model falls back to the raw id", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "go", timestamp: 1, model: "Qwen.gguf", provider: "llama-cpp" },
+      { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2, model: "Qwen.gguf", provider: "llama-cpp" },
+    ], (p, m) => `${p}/${m}`);
+    expect(events[0]).toMatchObject({ type: "user_input", model: "llama-cpp/Qwen.gguf" });
+    expect(events[1]).toMatchObject({ type: "agent_message", model: "llama-cpp/Qwen.gguf" });
+  });
+
+  test("mapping: user message uses its own model; a model-less user row inherits the previous turn's model", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "first", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "a1" }], timestamp: 2, model: "Qwen.gguf", provider: "llama-cpp" },
+      // No model of its own (no model_change entry before it) → previous turn's model.
+      { role: "user", content: "second", timestamp: 3 },
+      // Live-style user row: already a display name, no provider → used as-is.
+      { role: "user", content: "third", timestamp: 4, model: "Qwen3.8-27B" },
+    ], fakeResolver);
+    const users = events.filter((e) => e.type === "user_input") as Array<{ model?: string }>;
+    expect(users[0]).not.toHaveProperty("model");
+    expect(users[1]).toMatchObject({ model: "Qwen3.8-27B" });
+    expect(users[2]).toMatchObject({ model: "Qwen3.8-27B" });
+  });
+
+  test("mapping: no model info anywhere → no `model` key (wire stays byte-identical)", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "hi", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2 },
+    ]);
+    for (const ev of events) expect(ev).not.toHaveProperty("model");
+  });
+
+  test("mapping: compaction model — live marker's own model wins, seeded marker inherits the last assistant model", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "hi", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2, model: "Qwen.gguf", provider: "llama-cpp" },
+      // Seeded: the session file's compaction entry carries no model.
+      { role: "compaction", content: "s1", timestamp: 3, tokensBefore: 10 },
+      // Live: the session_compact hook attaches the current model name.
+      { role: "compaction", content: "s2", timestamp: 4, tokensBefore: 20, model: "Qwen3.8-27B" },
+    ], fakeResolver);
+    const comps = events.filter((e) => e.type === "compaction") as Array<{ model?: string }>;
+    expect(comps[0]).toMatchObject({ model: "Qwen3.8-27B" });
+    expect(comps[1]).toMatchObject({ model: "Qwen3.8-27B" });
+  });
+
+  test("mapping: attachment rows inherit the producing assistant's model", () => {
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "send it", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "here" }], timestamp: 2, model: "Qwen.gguf", provider: "llama-cpp" },
+      {
+        role: "custom",
+        customType: "remote-pi:attachment",
+        content: "",
+        display: false,
+        details: { id: "att_1", name: "chart.png", path: "/p/chart.png", mime: "image/png", size: 10 },
+        timestamp: 3,
+      },
+    ], fakeResolver);
+    const att = events.find((e) => e.type === "attachment");
+    expect(att).toMatchObject({ model: "Qwen3.8-27B" });
+  });
+
+  test("seed: user messages get the model_change active at their point in the file", () => {
+    _resetHistorySeedForTest();
+    _seedMessageBufferFromSession({
+      sessionManager: {
+        getBranch: () => [
+          { type: "message", timestamp: "2026-10-12T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "first" }], timestamp: 1 } },
+          { type: "model_change", timestamp: "2026-10-12T10:00:05.000Z", provider: "llama-cpp", modelId: "Qwen.gguf" },
+          { type: "message", timestamp: "2026-10-12T10:00:10.000Z", message: { role: "user", content: [{ type: "text", text: "second" }], timestamp: 2 } },
+          { type: "message", timestamp: "2026-10-12T10:00:20.000Z", message: { role: "assistant", content: [{ type: "text", text: "a" }], timestamp: 3, model: "Other.gguf", provider: "other" } },
+        ],
+      },
+    });
+    const buf = _getMessageBufferForTest() as Array<Record<string, unknown>>;
+    expect(buf).toHaveLength(3);
+    expect(buf[0].model).toBeUndefined();
+    expect(buf[1]).toMatchObject({ model: "Qwen.gguf", provider: "llama-cpp" });
+    // Assistant messages keep the model the session file recorded for them.
+    expect(buf[2]).toMatchObject({ model: "Other.gguf", provider: "other" });
+    _resetHistorySeedForTest();
   });
 
   // ── Pi → App attachments (send_to_phone) ─────────────────────────────────

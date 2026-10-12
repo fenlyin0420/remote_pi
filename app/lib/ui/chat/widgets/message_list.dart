@@ -41,11 +41,22 @@ class MessageList extends StatefulWidget {
     required this.loadAttachmentBytes,
     required this.onLoadAttachment,
     required this.onSaveAttachment,
+    this.showMeta = true,
+    this.hideThinking = false,
   });
 
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
   final void Function(String, ApproveDecision) onDecide;
+
+  /// LOCAL (fenlyin): per-room caption toggle — when true, every row with a
+  /// timestamp gets the small "yyyy-MM-dd HH:mm:ss · model" line under it.
+  final bool showMeta;
+
+  /// LOCAL (fenlyin): per-room reasoning toggle — when true, the live
+  /// thinking segment of the streaming bubble is not rendered (the stored
+  /// `ThinkingMsg` rows are filtered out before they reach this list).
+  final bool hideThinking;
 
   /// Reads a cached attachment blob (null when the card has none yet).
   final Future<Uint8List?> Function(String blobName) loadAttachmentBytes;
@@ -218,6 +229,31 @@ class MessageListState extends State<MessageList> {
     }
   }
 
+  /// LOCAL (fenlyin): the per-row "time · model" caption — small, muted,
+  /// mono digits under the row's bubble. Rendered by [build] when
+  /// [MessageList.showMeta] is on and the row carries a timestamp.
+  Widget _metaCaption(ChatMessage msg) {
+    final ts = msg.ts!;
+    final buf = StringBuffer(
+      '${ts.year.toString().padLeft(4, '0')}-'
+      '${ts.month.toString().padLeft(2, '0')}-'
+      '${ts.day.toString().padLeft(2, '0')} '
+      '${ts.hour.toString().padLeft(2, '0')}:'
+      '${ts.minute.toString().padLeft(2, '0')}:'
+      '${ts.second.toString().padLeft(2, '0')}',
+    );
+    final model = msg.model;
+    if (model != null && model.isNotEmpty) buf.write(' · $model');
+    return Text(
+      buf.toString(),
+      style: TextStyle(
+        fontFamily: kMonoFamily,
+        fontSize: 9,
+        color: context.colors.muted,
+      ),
+    );
+  }
+
   /// One tap: fly the viewport back to the newest content and re-arm the
   /// follow, so the reply that is already streaming lands right at the eye.
   void jumpToBottom() {
@@ -294,33 +330,47 @@ class MessageListState extends State<MessageList> {
                 if (streaming != null && i == rows.length) {
                   return KeyedSubtree(
                     key: const ValueKey('streaming'),
-                    child: StreamingBubble(streaming),
+                    child: StreamingBubble(
+                      streaming,
+                      hideThinking: widget.hideThinking,
+                    ),
                   );
                 }
                 final msg = rows[i];
-                return KeyedSubtree(
-                  key: ValueKey(msg.id),
-                  child: switch (msg) {
-                    UserMsg() => UserBubble(msg),
-                    AssistantMsg() => AssistantBubble(msg),
-                    ThinkingMsg() => ThinkingBubble(msg),
-                    ToolEvent() => ToolRequestCard(
-                      tool: msg,
-                      onDecide: widget.onDecide,
-                      attachments: nestedByToolCall[msg.toolCallId] ?? const [],
-                      loadAttachmentBytes: widget.loadAttachmentBytes,
-                      onLoadAttachment: widget.onLoadAttachment,
-                      onSaveAttachment: widget.onSaveAttachment,
+                final row = switch (msg) {
+                  UserMsg() => UserBubble(msg),
+                  AssistantMsg() => AssistantBubble(msg),
+                  ThinkingMsg() => ThinkingBubble(msg),
+                  ToolEvent() => ToolRequestCard(
+                    tool: msg,
+                    onDecide: widget.onDecide,
+                    attachments: nestedByToolCall[msg.toolCallId] ?? const [],
+                    loadAttachmentBytes: widget.loadAttachmentBytes,
+                    onLoadAttachment: widget.onLoadAttachment,
+                    onSaveAttachment: widget.onSaveAttachment,
+                  ),
+                  CompactionMsg() => CompactionBubble(msg),
+                  AttachmentMsg() => AttachmentCard(
+                    message: msg,
+                    loadBytes: widget.loadAttachmentBytes,
+                    onLoad: widget.onLoadAttachment,
+                    onSave: widget.onSaveAttachment,
+                  ),
+                };
+                // LOCAL (fenlyin): optional per-row "time · model" caption.
+                // A Column under the bubble — the bubble itself is untouched,
+                // so the caption cannot reflow it.
+                if (widget.showMeta && msg.ts != null) {
+                  return KeyedSubtree(
+                    key: ValueKey(msg.id),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [row, _metaCaption(msg)],
                     ),
-                    CompactionMsg() => CompactionBubble(msg),
-                    AttachmentMsg() => AttachmentCard(
-                      message: msg,
-                      loadBytes: widget.loadAttachmentBytes,
-                      onLoad: widget.onLoadAttachment,
-                      onSave: widget.onSaveAttachment,
-                    ),
-                  },
-                );
+                  );
+                }
+                return KeyedSubtree(key: ValueKey(msg.id), child: row);
               },
             ),
           ),

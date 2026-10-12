@@ -66,6 +66,27 @@ void main() {
       );
     });
 
+    // LOCAL (fenlyin): the per-row caption — model + timestamp survive the
+    // box roundtrip and project onto the domain message.
+    test('MessageRecord (assistant + model) survives roundtrip', () {
+      final r = MessageRecord(
+        id: 'a1',
+        seq: 1,
+        role: MsgRole.assistant,
+        text: 'the answer',
+        ts: DateTime.utc(2026, 10, 13, 14, 5, 12),
+        model: 'Qwen3.8-27B',
+      );
+      final back = MessageRecord.fromJson(r.toJson());
+      expect(back.model, 'Qwen3.8-27B');
+      // The box stores epoch millis (a UTC instant comes back as a local
+      // DateTime for the same instant — compare the instant, not the flag).
+      expect(back.ts?.millisecondsSinceEpoch, r.ts?.millisecondsSinceEpoch);
+      final msg = back.toChatMessage() as AssistantMsg;
+      expect(msg.model, 'Qwen3.8-27B');
+      expect(msg.ts?.millisecondsSinceEpoch, r.ts?.millisecondsSinceEpoch);
+    });
+
     test('SessionIndexRecord survives roundtrip', () {
       final r = SessionIndexRecord(
         epk: 'epk1',

@@ -187,6 +187,17 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
                 value: vm.hideToolCalls,
                 onToggle: (v) => _onHideToolCalls(vm, v),
               ),
+              // LOCAL (fenlyin): reasoning toggle + per-message caption toggle,
+              // same per-room mechanism as the tool-calls row above.
+              _HideThinkingRow(
+                value: vm.hideThinking,
+                onToggle: (v) => _onHideThinking(vm, v),
+              ),
+              const _Divider(),
+              _MessageMetaRow(
+                value: vm.showMessageMeta,
+                onToggle: (v) => _onMessageMeta(vm, v),
+              ),
             ],
             const SizedBox(height: 18),
           ],
@@ -299,6 +310,22 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
   Future<void> _onHideToolCalls(QuickActionsViewModel vm, bool value) async {
     try {
       await vm.setHideToolCalls(value);
+    } catch (_) {
+      // Local-only preference write — nothing to surface on failure.
+    }
+  }
+
+  Future<void> _onHideThinking(QuickActionsViewModel vm, bool value) async {
+    try {
+      await vm.setHideThinking(value);
+    } catch (_) {
+      // Local-only preference write — nothing to surface on failure.
+    }
+  }
+
+  Future<void> _onMessageMeta(QuickActionsViewModel vm, bool value) async {
+    try {
+      await vm.setShowMessageMeta(value);
     } catch (_) {
       // Local-only preference write — nothing to surface on failure.
     }
@@ -582,6 +609,99 @@ class _HideToolCallsRow extends StatelessWidget {
           ),
           Switch(
             key: const Key('qa-hide-tool-calls'),
+            value: value,
+            onChanged: onToggle,
+            activeThumbColor: colors.accent,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// LOCAL (fenlyin): per-room reasoning toggle — hides `ThinkingMsg` rows
+/// (and the live thinking segment of the streaming bubble) for the active
+/// room only, the same mechanism as [_HideToolCallsRow].
+class _HideThinkingRow extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onToggle;
+  const _HideThinkingRow({required this.value, required this.onToggle});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Row(
+        children: [
+          Icon(LucideIcons.brain, color: colors.accent, size: 18),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              'Hide thinking',
+              style: TextStyle(
+                fontFamily: kMonoFamily,
+                fontSize: 12,
+                color: colors.text,
+              ),
+            ),
+          ),
+          Switch(
+            key: const Key('qa-hide-thinking'),
+            value: value,
+            onChanged: onToggle,
+            activeThumbColor: colors.accent,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// LOCAL (fenlyin): per-room "message info" toggle — the small
+/// "yyyy-MM-dd HH:mm:ss · model" caption under every row. ON by default;
+/// the switch turns the captions off for the active room.
+class _MessageMetaRow extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onToggle;
+  const _MessageMetaRow({required this.value, required this.onToggle});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Row(
+        children: [
+          Icon(LucideIcons.clock, color: colors.accent, size: 18),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Message info',
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 12,
+                    color: colors.text,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'time + model under each message',
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 10,
+                    color: colors.muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            key: const Key('qa-message-meta'),
             value: value,
             onChanged: onToggle,
             activeThumbColor: colors.accent,

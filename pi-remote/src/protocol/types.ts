@@ -332,13 +332,15 @@ export type SessionHistoryEvent =
   // bubble (the bytes live in `_messageBuffer`). Omitted on text-only inputs.
   // `files` is re-derived from the upload notice embedded in the text, so it
   // also survives a daemon restart (seeded from the session file).
-  | { ts: number; type: "user_input"; id: string; text: string; images?: WireImage[]; files?: WireFile[] }
+  | { ts: number; type: "user_input"; id: string; text: string; images?: WireImage[]; files?: WireFile[]; model?: string }
   | {
       ts: number;
       type: "tool_request";
       tool_call_id: string;
       tool: string;
       args: Record<string, unknown>;
+      /** LOCAL (fenlyin): the model that issued the call (per-row caption). */
+      model?: string;
     }
   | {
       ts: number;
@@ -355,13 +357,15 @@ export type SessionHistoryEvent =
       in_reply_to: string;
       text: string;
       usage?: Usage;
+      /** LOCAL (fenlyin): the model that produced this text (per-row caption). */
+      model?: string;
     }
   // Model reasoning, replayed so a re-sync keeps the thinking blocks the app
   // already rendered live. `text` is capped per block (see
   // THINKING_EVENT_MAX_CHARS) to keep the mirror's byte budget intact;
   // `duration_ms` is how long the block took to stream (absent when the block
   // came from a session-file seed, i.e. a daemon restart).
-  | { ts: number; type: "agent_thinking"; in_reply_to: string; text: string; duration_ms?: number }
+  | { ts: number; type: "agent_thinking"; in_reply_to: string; text: string; duration_ms?: number; model?: string }
   // A file the Pi sent to the phone, replayed as METADATA ONLY — no `data`.
   // `session_history` is capped at 3 MiB and trims the oldest events when it
   // overflows, so inlining ~270 KB of base64 per screenshot would evict half the
@@ -380,10 +384,12 @@ export type SessionHistoryEvent =
       /** The tool call that produced the image, when a tool's result did —
        *  the app nests such a card inside that tool's row. */
       tool_call_id?: string;
+      /** LOCAL (fenlyin): the model whose turn produced the file. */
+      model?: string;
     }
   // Plan/32: a context-compaction marker, replayed in history (survives
   // re-sync like images) so the app re-renders the "context compacted" notice.
-  | { ts: number; type: "compaction"; summary: string; tokens_before: number };
+  | { ts: number; type: "compaction"; summary: string; tokens_before: number; model?: string };
 
 export type ServerMessage =
   | {

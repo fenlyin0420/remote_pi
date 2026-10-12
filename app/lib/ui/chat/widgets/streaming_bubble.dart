@@ -9,7 +9,13 @@ import 'package:flutter/material.dart';
 
 class StreamingBubble extends StatefulWidget {
   final StreamingMessage streaming;
-  const StreamingBubble(this.streaming, {super.key});
+
+  /// LOCAL (fenlyin): per-room reasoning toggle — when true, the live
+  /// reasoning block is replaced by a bare "Thinking" hint (the stored
+  /// `ThinkingMsg` rows are filtered out upstream by the chat page).
+  final bool hideThinking;
+
+  const StreamingBubble(this.streaming, {super.key, this.hideThinking = false});
 
   @override
   State<StreamingBubble> createState() => _StreamingBubbleState();
@@ -40,6 +46,25 @@ class _StreamingBubbleState extends State<StreamingBubble>
     // as the collapsible thinking block (also collapsed while it arrives — the
     // label + cursor say "working" without pushing the answer away).
     if (widget.streaming.thinking) {
+      // LOCAL (fenlyin): the per-room reasoning toggle hides the reasoning
+      // text itself — the bubble degrades to a bare "Thinking" hint + cursor
+      // so the turn still reads as "working".
+      if (widget.hideThinking) {
+        return SizedBox(
+          width: double.infinity,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Thinking',
+                style: TextStyle(fontSize: 12, color: context.colors.muted),
+              ),
+              const SizedBox(width: 6),
+              _BlinkingCursor(controller: _blink),
+            ],
+          ),
+        );
+      }
       return ThinkingBlock(
         text: widget.streaming.buffer,
         live: true,

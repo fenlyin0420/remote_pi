@@ -246,5 +246,35 @@ void main() {
       expect(p.selectedPeerEpk, isNull);
       expect(p.selectedRoomRaw, isNull);
     });
+
+    // LOCAL (fenlyin): per-room reasoning toggle — default OFF (thinking is
+    // shown); the toggle hides it for exactly that (peer, room) pair.
+    test('hideThinkingFor defaults false and round-trips per room', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      expect(p.hideThinkingFor('epk1', 'main'), isFalse);
+      await p.setHideThinkingFor('epk1', 'main', true);
+      expect(p.hideThinkingFor('epk1', 'main'), isTrue);
+      expect(p.hideThinkingFor('epk2', 'main'), isFalse);
+      final p2 = Preferences(store);
+      await p2.load();
+      expect(p2.hideThinkingFor('epk1', 'main'), isTrue);
+      expect(p2.hideThinkingFor('epk2', 'main'), isFalse);
+    });
+
+    // LOCAL (fenlyin): per-room caption toggle — default ON (the caption is
+    // shown); the toggle hides it for exactly that (peer, room) pair.
+    test('showMessageMetaFor defaults true and round-trips per room', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      expect(p.showMessageMetaFor('epk1', 'main'), isTrue);
+      await p.setShowMessageMetaFor('epk1', 'main', false);
+      expect(p.showMessageMetaFor('epk1', 'main'), isFalse);
+      expect(p.showMessageMetaFor('epk2', 'main'), isTrue);
+      final p2 = Preferences(store);
+      await p2.load();
+      expect(p2.showMessageMetaFor('epk1', 'main'), isFalse);
+      expect(p2.showMessageMetaFor('epk2', 'main'), isTrue);
+    });
   });
 }
