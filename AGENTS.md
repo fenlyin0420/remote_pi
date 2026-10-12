@@ -92,6 +92,29 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.28 is released** (2026-10-13, on `dev`, prod `1.5.28` +81, Release
+  `v1.5.28-session-titles-arm64`): Sessions-picker rows are titled by the session's
+  own content — the first user message ALWAYS wins (`sessionTitle()` in
+  `session_label.dart`), even when the room carries a configured agent name (the
+  name is the room's label, shared by every row); the name is only a fallback for
+  message-less sessions, and a folder-basename name is the Pi's default identity,
+  not a user choice (skipped; the SDK's `"(no messages)"` sentinel counts as
+  absent). Room tiles/top bar keep a STABLE name (agent name → folder name) and
+  no longer follow session switches — the room-side first-message tier
+  (`374d1222`) was reverted after the user saw the tile change on every switch;
+  the room-side `first_message` plumbing is gone from the app, while the Pi/relay
+  `room_meta.first_message` pipeline stays (the future home for model-written
+  titles). Root cause of the original "still folder names": `RpcChild` pinned
+  `--name defaultAgentName(cwd)` into every daemon session (a `session_info`
+  entry in the session file, re-written on each restart), and the picker's
+  name-over-firstMessage rule always resolved to the folder; fix: `--name` is
+  pinned only for a real configured agent name (≠ folder). pi-remote
+  **0.15.1** (`remote-pi-0.15.1.tgz`) — **supervisor restart required**
+  (done during the beta cycle). Betas `1.5.28-beta.1`(+78) → `beta.2`(+79)
+  → `beta.3`(+80) tested first; `beta.3` was user-confirmed and the beta
+  channel keeps it. Pi tests 959 pass (956 + 3 skipped), app 890 pass
+  (`--concurrency=1`), analyze clean. Next prod code ≥ 82. See
+  `.agents/memory/remote-pi-room-titles.md`.
 - **1.5.27 is released** (2026-10-11, on `dev`, prod `1.5.27` +77, Release
   `v1.5.27-jump-to-bottom-arm64`): scrolling up into history floats a circular
   "jump to latest" arrow over the bottom-center of the transcript; one tap flies
