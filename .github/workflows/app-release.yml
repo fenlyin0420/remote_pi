@@ -85,12 +85,18 @@ jobs:
         with:
           node-version: 22
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: pi-remote (vitest + typecheck)
         working-directory: pi-remote
         run: |
-          npm install --no-audit --no-fund
-          npm test
-          npm run typecheck
+          # pi-remote é um projeto pnpm (pnpm-lock.yaml); o arborist do
+          # npm trava nesse grafo de dependências (erro 'edgesOut').
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm typecheck
 
   release:
     name: APK assinado + GitHub Release
@@ -221,12 +227,16 @@ jobs:
         with:
           node-version: 22
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Build pi-remote (tgz do commit taggeado)
         working-directory: pi-remote
         run: |
-          npm install --no-audit --no-fund
-          npm run build
-          npm pack
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm pack
 
       - name: Prepara assets + latest.json
         run: |
