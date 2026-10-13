@@ -1423,11 +1423,11 @@ type BufferMsg = {
   /** Plan/32: pre-compaction token count, set on the synthetic
    *  `role:"compaction"` marker pushed in `session_compact`. */
   tokensBefore?: number;
-  /** LOCAL (fenlyin): model that produced/received this message. Assistant
-   *  messages carry it from the session file / SDK (raw model id, resolved to
-   *  a friendly name at map time when `provider` is present); user messages
-   *  get the active model — raw id from `model_change` entries when seeded,
-   *  already-resolved display name for live messages (no `provider`). */
+  /** LOCAL (fenlyin): model that produced this message. Assistant messages
+   *  carry it from the session file / SDK (raw model id, resolved to a
+   *  friendly name at map time when `provider` is present). User messages
+   *  never carry one — the per-row model caption identifies the model that
+   *  generated the reply, which is meaningless on your own message. */
   model?: string;
   /** LOCAL (fenlyin): provider of `model` (raw ids only — marks the value as
    *  un-resolved so the mapper can resolve it against the model registry). */
@@ -1891,12 +1891,11 @@ export function _seedMessageBufferFromSession(ctx: unknown): void {
     const entries = sm?.getBranch?.() ?? sm?.getEntries?.();
     if (!Array.isArray(entries)) return;
     const seeded: unknown[] = [];
-    // LOCAL (fenlyin): the model in force as the file is walked. Session
-    // files interleave `model_change` entries with the messages, so a user
-    // message gets the model that was active WHEN IT WAS SENT — assistant
-    // messages already carry their own model in the file.
-    let activeModel: string | undefined;
-    let activeProvider: string | undefined;
+    // LOCAL (fenlyin): user messages carry NO model — the model caption is
+    // only meaningful for the reply that was generated (assistant rows);
+    // assistant messages carry their own model in the file. The `model_change`
+    // entries used to tag user rows with the model active when sent — the
+    // app's per-row caption no longer wants it.
     for (const entry of entries as Array<Record<string, unknown>>) {
       if (!entry || typeof entry !== "object") continue;
       const message = entry["message"] as { role?: string; timestamp?: number } | undefined;
@@ -1912,24 +1911,7 @@ export function _seedMessageBufferFromSession(ctx: unknown): void {
           ts === message.timestamp
             ? message
             : { ...(message as object), timestamp: ts };
-        if (message.role === "user" && activeModel) {
-          // User messages never carry a model in the session file — attach
-          // the one the `model_change` trail says was active at this point.
-          seeded.push({
-            ...(base as object),
-            model: activeModel,
-            provider: activeProvider,
-          });
-        } else {
-          seeded.push(base);
-        }
-      } else if (entry["type"] === "model_change") {
-        const p = entry["provider"] as string | undefined;
-        const id = entry["modelId"] as string | undefined;
-        if (p && id) {
-          activeProvider = p;
-          activeModel = id;
-        }
+        seeded.push(base);
       } else if (entry["type"] === "compaction") {
         seeded.push({
           role: "compaction",
@@ -2835,6 +2817,18 @@ async function _handlePairRequest(
     hostname: _HOSTNAME,
   });
 
+  // Self-heal the pairing app's cached room meta. The relay only
+  // re-announces a room when its FIRST conn registers, so an app that
+  // re-pairs after missing the announce (or after a daemon restart whose
+  // hello it never saw) keeps a STALE model cached — the displayed model
+  // then disagrees with the session for the rest of the connection. Push
+  // the current model now: the relay patches its cache and fans the
+  // room_meta_update out to this room's subscribers, including the app
+  // that just paired. No-op when the model is unknown yet.
+  if (_currentModel && _relay && _myRoomId) {
+    _setCurrentModel(_currentModel);
+  }
+
   // Notify local RPC clients (e.g. Cockpit) that pairing completed, so they can
   // close the QR screen and show the new device. Pure data event (display:false)
   // — still emitted to the RPC stdout via the session stream.
@@ -3126,11 +3120,6 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
           ...(m as object),
           thinkingDurations: _pendingThinkingDurations,
         } as unknown as BufferMsg);
-      } else if (m.role === "user" && _currentModelName()) {
-        // LOCAL (fenlyin): user messages carry no model in the SDK — tag the
-        // copy with the model that RECEIVED it (already a resolved display
-        // name, so the mapper must not re-resolve it: no `provider`).
-        _messageBuffer.push({ ...(m as object), model: _currentModelName() } as unknown as BufferMsg);
       } else {
         _messageBuffer.push(m as unknown as BufferMsg);
       }
@@ -3190,18 +3179,45 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // room_meta over the relay (plan/32) below — that's independent of the
   // broker and drives the app's working indicator.
   pi.on("turn_start", (_event, ctx) => {
-    // (Re-)hydrate the friendly model name from the SDK's resolved model. The
-    // connect-time fallback may have seeded the RAW model id (a .gguf filename)
-    // because the host ModelRegistry wasn't materialised yet at connect: `find()`
-    // then returns undefined and we fall back to the id, and that id is truthy so
-    // an `if (!_currentModel)` guard would never re-check it. The SDK resolves the
-    // real model (with its `name`) by the first turn, so always re-resolve it and
-    // upgrade. Only push a room_meta_update when the value actually changes, so a
-    // static model doesn't emit an update on every turn.
+    // (Re-)hydrate the friendly model name from the SDK's resolved model and
+    // re-publish it EVERY turn. The connect-time fallback may have seeded the
+    // RAW model id (a .gguf filename) because the host ModelRegistry wasn't
+    // materialised yet at connect: `find()` then returns undefined and we fall
+    // back to the id. A HEADLESS daemon has no `getModel()` until an in-process
+    // setModel (the session file's last `model_change` is the ground truth the
+    // SDK records at session creation and on every switch), and `model_select`
+    // is suppressed when the switch target equals the current model — so a
+    // daemon running its default model otherwise never reports it and a stale
+    // room_meta model survives (the reported "shows Claude Opus 4.7 no matter
+    // how often I re-pick Qwen"). Publishing unconditionally re-syncs any app
+    // whose cached room model drifted; the app dedupes unchanged values.
     try {
-      const m = (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.();
-      const name = m?.name ?? m?.id;
-      if (name && name !== _currentModel) _setCurrentModel(name);
+      let name = (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.()?.name ??
+        (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.()?.id;
+      if (!name) {
+        // Fall back to the session file — but ONLY when the live agent state
+        // is empty: when it is set, it wins (the file's last model_change can
+        // lag a same-process switch that hasn't been flushed to the branch
+        // yet, and a registry-miss resolve would downgrade a friendly name
+        // to a raw id).
+        const sm = (ctx as {
+          sessionManager?: { getBranch?: () => unknown[] } | null;
+        } | null)?.sessionManager;
+        const entries = sm?.getBranch?.();
+        if (Array.isArray(entries)) {
+          for (let i = entries.length - 1; i >= 0; i--) {
+            const e = entries[i] as Record<string, unknown> | null;
+            if (!e || typeof e !== "object") continue;
+            if (e["type"] === "model_change") {
+              const p = e["provider"] as string | undefined;
+              const id = e["modelId"] as string | undefined;
+              if (p && id) name = _resolveModelName(p, id);
+              break; // the LAST model_change is the current selection
+            }
+          }
+        }
+      }
+      if (name) _setCurrentModel(name);
     } catch { /* defensive — never block a turn on a model lookup */ }
     // Plan/32 Part B: publish working=true as room_meta (raw, no debounce —
     // the debounce lives in the app). Same shape as the model/thinking updates.
@@ -5656,6 +5672,7 @@ export function _routeClientMessageFrom(
         sender,
         msg,
         _persistModelDefault,
+        (model) => _setCurrentModel(model.name ?? model.id),
       );
       break;
     case "thinking_set":
@@ -6300,6 +6317,10 @@ async function _handleCommandInvoke(
         if (!model) throw new Error(`unknown model: ${parsed.args}`);
         const applied = await pi.setModel(model as Parameters<ExtensionAPI["setModel"]>[0]);
         if (!applied) throw new Error("no auth configured for this model");
+        // Publish the switch: the SDK's `model_select` event is suppressed
+        // when the target equals the current model, so without this the room's
+        // model display never updates on a same-model re-pick.
+        _setCurrentModel(model.name ?? model.id);
         // Mirror the typed `model_set` path: the live switch alone reverts on
         // the next restart (see _persistModelDefault).
         _persistModelDefault(model.provider, model.id);
@@ -6895,8 +6916,8 @@ export function _mapAgentMessagesToEvents(
   let lastUserId: string | null = null;
   // LOCAL (fenlyin): per-row model captions. `provider` present → the value
   // is a RAW model id (session-file seed / SDK assistant message) and gets
-  // resolved against the registry; absent → already a display name (live user
-  // messages, live compaction marker) and used as-is.
+  // resolved against the registry; absent → already a display name (live
+  // assistant rows, live compaction marker) and used as-is.
   const modelOf = (m: BufferMsg): string | undefined => {
     if (typeof m.model !== "string" || !m.model) return undefined;
     return typeof m.provider === "string" && m.provider
@@ -6947,14 +6968,15 @@ export function _mapAgentMessagesToEvents(
       // agent saw, and what the session file persisted), so the file list is
       // re-derived from it and stripped out of the caption.
       const split = _splitUploadNotices(_stringifyContent(m.content));
+      // User rows carry NO model: the per-row model caption identifies the
+      // model that GENERATED the reply (assistant rows); your own message
+      // didn't generate anything, and a cached room model here would freeze
+      // a stale value into the caption.
       const ev: SessionHistoryEvent = {
         ts,
         type: "user_input",
         id,
         text: split.text,
-        // Own model (seeded model_change trail / live current model), else
-        // the model that was active on the previous turn.
-        ...(modelOf(m) ?? lastAssistantModel ? { model: modelOf(m) ?? lastAssistantModel } : {}),
       };
       if (images.length > 0) ev.images = images;
       if (split.files.length > 0) ev.files = split.files;

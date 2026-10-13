@@ -242,7 +242,10 @@ class MessageListState extends State<MessageList> {
       '${ts.minute.toString().padLeft(2, '0')}:'
       '${ts.second.toString().padLeft(2, '0')}',
     );
-    final model = msg.model;
+    // User rows show the time only — the model caption identifies the
+    // model that GENERATED the reply, which is meaningless on your own
+    // message (the Pi no longer tags user rows with a model either).
+    final model = msg is UserMsg ? null : msg.model;
     if (model != null && model.isNotEmpty) buf.write(' · $model');
     return Text(
       buf.toString(),
@@ -365,7 +368,12 @@ class MessageListState extends State<MessageList> {
                     key: ValueKey(msg.id),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      // The caption sits under the bubble: right-aligned for
+                      // user rows (their bubble is right-aligned) so the
+                      // caption reads as belonging to that side of the chat.
+                      crossAxisAlignment: msg is UserMsg
+                          ? CrossAxisAlignment.end
+                          : CrossAxisAlignment.start,
                       children: [row, _metaCaption(msg)],
                     ),
                   );

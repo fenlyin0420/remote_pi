@@ -1,6 +1,10 @@
 // LOCAL (fenlyin) — the per-row "time · model" caption: shown under every row
 // that carries a timestamp when the per-room toggle is on, hidden when the
 // toggle is off or the row has no timestamp (older sessions / Pi builds).
+//
+// The model part is ASSISTANT-ONLY: it identifies the model that generated
+// the reply. User rows show the time only, and their caption is
+// right-aligned under the (right-aligned) bubble.
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/message_list.dart';
@@ -36,23 +40,39 @@ Future<void> _pump(
 }
 
 void main() {
-  testWidgets('a row with ts + model shows "time · model" under it', (
+  testWidgets('an assistant row with ts + model shows "time · model"', (
     tester,
   ) async {
     await _pump(
       tester,
       [
+        AssistantMsg(id: 'a1', text: 'ok', ts: _ts, model: 'Qwen3.8-27B'),
+      ],
+    );
+    expect(find.text('ok'), findsOneWidget);
+    expect(find.text('2026-10-13 14:05:12 · Qwen3.8-27B'), findsOneWidget);
+  });
+
+  testWidgets('a user row shows the time only — never a model', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      [
+        // Even a model-bearing user row (older Pi builds stamped one) must
+        // render time-only.
         UserMsg(id: 'u1', text: 'hi', ts: _ts, model: 'Qwen3.8-27B'),
       ],
     );
     expect(find.text('hi'), findsOneWidget);
-    expect(find.text('2026-10-13 14:05:12 · Qwen3.8-27B'), findsOneWidget);
+    expect(find.text('2026-10-13 14:05:12'), findsOneWidget);
+    expect(find.textContaining('·'), findsNothing);
   });
 
   testWidgets('a row with ts but no model shows the time only', (tester) async {
     await _pump(
       tester,
-      [UserMsg(id: 'u1', text: 'hi', ts: _ts)],
+      [AssistantMsg(id: 'a1', text: 'ok', ts: _ts)],
     );
     expect(find.text('2026-10-13 14:05:12'), findsOneWidget);
     expect(find.textContaining('·'), findsNothing);
@@ -63,10 +83,17 @@ void main() {
   ) async {
     await _pump(
       tester,
-      [UserMsg(id: 'u1', text: 'hi', ts: _ts, model: 'Qwen3.8-27B')],
+      [
+        AssistantMsg(
+          id: 'a1',
+          text: 'ok',
+          ts: _ts,
+          model: 'Qwen3.8-27B',
+        ),
+      ],
       showMeta: false,
     );
-    expect(find.text('hi'), findsOneWidget);
+    expect(find.text('ok'), findsOneWidget);
     expect(find.textContaining('2026-10-13'), findsNothing);
   });
 

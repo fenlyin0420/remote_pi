@@ -249,6 +249,38 @@ describe("handleModelSet", () => {
     expect(persisted).toEqual([{ provider: "anthropic", modelId: "claude-opus-4-7" }]);
   });
 
+  test("notifies onModelSet with the resolved model after a successful live set", async () => {
+    const reg = fakeRegistry([sampleModel]);
+    const pi = fakePi({ setModel: async () => true });
+    const sender = makeSender();
+    const models: Array<{ provider: string; id: string; name?: string }> = [];
+    await handleModelSet(
+      pi, null, reg, sender,
+      { type: "model_set", id: "r4", provider: "anthropic", model_id: "claude-opus-4-7" },
+      undefined,
+      (model) => models.push(model),
+    );
+    // The explicit publish is what corrects the app's cached room model when
+    // the switch target equals the session's current model — the SDK's
+    // model_select event suppresses exactly that case.
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({ provider: "anthropic", id: "claude-opus-4-7" });
+  });
+
+  test("does NOT notify onModelSet when the live set fails", async () => {
+    const reg = fakeRegistry([sampleModel]);
+    const pi = fakePi({ setModel: async () => false });
+    const sender = makeSender();
+    let modelCalls = 0;
+    await handleModelSet(
+      pi, null, reg, sender,
+      { type: "model_set", id: "r4", provider: "anthropic", model_id: "claude-opus-4-7" },
+      undefined,
+      () => { modelCalls += 1; },
+    );
+    expect(modelCalls).toBe(0);
+  });
+
   test("does NOT persist when the live set fails (no auth)", async () => {
     const reg = fakeRegistry([sampleModel]);
     const pi = fakePi({ setModel: async () => false });

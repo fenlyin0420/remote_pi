@@ -900,6 +900,28 @@ class ConnectionManager extends Service {
     return false;
   }
 
+  /// App-side correction for the connected room's cached model.
+  ///
+  /// The relay only re-announces a room when its FIRST conn registers,
+  /// so a room whose last `room_meta` frame was missed (app offline, or a
+  /// daemon restart whose hello never reached the relay's cache) keeps a
+  /// STALE model cached — the top bar and the live-message captions then
+  /// show the wrong model for the rest of the connection while the
+  /// per-row history captions (read from the session file) are correct.
+  /// A history replay proves what model actually generated the reply,
+  /// so adopt it for the room. No-op when the value is unchanged.
+  void updateRoomModel(String epk, String roomId, String model) {
+    final key = toStandardB64(epk);
+    final list = _roomsByPeer[key];
+    if (list == null) return;
+    final idx = list.indexWhere((r) => r.roomId == roomId);
+    if (idx < 0 || list[idx].model == model) return;
+    list[idx] = list[idx].copyWith(model: model);
+    _scheduleRoomsEmit();
+    // ignore: unawaited_futures
+    _persistRoomsForPeer(key);
+  }
+
   /// App-side correction for the connected room's working flag.
   ///
   /// The relay remains the source for non-active rooms, but the active channel

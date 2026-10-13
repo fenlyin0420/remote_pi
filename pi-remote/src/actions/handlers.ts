@@ -283,6 +283,7 @@ export async function handleModelSet(
   sender: ActionReplySender,
   msg: ModelSetMsg,
   onPersist?: (provider: string, modelId: string) => void,
+  onModelSet?: (model: { provider: string; id: string; name?: string }) => void,
 ): Promise<void> {
   await runAsync(sender, msg, "model_set", async () => {
     // Prefer Pi's LIVE session registry when available so the app sees models
@@ -297,6 +298,14 @@ export async function handleModelSet(
     }
     const success = await pi.setModel(model);
     if (!success) throw new Error("no auth configured for this model");
+    // Publish the switch EXPLICITLY. The SDK's `model_select` event — the
+    // only thing the extension's room_meta fan-out has listened to — is
+    // suppressed by `modelsAreEqual(previousModel, nextModel)`, so switching
+    // to the model the session already runs emits nothing and the app's
+    // cached room model (stale after a restart or a terminal switch) is
+    // never corrected, no matter how often the user re-picks the same
+    // model. `onModelSet` re-publishes the room_meta model unconditionally.
+    onModelSet?.(model);
     // `pi.setModel` only sets the LIVE model — it does NOT persist. Without
     // this, a model picked from the app reverts to the saved default on the
     // next Pi/daemon restart (the TUI persists because AgentSession.setModel

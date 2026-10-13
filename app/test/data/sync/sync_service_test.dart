@@ -824,6 +824,42 @@ void main() {
     s.sync.dispose();
   });
 
+  // LOCAL (fenlyin): a room whose cached model went stale (the relay only
+  // re-announces a room when its FIRST conn registers) is corrected from
+  // the last assistant row of the history the Pi just replayed.
+  test('session_history self-heals the active room\'s stale cached model', () async {
+    final s = await setup();
+    s.ch.pushControl(
+      RoomAnnounced(
+        peer: s.epk,
+        roomId: 'main',
+        startedAt: 0,
+        model: 'Claude Opus 4.7', // the stale cached value
+      ),
+    );
+    await _settle();
+    s.ch.push(
+      SessionHistory(
+        inReplyTo: 'u1',
+        sessionStartedAt: 0,
+        events: const [
+          UserInputEvt(ts: 10, id: 'u1', text: 'why'),
+          AgentMessageEvt(
+            ts: 11,
+            inReplyTo: 'u1',
+            text: 'the answer',
+            model: 'Qwen3.8-27B',
+          ),
+        ],
+        eos: true,
+      ),
+    );
+    await _settle();
+    expect(s.conn.roomsFor(s.epk).single.model, 'Qwen3.8-27B');
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   // LOCAL (fenlyin): `ts` 0 is the mapper's "unknown timestamp" sentinel —
   // the row must not render a "1970-01-01" caption.
   test('history events with ts 0 get no timestamp on the row', () async {

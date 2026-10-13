@@ -390,7 +390,6 @@ class SyncService extends Service {
           ts: now,
           pending: true,
           steering: isSteer,
-          model: _activeRoomModel,
         ),
       );
       if (!isSteer) {
@@ -819,7 +818,6 @@ class SyncService extends Service {
                   image: _messageImage(image),
                   file: _messageFile(file),
                   ts: DateTime.now(),
-                  model: _activeRoomModel,
                 ),
         );
         if (t == null) return;
@@ -1107,6 +1105,23 @@ class SyncService extends Service {
     if (epk == null) return;
     final room = _activeRoomId;
     final rows = _convertHistory(h.events);
+    // LOCAL (fenlyin): self-heal the room's cached model from the history
+    // itself. The relay caches each room's meta in memory and re-announces
+    // it only when the room's FIRST conn registers, so a daemon that
+    // restarts (or a missed frame) can leave the app's cached model stale
+    // for the whole connection while the per-row captions are correct.
+    // The last assistant row carries the model that actually generated the
+    // reply; adopt it for the room (no-op when unchanged).
+    String? lastAssistantModel;
+    for (final r in rows.reversed) {
+      if (r.role == MsgRole.assistant) {
+        lastAssistantModel = r.model;
+        break;
+      }
+    }
+    if (lastAssistantModel != null && lastAssistantModel.isNotEmpty) {
+      _conn.updateRoomModel(epk, room, lastAssistantModel);
+    }
     final historyIds = {for (final r in rows) _key(r.role, r.id)};
     await _enqueue(() async {
       final box = await _boxes.msgsBox(epk, room);

@@ -4030,23 +4030,25 @@ describe("session sync", () => {
       { role: "user", content: "go", timestamp: 1, model: "Qwen.gguf", provider: "llama-cpp" },
       { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2, model: "Qwen.gguf", provider: "llama-cpp" },
     ], (p, m) => `${p}/${m}`);
-    expect(events[0]).toMatchObject({ type: "user_input", model: "llama-cpp/Qwen.gguf" });
+    // User rows never carry a model — the caption identifies the model that
+    // generated the reply.
+    expect(events[0]).toMatchObject({ type: "user_input" });
+    expect(events[0]).not.toHaveProperty("model");
     expect(events[1]).toMatchObject({ type: "agent_message", model: "llama-cpp/Qwen.gguf" });
   });
 
-  test("mapping: user message uses its own model; a model-less user row inherits the previous turn's model", () => {
+  test("mapping: user rows never carry a model (the caption is the assistant's)", () => {
     const events = _mapAgentMessagesToEvents([
       { role: "user", content: "first", timestamp: 1 },
       { role: "assistant", content: [{ type: "text", text: "a1" }], timestamp: 2, model: "Qwen.gguf", provider: "llama-cpp" },
-      // No model of its own (no model_change entry before it) → previous turn's model.
-      { role: "user", content: "second", timestamp: 3 },
-      // Live-style user row: already a display name, no provider → used as-is.
-      { role: "user", content: "third", timestamp: 4, model: "Qwen3.8-27B" },
+      // A user row tagged with a model (older Pi builds) still maps to a
+      // model-less event — the caption is assistant-only.
+      { role: "user", content: "second", timestamp: 3, model: "Qwen3.8-27B" },
     ], fakeResolver);
     const users = events.filter((e) => e.type === "user_input") as Array<{ model?: string }>;
-    expect(users[0]).not.toHaveProperty("model");
-    expect(users[1]).toMatchObject({ model: "Qwen3.8-27B" });
-    expect(users[2]).toMatchObject({ model: "Qwen3.8-27B" });
+    for (const u of users) expect(u).not.toHaveProperty("model");
+    const assistant = events.find((e) => e.type === "agent_message");
+    expect(assistant).toMatchObject({ model: "Qwen3.8-27B" });
   });
 
   test("mapping: no model info anywhere → no `model` key (wire stays byte-identical)", () => {
@@ -4088,7 +4090,7 @@ describe("session sync", () => {
     expect(att).toMatchObject({ model: "Qwen3.8-27B" });
   });
 
-  test("seed: user messages get the model_change active at their point in the file", () => {
+  test("seed: user messages carry no model; assistant rows keep the file's model", () => {
     _resetHistorySeedForTest();
     _seedMessageBufferFromSession({
       sessionManager: {
@@ -4102,8 +4104,9 @@ describe("session sync", () => {
     });
     const buf = _getMessageBufferForTest() as Array<Record<string, unknown>>;
     expect(buf).toHaveLength(3);
+    // User rows are never tagged — the model caption is assistant-only.
     expect(buf[0].model).toBeUndefined();
-    expect(buf[1]).toMatchObject({ model: "Qwen.gguf", provider: "llama-cpp" });
+    expect(buf[1].model).toBeUndefined();
     // Assistant messages keep the model the session file recorded for them.
     expect(buf[2]).toMatchObject({ model: "Other.gguf", provider: "other" });
     _resetHistorySeedForTest();
@@ -6666,6 +6669,97 @@ describe("model meta", () => {
     expect(updates).toHaveLength(1);
     expect(updates[0]!.meta?.model).toBe("gpt-4o");
     expect(updates[0]!.room_id).toMatch(/^[A-Za-z0-9_-]{12}$/);
+  });
+
+  test("1.5.30: turn_start resolves the model from the session file when getModel() is empty", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-turn-start-file"));
+
+    _setThrowawayRegistryFactoryForTest(() => ({
+      find: (p: string, m: string) =>
+        p === "test-provider" && m === "test-model.gguf"
+          ? { name: "TestModel" }
+          : undefined,
+      refresh: () => undefined,
+    }));
+    try {
+      const onTurnStart = captureEventHandler("turn_start");
+      onTurnStart(
+        { type: "turn_start", turnIndex: 0, timestamp: 0 },
+        {
+          sessionManager: {
+            getBranch: () => [
+              { type: "model_change", provider: "test-provider", modelId: "test-model.gguf" },
+            ],
+          },
+        } as never,
+      );
+
+      // The headless-daemon case: no live getModel(), the session file's
+      // last model_change is the ground truth and gets published.
+      const updates = relayRef.current!.sendControl.mock.calls
+        .map((c) => c[0] as { type: string; meta?: { model?: string } })
+        .filter((f) => f.type === "room_meta_update" && f.meta?.model !== undefined);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]!.meta?.model).toBe("TestModel");
+    } finally {
+      _setThrowawayRegistryFactoryForTest(null);
+    }
+  });
+
+  test("1.5.30: turn_start live getModel() wins over the session-file walk", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-turn-start-live"));
+
+    const onTurnStart = captureEventHandler("turn_start");
+    onTurnStart(
+      { type: "turn_start", turnIndex: 0, timestamp: 0 },
+      {
+        getModel: () => ({ name: "LiveModel", id: "live-id" }),
+        sessionManager: {
+          getBranch: () => [
+            { type: "model_change", provider: "test-provider", modelId: "test-model.gguf" },
+          ],
+        },
+      } as never,
+    );
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { model?: string } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.model !== undefined);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.meta?.model).toBe("LiveModel");
+  });
+
+  test("1.5.30: pair re-publishes the room model to the pairing app", async () => {
+    _tokenStatus = "ok";
+    const APP_PEER_ID = "pair-model-republish-peer";
+
+    captureHandler("remote-pi");
+    await _connectForTest({
+      ...makeMockCtx("/tmp/remote-pi-pair-model"),
+      getModel: () => ({ name: "TestModel", id: "test-model.gguf" }),
+    });
+
+    relayRef.current!.emit("message", makeInnerLine(APP_PEER_ID, {
+      type: "pair_request",
+      id: "req-model",
+      token: "test-token",
+      device_name: "iPhone test",
+    }));
+
+    // The relay never re-announces an already-live room, so an app that
+    // re-pairs after missing the announce keeps a stale cached model — the
+    // pair must push the current model to correct it.
+    await vi.waitFor(
+      () => {
+        const sent = relayRef.current!.sendControl.mock.calls
+          .map((c) => c[0] as { type: string; meta?: { model?: string } })
+          .filter((f) => f.type === "room_meta_update" && f.meta?.model !== undefined);
+        expect(sent.some((f) => f.meta?.model === "TestModel")).toBe(true);
+      },
+      { timeout: 2000 },
+    );
   });
 
   test("plan/32: pi.on('turn_start') publishes working=true via room_meta_update", async () => {
