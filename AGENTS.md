@@ -92,6 +92,24 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.30-beta.1 is on the beta channel** (2026-10-13, code +84, awaiting user
+  test): root cause of the room model display freezing on a stale value (e.g.
+  "Claude Opus 4.7" while the session runs Qwen) — the only update path was the
+  SDK's `model_select` event, which is **suppressed for an equal-value switch**
+  (re-picking the model the session already runs publishes nothing), plus a
+  headless daemon's `getModel()` staying empty and the relay re-announcing a
+  room only on its FIRST conn; fix: Pi publishes unconditionally on
+  `model_set`/`/model` + re-publishes the model on **every `turn_start`**
+  (live `getModel()` wins; only an empty live state falls back to the session
+  file's last `model_change`) + re-publishes on pair; user messages carry no
+  model on any path (the per-row model caption identifies the model that
+  GENERATED the reply); App live user rows are stamped time-only, a history
+  replay self-heals the active room's cached model, and user-row captions show
+  the time only, right-aligned under the bubble. Betas tested by the user
+  first; prod awaits confirmation (code ≥ 85). Pi 968 pass/3 skip, app 905
+  pass (`--concurrency=1`), analyze clean, two reviewers approve (no BLOCK).
+  **Supervisor restart required for the Pi side.** See
+  `.agents/memory/remote-pi-model-display-stale.md`.
 - **1.5.29 is released** (2026-10-13, on `dev`, prod `1.5.29` +83, Release
   `v1.5.29-message-meta-arm64`): every message row shows its timestamp +
   model under the bubble (`yyyy-MM-dd HH:mm:ss · model`, per message from
