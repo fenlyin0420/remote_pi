@@ -92,6 +92,26 @@ for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
 
 ## Current state
 
+- **1.5.29 is released** (2026-10-13, on `dev`, prod `1.5.29` +83, Release
+  `v1.5.29-message-meta-arm64`): every message row shows its timestamp +
+  model under the bubble (`yyyy-MM-dd HH:mm:ss · model`, per message from
+  the Pi session file — no Pi source change), toggleable per room via the
+  quick-actions **Message info** switch (default ON); new per-room
+  **Hide thinking** switch (default OFF) filters stored reasoning rows and
+  swaps the live streaming reasoning block for a bare hint; the
+  Context-compacted block is collapsible (default collapsed, like the
+  thinking block). pi-remote **0.15.2** (`remote-pi-0.15.2.tgz` in the
+  Release): history events + live messages carry `model` — assistant from
+  the session file (resolved to the friendly registry name via a
+  memoized lookup — reviewer BLOCK fixed: uncached, every app open would
+  have rebuilt the 35-provider catalog per message and frozen the
+  supervisor), user derived from `model_change` / current model, others
+  from the last assistant; `ts` 0 renders as no caption, never 1970.
+  Betas `1.5.29-beta.1`(+82) tested by the user first; beta channel keeps
+  `beta.1`. **Supervisor restart required for 0.15.2 to take effect**
+  (the 0.15.2 build was already in place). App 903 pass, pi 963 pass
+  (3 skipped), analyze clean. Next prod code ≥ 84. See
+  `.agents/memory/remote-pi-message-meta.md`.
 - **1.5.28 is released** (2026-10-13, on `dev`, prod `1.5.28` +81, Release
   `v1.5.28-session-titles-arm64`): Sessions-picker rows are titled by the session's
   own content — the first user message ALWAYS wins (`sessionTitle()` in
