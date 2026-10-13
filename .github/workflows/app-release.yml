@@ -314,7 +314,7 @@ jobs:
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG"
           URL="$URL/$APK_NAME"
           gh release view "$TAG" --json name,isPrerelease --jq \
-            ".name + \" prerelease=\" + .isPrerelease"
+            ".name + \" prerelease=\" + (.isPrerelease | tostring)"
           gh release view "$TAG" --json assets --jq ".assets[].name"
           EXPECTED="$(sha256sum "out/$APK_NAME" | cut -d' ' -f1)"
           curl -fsSL "$URL" -o /tmp/verify.apk
