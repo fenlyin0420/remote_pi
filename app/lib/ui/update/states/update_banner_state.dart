@@ -57,9 +57,6 @@ enum UpdateCheckStatus {
   /// (portal cativo injetando HTML, release publicada errada, schema mudado).
   unreadable,
 
-  /// Este build não tem canal de atualização: a URL do manifest é um define de
-  /// build e este APK saiu sem ele.
-  unconfigured,
 }
 
 /// Fase do trabalho mostrado em [UpdateBannerWorking].

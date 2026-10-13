@@ -124,17 +124,21 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
   /// app que fica aberto por dias nunca saberia que há versão nova — por isso
   /// a Home re-consulta quando o app volta ao primeiro plano.
   ///
+  /// [refresh] (usado pelo botão "Check for updates" nas configurações) ignora
+  /// a cache de 5 minutos do checker: o usuário pediu uma resposta fresca, então
+  /// a consulta vai até o feed, não para a memória.
+  ///
   /// Num re-check, uma falha de rede **não** derruba um card que já está na
   /// tela: ficar sem manifest é motivo para manter o que o usuário já viu, não
   /// para tirar a oferta dele.
-  Future<void> check({bool force = false}) async {
+  Future<void> check({bool force = false, bool refresh = false}) async {
     if (!enabled) return; // iOS / não-Android → nunca mostra.
     if (_checked && !force) return;
     _checked = true;
 
     _report(UpdateCheckStatus.checking);
 
-    final query = await _checker.fetchLatest();
+    final query = await _checker.fetchLatest(force: refresh);
     if (_disposed) return;
 
     // Each outcome says which one it is: "no update" is now only ever said by a
@@ -146,9 +150,6 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
       case UpdateQueryUnreadable(:final detail):
         _report(UpdateCheckStatus.unreadable, detail: detail);
         return; // resposta ilegível → nada.
-      case UpdateQueryUnconfigured():
-        _report(UpdateCheckStatus.unconfigured);
-        return; // build sem canal de atualização → nada.
       case UpdateQueryOk(:final info):
         if (!isNewerVersion(info.version, currentVersion)) {
           _report(UpdateCheckStatus.upToDate);
@@ -197,7 +198,7 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
       // outra vez e a UI mantém o botão — nada pior que o estado atual.
     }
     if (_disposed) return;
-    await check(force: true);
+    await check(force: true, refresh: true);
   }
 
   /// Baixa o APK e abre o instalador do sistema.

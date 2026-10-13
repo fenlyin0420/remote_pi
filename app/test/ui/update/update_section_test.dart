@@ -22,7 +22,7 @@ class _Checker implements UpdateChecker {
   int calls = 0;
 
   @override
-  Future<UpdateQuery> fetchLatest() async {
+  Future<UpdateQuery> fetchLatest({bool force = false}) async {
     calls++;
     final q = query;
     if (q != null) return q;

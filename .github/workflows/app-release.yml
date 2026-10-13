@@ -1,62 +1,161 @@
-# Release Android do app Remote Pi (app/).
+# Release do app Remote Pi (app/) + extensao pi-remote (pi-remote/).
 #
-# Trigger: tag `app-v<versão>` (a versão DEVE bater com app/pubspec.yaml).
-# Produz: GitHub Release com `RemotePi.apk` assinado (keystore release) +
-# SHA256SUMS. Sem lojas — distribuição direta do APK.
+# Trigger: tag `v<versao>` — a tag E a versão (machine-parseable):
+#   v1.5.31          -> flavor prod,  release normal
+#   v1.5.31-beta.1   -> flavor beta,  release PRE-RELEASE
+# A versão DEVE bater com app/pubspec.yaml (base) — o job valida e falha
+# se divergir. O versionCode vem do `+N` do pubspec (bumpar e commitar
+# antes de taggear).
 #
-# Guarda anti-debug: o Gradle do app cai silenciosamente pras debug keys se o
-# key.properties faltar, então o job compara o fingerprint do certificado do
+# Produz um GitHub Release com:
+#   remote-pi-<versão>-arm64-signed.apk (assinado, arm64)
+#   remote-pi-<versão>.tgz               (extensão Pi do commit taggeado)
+#   SHA256SUMS                           (checksums dos assets)
+#   latest.json                          (manifest de auto-atualização)
+# O app lê releases.atom (endpoint web, sem rate limit de API) e baixa
+# os assets do CDN do GitHub.
+#
+# Guarda anti-debug: o Gradle cai silenciosamente pras debug keys se o
+# key.properties faltar; o job compara o fingerprint do certificado do
 # APK com o do keystore e FALHA se divergirem.
+#
+# ARQUIVO DO FORK: substitui o app-release.yml do autor original (o do
+# upstream aponta pro site rp-s3 dele; aqui a entrega E o GitHub Release
+# em si).
 
 name: app-release
 
 on:
   push:
-    tags: ["app-v*"]
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag da release (ex: app-v1.1.0); precisa existir"
+        description: "Tag da release (ex: v1.5.31-beta.1); precisa existir"
         required: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: app-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: app-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-  FLUTTER_VERSION: "3.44.4"
+  FLUTTER_VERSION: "3.47.5"
 
 jobs:
-  android:
-    name: APK assinado
+  tests:
+    name: Testes (gate)
     runs-on: ubuntu-24.04
-    defaults: { run: { working-directory: app } }
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Resolve release ref
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - name: Valida tag ↔ pubspec
-        id: v
-        run: |
-          VERSION="${RELEASE_TAG#app-v}"
-          PUBSPEC=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)
-          if [ "$VERSION" != "$PUBSPEC" ]; then
-            echo "::error::tag $RELEASE_TAG pede $VERSION mas o pubspec do app está em $PUBSPEC"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          ref: ${{ steps.ref.outputs.ref }}
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: App (flutter test + analyze)
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter test --concurrency=1
+          flutter analyze
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: pi-remote (vitest + typecheck)
+        working-directory: pi-remote
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run typecheck
+
+  release:
+    name: APK assinado + GitHub Release
+    needs: tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: app
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # O relay self-hosted é HTTP claro num IP nu; o APK precisa da
+      # exceção de cleartext pra ele (github.com é TLS e não precisa).
+      # Sem esta variável o app não alcança o relay self-hosted.
+      REMOTE_PI_HOSTS: "1.15.13.177"
+    steps:
+      - name: Resolve release ref
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Valida tag <-> pubspec
+        id: v
+        run: |
+          TAG_RAW="${{ steps.ref.outputs.ref }}"
+          TAG="${TAG_RAW#v}"
+          PUBSPEC="$(grep '^version:' pubspec.yaml | head -1 \
+            | awk '{print $2}')"
+          PUBSPEC_BASE="${PUBSPEC%%+*}"
+          case "$TAG" in
+            *-beta.*)
+              BASE="${TAG%-beta.*}"
+              FLAVOR="beta"
+              PRERELEASE="true"
+              ;;
+            *)
+              BASE="$TAG"
+              FLAVOR="prod"
+              PRERELEASE="false"
+              ;;
+          esac
+          if ! echo "$BASE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag $TAG sem forma de versão semver"
+            exit 1
+          fi
+          if [ "$BASE" != "$PUBSPEC_BASE" ]; then
+            echo "::error::tag $TAG ($BASE) != pubspec ($PUBSPEC_BASE)"
+            exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "flavor=$FLAVOR" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -71,7 +170,8 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           mkdir -p android/signing
-          echo "$ANDROID_KEYSTORE" | base64 -d > android/signing/remotepi-release.jks
+          JKS=android/signing/remotepi-release.jks
+          echo "$ANDROID_KEYSTORE" | base64 -d > "$JKS"
           cat > android/key.properties <<EOF
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyPassword=$ANDROID_KEY_PASSWORD
@@ -79,42 +179,76 @@ jobs:
           storeFile=signing/remotepi-release.jks
           EOF
 
-      - name: Build APK release
+      - name: Build APK release (arm64)
         run: |
+          FLAVOR="${{ steps.v.outputs.flavor }}"
           flutter pub get
-          flutter build apk --release
+          if [ "$FLAVOR" = "beta" ]; then
+            flutter build apk --release --flavor beta \
+              --target-platform android-arm64 \
+              --build-name=${{ steps.v.outputs.version }}
+          else
+            flutter build apk --release --flavor prod \
+              --target-platform android-arm64
+          fi
 
       - name: Verifica assinatura (anti-fallback de debug)
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          APK=build/app/outputs/flutter-apk/app-release.apk
+          APK="build/app/outputs/flutter-apk/app-${{ steps.v.outputs.flavor }}"
+          APK="$APK-release.apk"
           BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
-          APK_CERT=$("$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs "$APK" \
-            | grep -m1 "SHA-256 digest" | awk '{print $NF}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
-          KS_CERT=$(keytool -list -v -keystore android/signing/remotepi-release.jks \
-            -alias "$ANDROID_KEY_ALIAS" -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            | grep -m1 "SHA256:" | awk '{print $NF}' | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          APK_CERT=$("$ANDROID_HOME/build-tools/$BT/apksigner" \
+            verify --print-certs "$APK" \
+            | grep -m1 "SHA-256 digest" | awk '{print $NF}' \
+            | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          KS_CERT=$(keytool -list -v \
+            -keystore android/signing/remotepi-release.jks \
+            -alias "$ANDROID_KEY_ALIAS" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            | grep -m1 "SHA256:" | awk '{print $NF}' \
+            | tr -d ':' | tr '[:upper:]' '[:lower:]')
           echo "apk:      $APK_CERT"
           echo "keystore: $KS_CERT"
           if [ -z "$APK_CERT" ] || [ "$APK_CERT" != "$KS_CERT" ]; then
-            echo "::error::APK não está assinado com o keystore release (fallback de debug?)"
+            echo "::error::APK sem o keystore release (debug fallback?)"
             exit 1
           fi
 
-      - name: Gera latest.json (manifest do app)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build pi-remote (tgz do commit taggeado)
+        working-directory: pi-remote
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npm pack
+
+      - name: Prepara assets + latest.json
         run: |
           VERSION="${{ steps.v.outputs.version }}"
+          FLAVOR="${{ steps.v.outputs.flavor }}"
+          TAG="${{ steps.ref.outputs.ref }}"
+          TGUI="$(cd ../pi-remote && ls remote-pi-*.tgz)"
+          APK_NAME="remote-pi-${VERSION}-arm64-signed.apk"
           mkdir -p out
-          cp build/app/outputs/flutter-apk/app-release.apk out/RemotePi.apk
-          (cd out && sha256sum RemotePi.apk > SHA256SUMS)
-          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          jq -n --arg version "$VERSION" --arg date "$(date -u +%F)" \
-            --arg notes "Remote Pi (app) ${VERSION}" \
-            --arg url "$BASE/RemotePi.apk" \
-            --arg sha256 "$(sha256sum out/RemotePi.apk | cut -d' ' -f1)" \
-            --argjson size "$(stat -c%s out/RemotePi.apk)" \
+          cp "build/app/outputs/flutter-apk/app-${FLAVOR}-release.apk" \
+            "out/$APK_NAME"
+          cp "../pi-remote/$TGUI" "out/$TGUI"
+          (cd out && sha256sum * | sort -k2 > SHA256SUMS)
+          GH_BASE="https://github.com/${GITHUB_REPOSITORY}"
+          BASE="${GH_BASE}/releases/download/$TAG"
+          SHA="$(sha256sum "out/$APK_NAME" | cut -d' ' -f1)"
+          SIZE="$(stat -c%s "out/$APK_NAME")"
+          jq -n --arg version "$VERSION" \
+            --arg date "$(date -u +%F)" \
+            --arg notes "Remote Pi (app) ${VERSION} — ${FLAVOR} channel" \
+            --arg url "$BASE/$APK_NAME" \
+            --arg sha256 "$SHA" --argjson size "$SIZE" \
             '{version:$version, date:$date, notes:$notes, artifacts:[
                {platform:"android", arch:"universal", format:"apk",
                 url:$url, sha256:$sha256, size:$size}]}' \
@@ -124,31 +258,84 @@ jobs:
       - name: Cria (ou atualiza) a GitHub Release
         run: |
           VERSION="${{ steps.v.outputs.version }}"
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" out/RemotePi.apk out/SHA256SUMS out/latest.json --clobber
+          FLAVOR="${{ steps.v.outputs.flavor }}"
+          PRERELEASE="${{ steps.v.outputs.prerelease }}"
+          TAG="${{ steps.ref.outputs.ref }}"
+          TGUI="$(cd ../pi-remote && ls remote-pi-*.tgz)"
+          if [ -f RELEASE_NOTES.md ]; then
+            NOTES_FILE=RELEASE_NOTES.md
           else
-            NOTES_FILE=$(mktemp)
+            NOTES_FILE="$(mktemp)"
             {
-              echo "APK Android assinado — instalação direta. Conferir integridade com o SHA256SUMS."
+              echo "Remote Pi **${VERSION}** (${FLAVOR} channel)."
               echo ""
-              echo "---"
-              echo "**Publicação no site (gate manual):** baixe o \`latest.json\` desta release e coloque em \`/Users/flutterando/app/data/\` no host do rp-s3 — só então o site e o aviso in-app passam a ofertar esta versão."
+              echo "**Assets**"
+              echo ""
+              echo "- \`remote-pi-${VERSION}-arm64-signed.apk\` — Android arm64"
+              echo "- \`${TGUI}\` — extensão Pi (npm; reinicie o supervisor)"
+              echo "- \`SHA256SUMS\` — checksums dos assets"
+              echo "- \`latest.json\` — manifest de auto-atualização"
             } > "$NOTES_FILE"
-            gh release create "$RELEASE_TAG" out/RemotePi.apk out/SHA256SUMS out/latest.json \
-              --title "Remote Pi (app) ${VERSION}" \
-              --notes-file "$NOTES_FILE" \
-              --latest=false
+          fi
+          TITLE="Remote Pi ${VERSION} (${FLAVOR} channel)"
+          PR_FLAG=""
+          [ "$PRERELEASE" = "true" ] && PR_FLAG="--prerelease"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/remote-pi-*.apk \
+              out/SHA256SUMS out/latest.json out/remote-pi-*.tgz --clobber
+          else
+            gh release create "$TAG" $PR_FLAG \
+              --title "$TITLE" --notes-file "$NOTES_FILE" \
+              "out/remote-pi-${VERSION}-arm64-signed.apk" \
+              out/SHA256SUMS out/latest.json "out/$TGUI"
+          fi
+
+      - name: Verifica a release (sha256 + flags)
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          FLAVOR="${{ steps.v.outputs.flavor }}"
+          PRERELEASE="${{ steps.v.outputs.prerelease }}"
+          TAG="${{ steps.ref.outputs.ref }}"
+          APK_NAME="remote-pi-${VERSION}-arm64-signed.apk"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG"
+          URL="$URL/$APK_NAME"
+          gh release view "$TAG" --json name,isPrerelease --jq \
+            ".name + \" prerelease=\" + .isPrerelease"
+          gh release view "$TAG" --json assets --jq ".assets[].name"
+          EXPECTED="$(sha256sum "out/$APK_NAME" | cut -d' ' -f1)"
+          curl -fsSL "$URL" -o /tmp/verify.apk
+          ACTUAL="$(sha256sum /tmp/verify.apk | cut -d' ' -f1)"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::sha256 do asset ($ACTUAL) != build ($EXPECTED)"
+            exit 1
+          fi
+          echo "sha256 OK: $ACTUAL"
+          PRE_ACTUAL="$(gh release view "$TAG" --json isPrerelease \
+            --jq .isPrerelease)"
+          if [ "$PRERELEASE" = "true" ] && [ "$PRE_ACTUAL" != "true" ]; then
+            echo "::error::beta publicado como release normal"
+            exit 1
+          fi
+          if [ "$PRERELEASE" = "false" ] && [ "$PRE_ACTUAL" != "false" ]; then
+            echo "::error::prod publicado como prerelease"
+            exit 1
           fi
 
       - name: Resumo
+        if: always()
         run: |
+          V="${{ steps.v.outputs.version }}"
+          F="${{ steps.v.outputs.flavor }}"
+          TAG="${{ steps.ref.outputs.ref }}"
+          REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
           {
-            echo "## Remote Pi app ${{ steps.v.outputs.version }} — APK publicado"
+            echo "## Remote Pi $V — $F channel"
             echo ""
-            echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+            echo "Release: ${REPO_URL}/releases/tag/${TAG}"
             echo ""
-            echo "Asset: \`RemotePi.apk\` (assinado com o keystore release, verificado no job)."
+            echo "APK assinado (fingerprint verificado no job), arm64,"
+            echo "+ extensão pi-remote + SHA256SUMS + latest.json."
             echo ""
-            echo "**Próximo passo (manual):** baixar o \`latest.json\` da release e"
-            echo "colocar no rp-s3 (\`/Users/flutterando/app/data/\`) pra ir ao ar no site e no aviso in-app."
+            echo "O app detecta a atualização pelo feed releases.atom"
+            echo "(endpoint web, sem rate limit de API) e baixa do CDN."
           } >> "$GITHUB_STEP_SUMMARY"

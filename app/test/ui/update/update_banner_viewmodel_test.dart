@@ -20,9 +20,13 @@ class _FakeChecker implements UpdateChecker {
   final UpdateQuery? _query;
   int calls = 0;
 
+  /// The `force` flag of every call, in order.
+  final List<bool> forces = [];
+
   @override
-  Future<UpdateQuery> fetchLatest() async {
+  Future<UpdateQuery> fetchLatest({bool force = false}) async {
     calls++;
+    forces.add(force);
     final q = _query;
     if (q != null) return q;
     final i = info;
@@ -227,6 +231,18 @@ void main() {
       await vm.check(force: true);
       expect(vm.state, isA<UpdateBannerVisible>());
     });
+
+    test('refresh reaches the checker — the settings button bypasses the cache',
+        () async {
+      final checker = _FakeChecker(null);
+      final vm = _vm(checker);
+      await vm.check(force: true, refresh: true);
+      expect(checker.forces, [true]);
+
+      // The resume check asks for the cached answer, not a fresh one.
+      await vm.check(force: true);
+      expect(checker.forces, [true, false]);
+    });
   });
 
   group('UpdateBannerViewModel.dismiss', () {
@@ -289,13 +305,6 @@ void main() {
       await vm.check();
       expect(vm.status, UpdateCheckStatus.unreachable);
       expect(vm.failureDetail, 'HTTP 404');
-    });
-
-    test('a build with no update channel says so', () async {
-      final vm = _vm(_FakeChecker(null, query: const UpdateQueryUnconfigured()));
-      await vm.check();
-      expect(vm.status, UpdateCheckStatus.unconfigured);
-      expect(vm.state, isA<UpdateBannerHidden>());
     });
 
     test('manifest that answers but cannot be read → unreadable', () async {

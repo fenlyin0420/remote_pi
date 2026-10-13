@@ -35,7 +35,7 @@ class UpdateSection extends StatelessWidget {
     final (label, action) = switch (vm.status) {
       UpdateCheckStatus.dismissed => ('Show update again', vm.clearDismissal),
       UpdateCheckStatus.checking => ('Checking…', null),
-      _ => ('Check for updates', () => vm.check(force: true)),
+      _ => ('Check for updates', () => vm.check(force: true, refresh: true)),
     };
 
     return Column(
@@ -138,9 +138,6 @@ class UpdateSection extends StatelessWidget {
         'The update server answered, but its release manifest could not be '
             'read, so there is nothing to install from it. That is a problem '
             'on the publishing side, not on this phone.',
-      UpdateCheckStatus.unconfigured =>
-        'This build has no update channel — it was compiled without one, so '
-            'updates only arrive if you install them by hand.',
     };
   }
 

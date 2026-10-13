@@ -249,7 +249,12 @@ Future<void> setupDependencies() async {
   // collaborators → addOther (lazy singleton, no dispose hook).
   final packageInfo = await PackageInfo.fromPlatform();
   final appVersion = packageInfo.version;
-  _injector.addOther<UpdateChecker>(() => UpdateCheckerImpl());
+  // The feed serves both channels from one list; the flavor tells the
+  // checker which releases count (beta → `-beta.N` tags, prod → the rest).
+  final isBeta = packageInfo.packageName.endsWith('.beta');
+  _injector.addOther<UpdateChecker>(
+    () => UpdateCheckerImpl(betaChannel: isBeta),
+  );
   _injector.addOther<DismissedUpdateStore>(() => SecureDismissedUpdateStore());
   _injector.addOther<UrlOpener>(() => const UrlLauncherOpener());
   // In-app update: downloads the APK and hands it to the system installer

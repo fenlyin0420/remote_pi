@@ -1,8 +1,8 @@
 import 'package:app/domain/entities/update_info.dart';
 
-/// Result of one query to the release manifest.
+/// Result of one query to the release feed + manifest.
 ///
-/// Four outcomes, not two. "There is no newer version" and "I could not tell"
+/// Three outcomes, not two. "There is no newer version" and "I could not tell"
 /// are different answers, and collapsing both into `null` is precisely how a
 /// query that had **never once worked** shipped through four releases without
 /// anyone — including whoever wrote it — noticing. The caller needs to be able
@@ -35,20 +35,15 @@ final class UpdateQueryUnreadable extends UpdateQuery {
   final String detail;
 }
 
-/// This build has no update channel at all — the manifest URL is a build-time
-/// define and this APK was built without it. Worth its own answer: a self-built
-/// binary is not a phone that lost its network, and saying "could not reach the
-/// server" about it sends the reader hunting for a connectivity problem.
-final class UpdateQueryUnconfigured extends UpdateQuery {
-  const UpdateQueryUnconfigured();
-}
-
-/// Fetches the release manifest (`latest.json`). Domain contract; the HTTP
-/// implementation lives in `data/update/`.
+/// Fetches the newest release of this build's channel. Domain contract;
+/// the GitHub-feed implementation lives in `data/update/`.
 ///
 /// **Best-effort: never throws.** Every failure becomes one of the failure
 /// variants carrying its reason, so a silent "no update" is only ever a real
 /// "no update".
 abstract class UpdateChecker {
-  Future<UpdateQuery> fetchLatest();
+  /// [force] bypasses the checker's feed cache: the explicit "check for
+  /// updates" action asks for a fresh answer, while the automatic re-check
+  /// (app resume) may answer from the recent one.
+  Future<UpdateQuery> fetchLatest({bool force = false});
 }
