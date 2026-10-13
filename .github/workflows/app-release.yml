@@ -102,9 +102,6 @@ jobs:
     name: APK assinado + GitHub Release
     needs: tests
     runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: app
     env:
       GH_TOKEN: ${{ github.token }}
       # O relay self-hosted é HTTP claro num IP nu; o APK precisa da
@@ -127,6 +124,7 @@ jobs:
 
       - name: Valida tag <-> pubspec
         id: v
+        working-directory: app
         run: |
           TAG_RAW="${{ steps.ref.outputs.ref }}"
           TAG="${TAG_RAW#v}"
@@ -169,6 +167,7 @@ jobs:
           cache: true
 
       - name: Restaura keystore e key.properties
+        working-directory: app
         env:
           ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -186,6 +185,7 @@ jobs:
           EOF
 
       - name: Build APK release (arm64)
+        working-directory: app
         run: |
           FLAVOR="${{ steps.v.outputs.flavor }}"
           flutter pub get
@@ -199,6 +199,7 @@ jobs:
           fi
 
       - name: Verifica assinatura (anti-fallback de debug)
+        working-directory: app
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -239,6 +240,7 @@ jobs:
           pnpm pack
 
       - name: Prepara assets + latest.json
+        working-directory: app
         run: |
           VERSION="${{ steps.v.outputs.version }}"
           FLAVOR="${{ steps.v.outputs.flavor }}"
@@ -266,6 +268,7 @@ jobs:
           cat out/latest.json
 
       - name: Cria (ou atualiza) a GitHub Release
+        working-directory: app
         run: |
           VERSION="${{ steps.v.outputs.version }}"
           FLAVOR="${{ steps.v.outputs.flavor }}"
@@ -301,6 +304,7 @@ jobs:
           fi
 
       - name: Verifica a release (sha256 + flags)
+        working-directory: app
         run: |
           VERSION="${{ steps.v.outputs.version }}"
           FLAVOR="${{ steps.v.outputs.flavor }}"
