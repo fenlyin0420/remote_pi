@@ -1,3 +1,11 @@
+> ⚠️ **本仓 2026-10-14 已归档**：`app/` 与 `pi-remote/` 已分别拆成独立仓
+> `fenlyin0420/pi-remote-app`（本机 `~/Documents/GitHub/pi-remote-app`）与
+> `fenlyin0420/pi-remote`（本机 `~/Documents/GitHub/pi-remote-plugin`），并且**不再跟随上游**。
+> 本仓只保留 tags / releases（旧 APK 的 feed）与 PR #199；**新开发请在两个新仓里做**，
+> 本文件里的 `main`=上游镜像 / `dev`=定制主线 / `pkg` 产物分支那套规则都已过时
+> （`pkg` 分支已作废，插件仓根目录就是包且 `dist/` 入库）。
+> 拆分说明见 `.agents/memory/repo-split-2026-10.md`。
+
 # Parallel workspace
 
 One of the remote channels between the phone App and Pi (tile name = this directory's
