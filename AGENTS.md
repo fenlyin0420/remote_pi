@@ -32,66 +32,71 @@ is named `upstream`, which would hit the original author's repository).
 
 ## Delivery (fixed process)
 
-> All the details and the pitfalls live in
-> `.agents/memory/remote-pi-in-app-update.md` (release steps / version numbering rules /
-> signing / ZIP and JDK pitfalls) and `remote-pi-beta-channel.md` (the two channels).
-> **Read them before releasing.**
+> Details and pitfalls: `.agents/memory/remote-pi-in-app-update.md` (the
+> GitHub-Release pipeline, versioning rules, signing) and
+> `remote-pi-beta-channel.md` (the two channels). **Read them before releasing.**
 
-**Two channels, two rhythms**: changes ship first as a **beta** (`-beta.N` version +
-`beta` flavor, installable and coexisting with the production build), pushed to the beta
-channel only. After the user has tested and confirmed it, build the **production**
-release (clean version number + `prod` flavor) and push it to the production channel +
-GitHub Release. **Do not skip the beta and go straight to production** (this was skipped
-for 1.5.11 on 2026-09-27 and the user explicitly asked for it to be corrected).
+Delivery is **GitHub-Release based** (since 1.5.31, 2026-10-13): the app detects
+updates from `releases.atom` (a web endpoint, no API rate limit) and downloads
+assets from the GitHub CDN. The cloud177 download site is **gone** (service
+stopped, dir + script removed, `rp-s3/selfhost/` deleted from the repo).
 
-1. Branch `feat/...`/`fix/...` off `dev`, get all tests + analyze/typecheck green, then
-   merge back into `dev`.
-2. Build the APK. Environment:
-   `export PATH=$HOME/flutter/flutter/bin:$HOME/apps/jdk/21.0.12.1/bin:$PATH`,
-   `JAVA_HOME=$HOME/apps/jdk/21.0.12.1`, `ANDROID_HOME=$HOME/Android/Sdk`
-   (the ones under the system `/usr/lib/jvm` are JREs — no `javac`). Run it under
-   `app/` (**`--flavor` is mandatory**; without it both flavors get built and the beta
-   build picks up the version from pubspec):
-   ```bash
-   # Beta (push to the beta channel only, no GitHub release)
-   REMOTE_PI_HOSTS=1.15.13.177 flutter build apk --release --flavor beta \
-     --target-platform android-arm64 --build-name=1.5.12-beta.1 --build-number=32 \
-     --dart-define=UPDATE_MANIFEST_URL=http://1.15.13.177:3210/downloads/app-beta/latest.json
-   # Production
-   REMOTE_PI_HOSTS=1.15.13.177 flutter build apk --release --flavor prod \
-     --target-platform android-arm64 \
-     --dart-define=UPDATE_MANIFEST_URL=http://1.15.13.177:3210/downloads/app/latest.json
-   ```
-   Artifacts: `build/app/outputs/flutter-apk/app-{beta,prod}-release.apk`.
-   If either input is missing, the App installed on the phone has **no update channel**
-   (the card always says "up to date") and no plaintext exception.
-3. **Push to the download site** (this is the only thing the phone's update prompt looks
-   at; for each channel the `version` in its `latest.json` must equal that APK's
-   versionName and be greater than the installed version): scp the APK + manifest to
-   cloud177, then `sudo install` into
-   `/var/lib/remote-pi-downloads/{app,app-beta}/{RemotePi.apk,RemotePiBeta.apk,latest.json}`.
-4. **All three checks are mandatory**: ①`strings lib/arm64-v8a/libapp.so` on the APK
-   finds that channel's manifest URL; ②`aapt dump badging` shows the right
-   versionName/applicationId (beta = `…remotepi.beta`); ③`curl -o /tmp/s.apk
-   .../<channel>/<apk>` downloads with a sha256 matching the local file.
-5. Once testing confirms it, cut the production release: push to `origin` (your own
-   fork), create the Release (`--target <branch>`), write the title/body in English,
-   name the APK `remote-pi-<version>-arm64-signed.apk`; afterwards self-check with
-   `gh release view --json` + re-download and compare sha256. **Never push to
-   `upstream` (the original author), never open a PR.**
-6. Pi-side (pi-remote) changes: the local Pi loads the repo path package
-   (`~/.pi/agent/settings.json` packages → `/home/fenlyin/Documents/GitHub/pi-remote/pi-remote`),
-   so the user side is just `cd pi-remote && npm run build` (keeps the local patches in
-   source) + restarting the supervisor. For other users: `npm pack` and attach
-   `remote-pi-<version>.tgz` to the same Release.
-   **Restarting supervisor kills every turn currently running in every room (including
-   this session) — only remind the user to do it themselves; locally it is a system
-   unit and sudo needs a password, so you can use `kill -TERM <supervisord pid>` and let
-   systemd (`Restart=always`) bring it back up, but always send your reply first. See
-   `remote-pi-remote-load-path`.**
+**Two channels, two rhythms**: changes ship first as a **beta** (tag
+`v<X.Y.Z>-beta.N` → `beta` flavor, GitHub **prerelease**, coexists with the
+production app). After the user tests and confirms, cut the **production**
+release (tag `v<X.Y.Z>` → `prod` flavor, normal release). **Do not skip the
+beta** (1.5.11, 2026-09-27 — the user asked for it to be corrected).
+
+1. Branch `feat/...`/`fix/...` off `dev`, all tests + analyze/typecheck green,
+   squash-merge back into `dev`.
+2. **The tag IS the version.** Bump `app/pubspec.yaml` to `<X.Y.Z>+<N>` on
+   `dev` and commit (N = versionCode, one monotonic chain shared by beta and
+   prod — take the previous max + 1). Then `git tag v<X.Y.Z>[-beta.N]`
+   (**machine-parseable, no descriptive suffix**) and
+   `git push origin dev <tag>`. CI validates tag ↔ pubspec base and fails on
+   mismatch.
+3. **CI does the release** (`.github/workflows/app-release.yml`): the gate job
+   (flutter test `--concurrency=1` + analyze; pi-remote vitest/typecheck via
+   pnpm 10) then the release job: restores the keystore from repo secrets,
+   builds the signed arm64 APK for the right flavor, checks the APK
+   certificate fingerprint against the keystore (anti debug-fallback), packs
+   pi-remote, publishes the Release (prerelease for beta) with
+   `remote-pi-<version>-arm64-signed.apk` + `remote-pi-<ext>.tgz` +
+   `SHA256SUMS` + `latest.json`, and self-verifies (re-download + sha256 +
+   prerelease flag).
+4. **Verify the Release**: `gh release view <tag> --json isPrerelease,assets`
+   + re-download the APK and compare sha256 against the release's
+   `SHA256SUMS`. Re-releasing after a CI fix: `git tag -f <tag> <new-commit>
+   && git push -f origin <tag> && git push origin dev` (CI then re-uploads with
+   `--clobber`; Flutter builds are not bit-reproducible, so the sha may differ).
+5. Pi-side changes ship as the **tgz of the tagged commit**; the user installs
+   it and **restarts the supervisor** (remind them — it kills running turns
+   in every room, including this session; you may `kill -TERM <supervisord pid>`
+   locally and let systemd bring it back, but send your reply first — see
+   `.agents/memory/remote-pi-extension-load-path.md`).
+   `REMOTE_PI_HOSTS=1.15.13.177` stays in the workflow: the self-hosted relay
+   is cleartext HTTP and the app needs its cleartext exception (unrelated to
+   the removed download site).
+
+The fork's `app-release.yml` **overrides the upstream same-named file**
+(upstream's targets the author's rp-s3 site) — fork-ledger item; expect a
+conflict on the next upstream sync. **Never push to `upstream` (the original
+author), never open a PR.**
 
 ## Current state
 
+- **1.5.31 is released + delivery migrated to GitHub Releases** (2026-10-13,
+  on `dev`): the in-app update channel is now **GitHub-Release based** — the
+  app detects updates from `releases.atom` and downloads from the GitHub CDN;
+  delivery is the `app-release` CI (tag `v<version>[-beta.N]` → signed arm64
+  build + GitHub Release + self-verify). The cloud177 download site is
+  **torn down** (service stopped, `/var/lib/remote-pi-downloads` + the script
+  removed, `rp-s3/selfhost/` git-rm'd). 1.5.31 (prod `+87`, Release `v1.5.31`)
+  and `1.5.31-beta.1` (`+86`, prerelease) were the transition dual-publish
+  (GitHub + site); **`1.5.32-beta.1` (`+88`) is the first pure-GitHub beta —
+  user-confirmed working on the phone** (feed detection + CDN download proven
+  end to end). Next package is versionCode `+89`. See
+  `.agents/memory/remote-pi-in-app-update.md`.
 - **1.5.30 is released** (2026-10-13, on `dev`, prod `1.5.30` +85, Release
   `v1.5.30-model-display-arm64`): root cause of the room model display
   freezing on a stale value (e.g. "Claude Opus 4.7" while the session runs
