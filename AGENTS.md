@@ -15,7 +15,7 @@ specific to this workspace.
 
 | remote | repository | permission |
 |---|---|---|
-| `origin` | `fenlyin0420/remote_pi` (your own fork) | **the only push target** (`remote.pushDefault=origin` is set, so even a bare `git push` only lands here) |
+| `origin` | `fenlyin0420/pi-remote` (your own fork) | **the only push target** (`remote.pushDefault=origin` is set, so even a bare `git push` only lands here) |
 | `upstream` | `jacobaraujo7/remote_pi` (original author) | read-only: **never push, never open a PR** |
 
 | branch | purpose |

@@ -1,6 +1,6 @@
 # 任务 spec：后台常驻连接 + 消息通知（像 QQ/微信那样）
 
-仓库：`fenlyin0420/remote_pi`（fork）。基线分支 `feat/room-management`（含房间管理与 App 内更新），
+仓库：`fenlyin0420/pi-remote`（fork）。基线分支 `feat/room-management`（含房间管理与 App 内更新），
 新分支 **`feat/background-connection`**（已 push 到 fork）。**不改 relay / pi-remote 协议**，纯 app 侧。
 
 > **状态：已实现，1.4.0+11 已构建（签名与 1.3.x 一致），616 个测试 + analyze 全绿。**

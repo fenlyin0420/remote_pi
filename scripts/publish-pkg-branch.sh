@@ -12,7 +12,7 @@
 #   scripts/publish-pkg-branch.sh --dry-run    # 只打印将推送的内容
 #
 # 分支与远端可用 PKG_BRANCH / PKG_REMOTE 覆盖。pi 侧对应源：
-#   git:github.com/fenlyin0420/remote_pi@pkg
+#   git:github.com/fenlyin0420/pi-remote@pkg
 #
 # 产物必须是构建后的 dist（不能只放 src）：src/bin/supervisord.ts 与
 # src/daemon/install.ts 都从自身模块位置上溯找 dist/bin/supervisord.js 与

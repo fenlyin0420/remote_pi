@@ -48,7 +48,7 @@ class UpdateCheckerImpl implements UpdateChecker {
   /// The release feed of this repository. It is the app's update channel, so
   /// it is a constant of the build, not a build-time define.
   static const String defaultReleaseFeedUrl =
-      'https://github.com/fenlyin0420/remote_pi/releases.atom';
+      'https://github.com/fenlyin0420/pi-remote/releases.atom';
 
   static Dio _defaultDio(Duration timeout) => Dio(BaseOptions(
         connectTimeout: timeout,

@@ -1,6 +1,6 @@
 # 任务 spec：房间管理（新建/删除 room）+ 工具调用开关按 room 隔离 + 打包 APK 发 Release
 
-仓库：`jacobaraujo7/remote_pi` 的 fork（`fenlyin0420/remote_pi`）。
+仓库：`jacobaraujo7/remote_pi` 的 fork（`fenlyin0420/pi-remote`）。
 git remote：`origin` = 自己的 fork（唯一 push 目标）；`upstream` = 原作者仓库（只读，**不要 push、不要发 PR**）。
 分支：`main` = 上游纯镜像（不写定制代码），`dev` = 定制主线。
 

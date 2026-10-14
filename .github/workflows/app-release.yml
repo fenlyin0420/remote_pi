@@ -240,7 +240,7 @@ jobs:
           pnpm pack
 
       # A branch `pkg` e uma arvore de artefato (raiz = raiz do pacote), para
-      # `pi install git:github.com/fenlyin0420/remote_pi@pkg`: o git source do Pi
+      # `pi install git:github.com/fenlyin0420/pi-remote@pkg`: o git source do Pi
       # nao aceita subdiretorio e nao roda build. Sem ancestro comum com dev/main.
       - name: Publica a branch pkg (artefato do commit taggeado)
         run: scripts/publish-pkg-branch.sh --no-build
