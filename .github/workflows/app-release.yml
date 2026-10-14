@@ -107,7 +107,7 @@ jobs:
       # O relay self-hosted é HTTP claro num IP nu; o APK precisa da
       # exceção de cleartext pra ele (github.com é TLS e não precisa).
       # Sem esta variável o app não alcança o relay self-hosted.
-      REMOTE_PI_HOSTS: "1.15.13.177"
+      REMOTE_PI_HOSTS: ${{ vars.REMOTE_PI_HOSTS }}
     steps:
       - name: Resolve release ref
         id: ref

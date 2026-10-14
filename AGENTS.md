@@ -82,9 +82,9 @@ beta** (1.5.11, 2026-09-27 — the user asked for it to be corrected).
    in every room, including this session; you may `kill -TERM <supervisord pid>`
    locally and let systemd bring it back, but send your reply first — see
    `.agents/memory/remote-pi-extension-load-path.md`).
-   `REMOTE_PI_HOSTS=1.15.13.177` stays in the workflow: the self-hosted relay
-   is cleartext HTTP and the app needs its cleartext exception (unrelated to
-   the removed download site).
+   The release workflow passes `REMOTE_PI_HOSTS` from a repository variable:
+   the self-hosted relay is cleartext HTTP and the app needs that cleartext
+   exception at build time. The address itself stays out of the repository.
 
 The fork's `app-release.yml` **overrides the upstream same-named file**
 (upstream's targets the author's rp-s3 site) — fork-ledger item; expect a
