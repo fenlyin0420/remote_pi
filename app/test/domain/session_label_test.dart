@@ -136,10 +136,10 @@ void main() {
 
     test('falls back to the last segment of the working directory', () {
       expect(
-        roomLabel(_room(cwd: '/home/fenlyin/Documents/GitHub/remote_pi')),
+        roomLabel(_room(cwd: '/srv/agents/remote_pi')),
         'remote_pi',
       );
-      expect(roomLabel(_room(cwd: '/home/fenlyin/remote/')), 'remote');
+      expect(roomLabel(_room(cwd: '/srv/agents/remote/')), 'remote');
     });
 
     test('null when there is nothing to name the room with', () {
