@@ -1,0 +1,10 @@
+' Remote Pi supervisor launcher — runs node hidden (no console window) and tees
+' stdout+stderr to {LOG} so crashes are diagnosable (Task Scheduler gives the
+' hidden process no console, mirroring launchd/systemd log redirection).
+' `cmd /c` is required for the `>>` redirection. Run(cmd, 0, True): window
+' style 0 = hidden, wait = True so wscript stays alive for node's lifetime →
+' Task Scheduler's RestartOnFailure still monitors the supervisor.
+' WScript.Quit propagates node's exit code.
+Dim rc
+rc = CreateObject("Wscript.Shell").Run("cmd /c """"{NODE}"" ""{SUPERVISOR}"" >> ""{LOG}"" 2>&1""", 0, True)
+WScript.Quit rc

@@ -1,0 +1,19 @@
+[Unit]
+Description=Remote Pi daemon supervisor (plan/26)
+Documentation=https://remote-pi.jacobmoura.work
+After=default.target
+
+[Service]
+Type=simple
+ExecStart={NODE} {SUPERVISOR}
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+# Inherit the user's shell PATH so `pi --mode rpc` resolves to the same
+# binary it would in an interactive shell (npm-global / Homebrew / etc.).
+Environment="PATH={PATH}"
+Environment="HOME={HOME}"
+
+[Install]
+WantedBy=default.target
